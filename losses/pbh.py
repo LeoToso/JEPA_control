@@ -10,16 +10,13 @@ def mini_batch_dmdc(z,a,z_next,rcond=1e-5):
     d_u=a.shape[1]
     X=torch.cat([z,a],dim=-1)
     Y=z_next
-    try:
-        sol=torch.linalg.lstsq(X,Y,rcond=rcond).solution
-        A_hat=sol[:d,:].T
-        B_hat=sol[d:,:].T
-    except Exception:
-        XtX=X.T@X+rcond*torch.eye(d+d_u,device=X.device,dtype=X.dtype)
-        XtY=X.T@Y
-        sol=torch.linalg.solve(XtX,XtY)
-        A_hat=sol[:d,:].T
-        B_hat=sol[d:,:].T
+    # Use normal equations via solve — reliably autodiff on all backends.
+    # lstsq has inconsistent autograd support on CUDA.
+    XtX=X.T@X+rcond*torch.eye(d+d_u,device=X.device,dtype=X.dtype)
+    XtY=X.T@Y
+    sol=torch.linalg.solve(XtX,XtY)
+    A_hat=sol[:d,:].T
+    B_hat=sol[d:,:].T
     return A_hat,B_hat
 
 def pbh_stabilizability_loss(z,a,z_next,delta_tol=0.05,eps=1e-6):
