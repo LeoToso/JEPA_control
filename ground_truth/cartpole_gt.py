@@ -8,7 +8,6 @@ Equilibrium: x* = (0, 0, 0, 0), u* = 0
 
 import numpy as np
 import scipy.linalg
-import scipy.signal
 import warnings
 
 
@@ -75,11 +74,13 @@ class CartpoleGroundTruth:
         n = self.A_c.shape[0]
         m_in = self.B_c.shape[1]
         dt = self.dt
-        sys_c = scipy.signal.StateSpace(self.A_c, self.B_c,
-                                        np.eye(n), np.zeros((n, m_in)))
-        sys_d = sys_c.to_discrete(dt, method='zoh')
-        self.A_star = np.array(sys_d.A)
-        self.B_star = np.array(sys_d.B)
+        # ZOH discretisation via matrix exponential (scipy-version-agnostic).
+        # Augment: expm([[A, B], [0, 0]] * dt) partitioned into [Ad, Bd].
+        em_upper = np.hstack([self.A_c, self.B_c])
+        em_lower = np.zeros((m_in, n + m_in))
+        em = scipy.linalg.expm(np.vstack([em_upper, em_lower]) * dt)
+        self.A_star = em[:n, :n]
+        self.B_star = em[:n, n:]
 
     def _build_output_map(self):
         self.C_star = np.array([
