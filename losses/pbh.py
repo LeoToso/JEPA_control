@@ -40,8 +40,10 @@ def pbh_stabilizability_loss(z,a,z_next,delta_tol=0.05,eps=1e-6):
         sv=torch.linalg.svdvals(M_S)
         sigma_min=sv[-1]
         sigma_mins.append(sigma_min.item())
-        term=1.0/(sigma_min**2+eps)
+        # Log-barrier: maximises sigma_min, O(1) scale regardless of initialisation.
+        term=-torch.log(sigma_min+eps)
         loss_terms.append(term)
-    loss=torch.stack(loss_terms).sum()
+    # Mean over modes so loss scale is independent of how many modes are near-unstable.
+    loss=torch.stack(loss_terms).mean()
     info={"pbh_loss":loss.item(),"n_unstable":len(near_unstable),"mu_S":float(min(sigma_mins)) if sigma_mins else float("nan")}
     return loss,info
