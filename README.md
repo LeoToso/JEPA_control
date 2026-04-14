@@ -1,6 +1,6 @@
 # JEPA Control
 
-A research codebase for **Joint Embedding Predictive Architecture (JEPA) world models** applied to control of visual dynamical systems. The project studies whether structure-preserving representation losses (spectral regularisation, PBH stabilisability, NMP zero preservation) improve the control-theoretic properties of learned latent dynamics.
+A codebase for **Joint Embedding Predictive Architecture (JEPA) world models** applied to control of visual dynamical systems. We study whether structure-preserving representation losses (spectral regularisation, PBH stabilisability, NMP zero preservation) improve the control-theoretic properties of learned latent dynamics.
 
 ## Overview
 
@@ -156,4 +156,3 @@ Probes measure how well learned latent dynamics `(A_hat, B_hat, C_hat)` capture 
 
 ## Citation
 
-If you use this codebase, please cite the associated paper (forthcoming).
