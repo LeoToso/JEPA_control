@@ -6,6 +6,7 @@ Input: u = force on cart (scalar)
 Equilibrium: x* = (0, 0, 0, 0), u* = 0
 """
 
+from typing import Optional
 import numpy as np
 import scipy.linalg
 import warnings
@@ -278,7 +279,7 @@ class CartpoleGroundTruth:
         }
 
 
-_default_gt: CartpoleGroundTruth | None = None
+_default_gt: Optional[CartpoleGroundTruth] = None
 
 
 def get_cartpole_gt(**kwargs) -> CartpoleGroundTruth:
