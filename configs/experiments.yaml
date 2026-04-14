@@ -1,0 +1,69 @@
+experiment_grid:
+  encoder_variants:
+    - name: E-noact
+      lambda_pred: 1.0
+      lambda_PBH: 0.0
+      lambda_spec: 0.0
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: none
+    - name: E-spec
+      lambda_pred: 1.0
+      lambda_PBH: 0.0
+      lambda_spec: 0.01
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: none
+    - name: E-PBH
+      lambda_pred: 1.0
+      lambda_PBH: 0.01
+      lambda_spec: 0.0
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: none
+    - name: E-both-r
+      lambda_pred: 1.0
+      lambda_PBH: 0.01
+      lambda_spec: 0.01
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: none
+    - name: E-lift
+      lambda_pred: 1.0
+      lambda_PBH: 0.0
+      lambda_spec: 0.0
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: linear
+    - name: E-full
+      lambda_pred: 1.0
+      lambda_PBH: 0.01
+      lambda_spec: 0.01
+      lambda_NMP: 0.0
+      lambda_curv: 0.0
+      action_encoder: linear
+
+  datasets:
+    - random
+    - lqr
+    - mixed
+
+  frame_skips:
+    - 1
+    - 5
+    - 10
+
+  seeds:
+    - 0
+    - 1
+    - 2
+
+parallel:
+  n_workers: 4
+  resume: true
+
+output:
+  base_dir: results
+  save_models: true
+  save_rollouts: true
+  save_probes: true

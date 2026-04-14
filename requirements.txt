@@ -1,0 +1,33 @@
+# Core
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Environment
+gymnasium>=0.29.0
+pygame>=2.1.0
+
+# Dataset storage
+h5py>=3.8.0
+
+# Config
+PyYAML>=6.0
+
+# Analysis
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+scikit-learn>=1.2.0
+
+# Progress
+tqdm>=4.65.0
+
+# Testing
+pytest>=7.3.0
+
+# Optional: experiment tracking
+# wandb>=0.15.0
+
+# Optional: faster image resize
+# opencv-python>=4.7.0
