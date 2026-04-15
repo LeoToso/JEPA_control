@@ -18,7 +18,7 @@ class JEPAConfig:
     encoder_channels:list=field(default_factory=lambda:[32,64,128,256])
     predictor_hidden_dim:int=256
     image_size:int=64
-    normalize_latent:bool=True
+    normalize_latent:bool=False
     lambda_pred:float=1.0
     lambda_PBH:float=0.0
     lambda_spec:float=0.0
