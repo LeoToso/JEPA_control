@@ -126,24 +126,38 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     ctrl_results={}
     try:
-        K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr,
-            true_unstable_eigs=gt.unstable_eigenvalues,pre_stabilize=True)
-        max_cl=float(np.max(np.abs(cl_eigs)))
-        print(f'[control] Max |cl_eig|: {max_cl:.4f}')
+        from control.lqr import pre_stabilize_A
+        # Pre-stabilise: deflate phantom eigenvalues before DARE so K_hat doesn't blow up.
+        A_dare,n_def=pre_stabilize_A(A_hat,gt.unstable_eigenvalues,tol=0.05,target=0.9)
+        if n_def>0:
+            rho_dare=float(np.max(np.abs(np.linalg.eigvals(A_dare))))
+            print(f'[control] Pre-stabilised {n_def} phantom mode(s); A_dare rho={rho_dare:.4f}')
+        # Solve DARE on the pre-stabilised system; cl_eigs are on A_dare.
+        K_hat,P_hat,cl_eigs_dare=solve_discrete_lqr(A_dare,B_hat,Q_lqr,R_lqr)
+        max_cl_dare=float(np.max(np.abs(cl_eigs_dare)))
+        # Also report cl_eigs on original A_hat (phantom modes stay > 1; expected).
+        cl_eigs_orig=np.linalg.eigvals(A_hat-B_hat@K_hat)
+        max_cl_orig=float(np.max(np.abs(cl_eigs_orig)))
+        print(f'[control] Max |cl_eig| (pre-stab A): {max_cl_dare:.4f}')
+        print(f'[control] Max |cl_eig| (original A): {max_cl_orig:.4f}')
         print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}, max|K|: {np.max(np.abs(K_hat)):.3f}')
-        if max_cl>=1.0:
+        if max_cl_dare>=1.0:
+            # Even on the pre-stabilised system DARE didn't converge.
             warnings.warn(
-                f'LQR failed to stabilize latent system (max|cl_eig|={max_cl:.4f} >= 1).\n'
-                f'Likely cause: low Kalman efficiency or near-uncontrollable unstable modes '
-                f'(check P3_1 efficiency_ratio and P2_1 mu_S in probe results).\n'
-                f'Try: --dataset mixed (LQR trajectories improve controllability structure).'
+                f'LQR failed on pre-stabilised system (max|cl_eig|={max_cl_dare:.4f} >= 1).\n'
+                f'Likely cause: near-uncontrollable physical unstable mode (mu_S={probe_results.get("P2_1",{}).get("mu_S","?")}).\n'
+                f'Try: --dataset mixed.'
             )
-            ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig':max_cl,'n_trials':probe_cfg['n_trials_control']}
+            ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig_dare':max_cl_dare,'n_trials':probe_cfg['n_trials_control']}
         else:
-            # init_scale=0.05 matches the training distribution and keeps theta_0
-            # well below the 12-degree (0.2094 rad) termination boundary.
-            # init_scale=0.2 (the default) places theta right at the boundary,
-            # causing immediate termination before the controller can act.
+            # Phantom modes cause max_cl_orig > 1 but the rollout uses the encoder
+            # directly (not A_hat propagation), so phantom latent dynamics don't
+            # affect the physical cartpole.  Run rollouts against the real env.
+            if max_cl_orig>=1.0:
+                warnings.warn(f'Phantom modes: max|cl_eig|={max_cl_orig:.4f} on original A_hat; '
+                               f'pre-stabilised cl_eig={max_cl_dare:.4f}. Running rollouts.')
+            # init_scale=0.05: matches training distribution, keeps theta_0
+            # well below 12-deg (0.2094 rad) termination boundary.
             ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
             print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:
