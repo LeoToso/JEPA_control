@@ -156,6 +156,23 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             if max_cl_orig>=1.0:
                 warnings.warn(f'Phantom modes: max|cl_eig|={max_cl_orig:.4f} on original A_hat; '
                                f'pre-stabilised cl_eig={max_cl_dare:.4f}. Running rollouts.')
+            # --- Canonical sign/magnitude diagnostic ---
+            # For theta = +0.05 rad (pole right), the correct force is > 0 (push cart right).
+            # For theta = -0.05 rad (pole left),  the correct force is < 0 (push cart left).
+            model.eval()
+            for _theta,_label in [(+0.05,'right'),(- 0.05,'left')]:
+                _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.]))
+                _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
+                with torch.no_grad():
+                    _z=model.encoder(_obs_t).cpu().numpy()[0]
+                _dz=_z-z_star
+                _u=float(-K_hat@_dz)
+                _u_clip=float(np.clip(_u,-10.,10.))
+                _sign_ok=(_u>0 if _theta>0 else _u<0)
+                print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): '
+                      f'|Δz|={np.linalg.norm(_dz):.4f}  u={_u:.4f}  '
+                      f'u_clip={_u_clip:.4f}  sign_ok={_sign_ok}')
+            # --- end diagnostic ---
             # init_scale=0.05: matches training distribution, keeps theta_0
             # well below 12-deg (0.2094 rad) termination boundary.
             ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
