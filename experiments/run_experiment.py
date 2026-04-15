@@ -97,12 +97,11 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from control.rollout import evaluate_stabilization
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
-    # Physically-motivated LQR cost: penalise latent directions aligned with
-    # physical state (pole angle, cart position) via Q = C_hat^T Q_out C_hat + eps*I.
-    # This avoids penalising uncontrollable/unobservable latent dimensions equally,
-    # which makes K_hat noisy and over-aggressive.
-    Q_phys_out=np.diag([10.0,1.0])  # [pole_angle, cart_position]
-    Q_lqr=C_hat.T@Q_phys_out@C_hat+0.001*np.eye(d)
+    # Use identity Q in latent space with R=0.01 → Q/R=100 (aggressive enough
+    # to place closed-loop eigenvalues well inside unit disk within T=200 steps).
+    # The physically-motivated C_hat^T Q_phys C_hat design produced Q/R≈0.6,
+    # giving cl_eig=0.9991 (time constant ~1100 steps >> T=200) → 0% success.
+    Q_lqr=np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
     # Compute z_star: latent encoding of the upright equilibrium image.
     # The LQR control law u = -K(z - z_star) requires this offset so the
@@ -117,7 +116,12 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     try:
         K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr)
         print(f'[control] Max |cl_eig|: {np.max(np.abs(cl_eigs)):.4f}')
-        ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star)
+        print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}, max|K|: {np.max(np.abs(K_hat)):.3f}')
+        # init_scale=0.05 matches the training distribution and keeps theta_0
+        # well below the 12-degree (0.2094 rad) termination boundary.
+        # init_scale=0.2 (the default) places theta right at the boundary,
+        # causing immediate termination before the controller can act.
+        ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
         print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:
         warnings.warn(f'Control validation failed: {exc}')

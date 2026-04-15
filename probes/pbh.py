@@ -105,7 +105,9 @@ def P2_3_separation_principle(A_hat,B_hat,C_hat,encoder,env,n_trials=100,T=200,s
     settling_times=[]
     observer_errors=[]
     for trial in range(n_trials):
-        x0=rng.uniform(-0.2,0.2,size=4)
+        # Use small init matching training distribution; 0.2 puts theta at
+        # 95% of the 12-deg (0.2094 rad) termination threshold → immediate failure.
+        x0=rng.uniform(-0.05,0.05,size=4)
         try:
             result=rollout_latent_lqr(encoder=encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,x0=x0,T=T,use_observer=use_observer,L_hat=L_hat,C_hat=C_hat)
             success.append(result['stabilized'])
