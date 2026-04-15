@@ -204,6 +204,13 @@ class Trainer:
 
     def post_training_dmdc(self,full_loader,Y_loader=None):
         from identification.dmdc import DMDcFitter
+        from models.action_encoder import LinearActionEncoder
+        # For LinearActionEncoder, fit DMDc against the raw scalar action u
+        # rather than the lifted W@u.  The lifted actions are rank-1 (all
+        # columns are multiples of W), giving condition number ~10^14 and a
+        # numerically catastrophic least-squares fit.  Using raw u gives a
+        # well-conditioned (32+1)-column design matrix instead.
+        use_raw_action = isinstance(self.model.action_encoder, LinearActionEncoder)
         self.model.eval()
         Z_list,A_list,Z_next_list=[],[],[]
         with torch.no_grad():
@@ -212,7 +219,10 @@ class Trainer:
                 action=batch['action'].to(self.device)
                 next_obs=batch['next_obs'].to(self.device)
                 z=self.model.encoder(obs).cpu().numpy()
-                a=self.model.action_encoder(action).cpu().numpy()
+                if use_raw_action:
+                    a=action.cpu().numpy()
+                else:
+                    a=self.model.action_encoder(action).cpu().numpy()
                 z_next=self.model.encoder(next_obs).cpu().numpy()
                 Z_list.append(z)
                 A_list.append(a)
