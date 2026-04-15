@@ -17,6 +17,7 @@ model:
 
 training:
   lr: 1.0e-4
+  weight_decay: 1.0e-4
   batch_size: 256
   epochs: 100
   lambda_pred: 1.0
@@ -50,7 +51,7 @@ probes:
 
 control:
   Q_lqr: [1.0, 1.0, 10.0, 1.0]
-  R_lqr: 0.01
+  R_lqr: 1.0
   observer_pole_scale: 0.8
   stabilization_threshold: 0.1
   settling_threshold: 0.05

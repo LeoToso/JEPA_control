@@ -98,7 +98,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
     Q_lqr=np.eye(d)
-    R_lqr=0.01*np.eye(d_u)
+    R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
     # Compute z_star: latent encoding of the upright equilibrium image.
     # The LQR control law u = -K(z - z_star) requires this offset so the
     # controller drives the system to the physical equilibrium, not z=0.

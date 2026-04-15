@@ -71,7 +71,8 @@ class Trainer:
         self.vicreg_mu=float(self.cfg.get('vicreg_mu',25.0))
         self.vicreg_nu=float(self.cfg.get('vicreg_nu',1.0))
         lr=float(self.cfg.get('lr',1e-4))
-        self.optimizer=torch.optim.Adam(model.parameters(),lr=lr)
+        weight_decay=float(self.cfg.get('weight_decay',1e-4))
+        self.optimizer=torch.optim.Adam(model.parameters(),lr=lr,weight_decay=weight_decay)
         self.scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer,T_max=int(self.cfg.get('epochs',100)),eta_min=lr*0.1)
         self.sliding_dmdc=SlidingWindowDMDc(int(self.cfg.get('dmdc_window',1000)),int(self.cfg.get('dmdc_refit_every',50)))
         self.true_unstable_eigs=None
@@ -200,6 +201,13 @@ class Trainer:
             self._log_csv(epoch,'val',self.global_step,val_metrics)
             dt=time.time()-t0
             print(f'[Epoch {epoch+1:3d}/{epochs}] train_loss={train_metrics.get("total_loss",0):.4f}  val_loss={val_loss:.4f}  lr={self.optimizer.param_groups[0]["lr"]:.2e}  dt={dt:.1f}s')
+        # Restore best-val checkpoint so downstream DMDc and control use
+        # the generalising model, not the final (potentially overfit) one.
+        best_ckpt=self.save_dir/'checkpoint_best.pt'
+        if best_ckpt.exists():
+            ckpt=torch.load(best_ckpt,map_location=self.device)
+            self.model.load_state_dict(ckpt['model_state'])
+            print(f'[train] Restored best checkpoint (val_loss={self.best_val_loss:.4f})')
         return history
 
     def post_training_dmdc(self,full_loader,Y_loader=None):
