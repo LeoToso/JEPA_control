@@ -67,7 +67,9 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     saved_model=out_dir/'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
-        model.load_state_dict(torch.load(saved_model,map_location=device))
+        # strict=False: W_pinv may be present in old checkpoints (saved after
+        # compute_pseudoinverse()); it is ignored here and recomputed below.
+        model.load_state_dict(torch.load(saved_model,map_location=device),strict=False)
         history={'train':[],'val':[]}
     else:
         print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
