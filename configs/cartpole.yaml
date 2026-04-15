@@ -51,7 +51,7 @@ probes:
 
 control:
   Q_lqr: [1.0, 1.0, 10.0, 1.0]
-  R_lqr: 1.0
+  R_lqr: 0.01
   observer_pole_scale: 0.8
   stabilization_threshold: 0.1
   settling_threshold: 0.05
