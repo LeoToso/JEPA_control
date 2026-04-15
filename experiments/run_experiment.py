@@ -97,7 +97,12 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from control.rollout import evaluate_stabilization
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
-    Q_lqr=np.eye(d)
+    # Physically-motivated LQR cost: penalise latent directions aligned with
+    # physical state (pole angle, cart position) via Q = C_hat^T Q_out C_hat + eps*I.
+    # This avoids penalising uncontrollable/unobservable latent dimensions equally,
+    # which makes K_hat noisy and over-aggressive.
+    Q_phys_out=np.diag([10.0,1.0])  # [pole_angle, cart_position]
+    Q_lqr=C_hat.T@Q_phys_out@C_hat+0.1*np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
     # Compute z_star: latent encoding of the upright equilibrium image.
     # The LQR control law u = -K(z - z_star) requires this offset so the
