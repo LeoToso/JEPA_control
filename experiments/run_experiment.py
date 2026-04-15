@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import yaml
 
-def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,config_path='configs/cartpole.yaml',data_dir='data',results_dir='results',device=None,skip_if_exists=True):
+def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,config_path='configs/cartpole.yaml',data_dir='data',results_dir='results',device=None,skip_if_exists=True,eval_only=False):
     exp_name=f'{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
     out_dir=Path(results_dir)/exp_name
     out_dir.mkdir(parents=True,exist_ok=True)
@@ -60,8 +60,16 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     train_cfg_exp=dict(train_cfg)
     train_cfg_exp.update(variant_weights.get(encoder_variant,{}))
     trainer=Trainer(model=model,config_dict=train_cfg_exp,gt=gt,save_dir=str(out_dir/'checkpoints'),device=device,seed=seed)
-    print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
-    history=trainer.fit(loaders['train'],loaders['val'],epochs=train_cfg_exp['epochs'],checkpoint_every=train_cfg_exp.get('checkpoint_every',10))
+    # --eval-only: load saved model weights and skip training.
+    # Useful when re-running just DMDc/probes/control after a hyperparameter change.
+    saved_model=out_dir/'model_final.pt'
+    if eval_only and saved_model.exists():
+        print(f'[train] --eval-only: loading {saved_model}')
+        model.load_state_dict(torch.load(saved_model,map_location=device))
+        history={'train':[],'val':[]}
+    else:
+        print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
+        history=trainer.fit(loaders['train'],loaders['val'],epochs=train_cfg_exp['epochs'],checkpoint_every=train_cfg_exp.get('checkpoint_every',10))
     from models.action_encoder import LinearActionEncoder
     if isinstance(model.action_encoder,LinearActionEncoder):
         model.action_encoder.compute_pseudoinverse()
@@ -206,6 +214,8 @@ if __name__=='__main__':
     parser.add_argument('--config',default='configs/cartpole.yaml')
     parser.add_argument('--data_dir',default='data')
     parser.add_argument('--results_dir',default='results')
+    parser.add_argument('--eval-only',action='store_true',help='Load model_final.pt and skip training; only re-run DMDc/probes/control')
+    parser.add_argument('--force',action='store_true',help='Re-run even if results.json already exists')
     args=parser.parse_args()
-    results=run_single_experiment(encoder_variant=args.variant,dataset_name=args.dataset,frame_skip=args.frame_skip,seed=args.seed,config_path=args.config,data_dir=args.data_dir,results_dir=args.results_dir)
+    results=run_single_experiment(encoder_variant=args.variant,dataset_name=args.dataset,frame_skip=args.frame_skip,seed=args.seed,config_path=args.config,data_dir=args.data_dir,results_dir=args.results_dir,skip_if_exists=not args.force,eval_only=args.eval_only)
     print(f'\nControl success rate: {results["control"].get("success_rate","N/A")}')
