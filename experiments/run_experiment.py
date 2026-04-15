@@ -125,14 +125,24 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     ctrl_results={}
     try:
         K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr)
-        print(f'[control] Max |cl_eig|: {np.max(np.abs(cl_eigs)):.4f}')
+        max_cl=float(np.max(np.abs(cl_eigs)))
+        print(f'[control] Max |cl_eig|: {max_cl:.4f}')
         print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}, max|K|: {np.max(np.abs(K_hat)):.3f}')
-        # init_scale=0.05 matches the training distribution and keeps theta_0
-        # well below the 12-degree (0.2094 rad) termination boundary.
-        # init_scale=0.2 (the default) places theta right at the boundary,
-        # causing immediate termination before the controller can act.
-        ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
-        print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
+        if max_cl>=1.0:
+            warnings.warn(
+                f'LQR failed to stabilize latent system (max|cl_eig|={max_cl:.4f} >= 1).\n'
+                f'Likely cause: low Kalman efficiency or near-uncontrollable unstable modes '
+                f'(check P3_1 efficiency_ratio and P2_1 mu_S in probe results).\n'
+                f'Try: --dataset mixed (LQR trajectories improve controllability structure).'
+            )
+            ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig':max_cl,'n_trials':probe_cfg['n_trials_control']}
+        else:
+            # init_scale=0.05 matches the training distribution and keeps theta_0
+            # well below the 12-degree (0.2094 rad) termination boundary.
+            # init_scale=0.2 (the default) places theta right at the boundary,
+            # causing immediate termination before the controller can act.
+            ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
+            print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:
         warnings.warn(f'Control validation failed: {exc}')
         ctrl_results={'error':str(exc)}
