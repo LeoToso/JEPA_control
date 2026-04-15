@@ -126,7 +126,8 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     ctrl_results={}
     try:
-        K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr)
+        K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr,
+            true_unstable_eigs=gt.unstable_eigenvalues,pre_stabilize=True)
         max_cl=float(np.max(np.abs(cl_eigs)))
         print(f'[control] Max |cl_eig|: {max_cl:.4f}')
         print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}, max|K|: {np.max(np.abs(K_hat)):.3f}')
