@@ -1,8 +1,10 @@
 """Single experiment runner."""
 from __future__ import annotations
-import os,json,time,warnings,random
+import os,sys,json,time,warnings,random
 from pathlib import Path
 from typing import Dict,Any,Optional
+# Ensure project root is on sys.path regardless of working directory.
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import torch
 import yaml
