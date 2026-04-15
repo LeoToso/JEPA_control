@@ -5,7 +5,7 @@ from typing import Optional,Dict,Any
 import numpy as np
 import torch
 
-def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,use_observer=False,L_hat=None,C_hat=None,stabilization_threshold=0.1,settling_threshold=0.05,device=None):
+def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,use_observer=False,L_hat=None,C_hat=None,stabilization_threshold=0.1,settling_threshold=0.05,device=None,z_star=None):
     if device is None:
         try:
             device=next(encoder.parameters()).device
@@ -22,6 +22,12 @@ def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,use_observer=False
     else:
         observer=None
         use_observer=False
+    # z_star: latent encoding of the upright equilibrium.
+    # LQR was designed around z=0, but the encoder origin may not coincide
+    # with the equilibrium image.  Subtract z_star so the control law
+    # u = -K(z - z_star) drives the system toward the true equilibrium.
+    if z_star is None:
+        z_star=np.zeros(d)
     settling_time=T
     x_star=np.zeros(4)
     for t in range(T):
@@ -33,9 +39,9 @@ def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,use_observer=False
         if use_observer and observer is not None:
             y_t=C_hat@z_t
             z_hat_t=observer.update(y_t,np.zeros(d_u))
-            a_t=-K_hat@z_hat_t
+            a_t=-K_hat@(z_hat_t-z_star)
         else:
-            a_t=-K_hat@z_t
+            a_t=-K_hat@(z_t-z_star)
         latent_actions.append(a_t.copy())
         try:
             u_scalar=float(np.clip(a_t[0],-10.0,10.0))
@@ -67,7 +73,7 @@ def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,use_observer=False
         result['observer_error_mean']=float(np.mean(observer_errors))
     return result
 
-def evaluate_stabilization(encoder,A_hat,B_hat,K_hat,env,n_trials=100,T=200,use_observer=False,L_hat=None,C_hat=None,init_scale=0.2,Q_lqr=None,R_lqr=None,stabilization_threshold=0.1,settling_threshold=0.05,seed=0,device=None):
+def evaluate_stabilization(encoder,A_hat,B_hat,K_hat,env,n_trials=100,T=200,use_observer=False,L_hat=None,C_hat=None,init_scale=0.2,Q_lqr=None,R_lqr=None,stabilization_threshold=0.1,settling_threshold=0.05,seed=0,device=None,z_star=None):
     rng=np.random.RandomState(seed)
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
@@ -77,7 +83,7 @@ def evaluate_stabilization(encoder,A_hat,B_hat,K_hat,env,n_trials=100,T=200,use_
     for trial in range(n_trials):
         x0=rng.uniform(-init_scale,init_scale,size=4).astype(np.float32)
         try:
-            result=rollout_latent_lqr(encoder=encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,x0=x0,T=T,use_observer=use_observer,L_hat=L_hat,C_hat=C_hat,stabilization_threshold=stabilization_threshold,settling_threshold=settling_threshold,device=device)
+            result=rollout_latent_lqr(encoder=encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,x0=x0,T=T,use_observer=use_observer,L_hat=L_hat,C_hat=C_hat,stabilization_threshold=stabilization_threshold,settling_threshold=settling_threshold,device=device,z_star=z_star)
             successes.append(result['stabilized'])
             settling_times.append(result['settling_time'])
             final_errors.append(result['final_state_error'])

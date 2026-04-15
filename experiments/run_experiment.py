@@ -99,11 +99,20 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     d_u=B_hat.shape[1]
     Q_lqr=np.eye(d)
     R_lqr=0.01*np.eye(d_u)
+    # Compute z_star: latent encoding of the upright equilibrium image.
+    # The LQR control law u = -K(z - z_star) requires this offset so the
+    # controller drives the system to the physical equilibrium, not z=0.
+    model.eval()
+    obs_eq,_,_=env.reset_to_state(np.zeros(4))
+    obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
+    with torch.no_grad():
+        z_star=model.encoder(obs_eq_t).cpu().numpy()[0]
+    print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     ctrl_results={}
     try:
         K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr)
         print(f'[control] Max |cl_eig|: {np.max(np.abs(cl_eigs)):.4f}')
-        ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device)
+        ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star)
         print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:
         warnings.warn(f'Control validation failed: {exc}')
