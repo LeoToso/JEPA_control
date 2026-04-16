@@ -81,21 +81,10 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         print(f'[model] W_pinv @ W identity error: {ipe:.2e}')
     print('\n[DMDc] Fitting latent system on test set...')
     A_hat,B_hat,dmdc_fitter=trainer.post_training_dmdc(loaders['test'])
-    from identification.dmdc import fit_output_map
-    model.eval()
-    Z_list,Y_list=[],[]
-    with torch.no_grad():
-        for batch in loaders['test']:
-            obs=batch['obs'].to(device)
-            state=batch['state'].numpy()
-            z=model.encoder(obs).cpu().numpy()
-            y=state[:,[2,0]]
-            Z_list.append(z)
-            Y_list.append(y)
-    Z_all=np.vstack(Z_list)
-    Y_all=np.vstack(Y_list)
-    C_hat=fit_output_map(Z_all,Y_all)
-    print(f'[DMDc] C_hat shape: {C_hat.shape}')
+    # Fully-observed latent model: C_hat = I_d (latent state IS the observation).
+    d=A_hat.shape[0]
+    C_hat=np.eye(d)
+    print(f'[DMDc] Using C_hat = I_{d} (fully-observed latent model)')
     print('\n[rollout] Generating probe rollout data...')
     from envs.cartpole_visual import ContinuousCartpoleVisual
     env=ContinuousCartpoleVisual(frame_skip=frame_skip,image_size=env_cfg['image_size'],mass_cart=env_cfg['mass_cart'],mass_pole=env_cfg['mass_pole'],pole_length=env_cfg['pole_length'],gravity=env_cfg['gravity'],dt=env_cfg['dt'],seed=seed)
@@ -107,22 +96,11 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     print('\n[control] Running control validation...')
     from control.lqr import solve_discrete_lqr
     from control.rollout import evaluate_stabilization
-    d=A_hat.shape[0]
     d_u=B_hat.shape[1]
-    # Q design: normalise C_hat rows to unit-norm direction vectors, then weight
-    # heavily toward physical state dimensions (theta >> x >> phantom).
-    # Plain Q=I_d dilutes cost across 28+ phantom dimensions so the physical
-    # unstable mode gets little weight and K_hat is weak.  Normalised-row Q
-    # concentrates on the two physical output directions with large weights,
-    # giving Q/R=1e6 for theta → K_hat places cl_eig well inside unit disk.
-    C_norms=np.linalg.norm(C_hat,axis=1,keepdims=True)+1e-8
-    C_hat_norm=C_hat/C_norms  # unit row vectors: theta-direction and x-direction
-    Q_theta=10000.0*(C_hat_norm[[0],:].T@C_hat_norm[[0],:])
-    Q_x=   1000.0*(C_hat_norm[[1],:].T@C_hat_norm[[1],:])
-    # +1.0*I makes Q full-rank (all phantom modes observable) so DARE is well-posed
-    Q_lqr=Q_theta+Q_x+1.0*np.eye(d)
+    # Fully-observed latent model: Q = I_d, uniform cost on all latent dimensions.
+    Q_lqr=np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
-    print(f'[control] Q_lqr: theta-weight=10000 x-weight=1000 reg=1.0  R={R_lqr[0,0]:.4f}')
+    print(f'[control] Q_lqr=I_{d} (fully-observed)  R={R_lqr[0,0]:.4f}')
     # Compute z_star: latent encoding of the upright equilibrium image.
     # The LQR control law u = -K(z - z_star) requires this offset so the
     # controller drives the system to the physical equilibrium, not z=0.
