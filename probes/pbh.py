@@ -81,40 +81,43 @@ def P2_2_pbh_detectability(A_hat,C_hat,encoder=None,gt=None,delta_tol=0.05,epsil
     return result
 
 def P2_3_separation_principle(A_hat,B_hat,C_hat,encoder,env,n_trials=100,T=200,stabilization_threshold=0.1,settling_threshold=0.05):
-    from control.lqr import solve_discrete_lqr
-    from control.observer import design_luenberger
+    """Fully-observed latent LQR probe: u_t = -K(z_t - z_star), no observer."""
+    import torch
+    from control.lqr import solve_discrete_lqr,pre_stabilize_A
     from control.rollout import rollout_latent_lqr
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
     Q_lqr=np.eye(d)
     R_lqr=0.01*np.eye(d_u)
     try:
-        K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_hat,B_hat,Q_lqr,R_lqr)
+        A_dare,_=pre_stabilize_A(A_hat,[],tol=0.05,target=0.9)
+        K_hat,P_hat,cl_eigs=solve_discrete_lqr(A_dare,B_hat,Q_lqr,R_lqr)
+        if float(np.max(np.abs(cl_eigs)))>=1.0:
+            raise ValueError('LQR unstable on pre-stabilised system')
     except Exception as exc:
         warnings.warn(f'LQR design failed: {exc}')
-        return {'stabilization_success_rate':0.0,'mean_settling_time':T,'observer_converged':False}
+        return {'stabilization_success_rate':0.0,'mean_settling_time':T}
     try:
-        L_hat=design_luenberger(A_hat,B_hat,C_hat,pole_scale=0.8)
-        use_observer=True
-    except Exception as exc:
-        warnings.warn(f'Observer design failed: {exc}')
-        L_hat=None
-        use_observer=False
+        device=next(encoder.parameters()).device
+    except StopIteration:
+        device=torch.device('cpu')
+    obs_eq,_,_=env.reset_to_state(np.zeros(4))
+    obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
+    with torch.no_grad():
+        z_star=encoder(obs_eq_t).cpu().numpy()[0]
     rng=np.random.RandomState(0)
     success=[]
     settling_times=[]
-    observer_errors=[]
     for trial in range(n_trials):
-        # Use small init matching training distribution; 0.2 puts theta at
-        # 95% of the 12-deg (0.2094 rad) termination threshold → immediate failure.
         x0=rng.uniform(-0.05,0.05,size=4)
         try:
-            result=rollout_latent_lqr(encoder=encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,x0=x0,T=T,use_observer=use_observer,L_hat=L_hat,C_hat=C_hat)
+            result=rollout_latent_lqr(encoder=encoder,A_hat=A_hat,B_hat=B_hat,
+                                      K_hat=K_hat,env=env,x0=x0,T=T,
+                                      z_star=z_star,device=device)
             success.append(result['stabilized'])
             settling_times.append(result['settling_time'])
-            if use_observer and 'observer_error' in result:
-                observer_errors.append(result.get('observer_error_final',float('nan')))
         except Exception:
             success.append(False)
             settling_times.append(T)
-    return {'stabilization_success_rate':float(np.mean(success)),'mean_settling_time':float(np.mean(settling_times)),'observer_converged':bool(len(observer_errors)>0 and np.nanmean(observer_errors)<0.1),'observer_error_final':float(np.nanmean(observer_errors) if observer_errors else float('nan'))}
+    return {'stabilization_success_rate':float(np.mean(success)),
+            'mean_settling_time':float(np.mean(settling_times))}
