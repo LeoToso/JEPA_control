@@ -109,12 +109,20 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from control.rollout import evaluate_stabilization
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
-    # Use identity Q in latent space with R=0.01 → Q/R=100 (aggressive enough
-    # to place closed-loop eigenvalues well inside unit disk within T=200 steps).
-    # The physically-motivated C_hat^T Q_phys C_hat design produced Q/R≈0.6,
-    # giving cl_eig=0.9991 (time constant ~1100 steps >> T=200) → 0% success.
-    Q_lqr=np.eye(d)
+    # Q design: normalise C_hat rows to unit-norm direction vectors, then weight
+    # heavily toward physical state dimensions (theta >> x >> phantom).
+    # Plain Q=I_d dilutes cost across 28+ phantom dimensions so the physical
+    # unstable mode gets little weight and K_hat is weak.  Normalised-row Q
+    # concentrates on the two physical output directions with large weights,
+    # giving Q/R=1e6 for theta → K_hat places cl_eig well inside unit disk.
+    C_norms=np.linalg.norm(C_hat,axis=1,keepdims=True)+1e-8
+    C_hat_norm=C_hat/C_norms  # unit row vectors: theta-direction and x-direction
+    Q_theta=10000.0*(C_hat_norm[[0],:].T@C_hat_norm[[0],:])
+    Q_x=   1000.0*(C_hat_norm[[1],:].T@C_hat_norm[[1],:])
+    # +1.0*I makes Q full-rank (all phantom modes observable) so DARE is well-posed
+    Q_lqr=Q_theta+Q_x+1.0*np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
+    print(f'[control] Q_lqr: theta-weight=10000 x-weight=1000 reg=1.0  R={R_lqr[0,0]:.4f}')
     # Compute z_star: latent encoding of the upright equilibrium image.
     # The LQR control law u = -K(z - z_star) requires this offset so the
     # controller drives the system to the physical equilibrium, not z=0.
@@ -156,23 +164,32 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             if max_cl_orig>=1.0:
                 warnings.warn(f'Phantom modes: max|cl_eig|={max_cl_orig:.4f} on original A_hat; '
                                f'pre-stabilised cl_eig={max_cl_dare:.4f}. Running rollouts.')
-            # --- Canonical sign/magnitude diagnostic ---
-            # For theta = +0.05 rad (pole right), the correct force is > 0 (push cart right).
-            # For theta = -0.05 rad (pole left),  the correct force is < 0 (push cart left).
+            # --- Sign diagnostic + automatic sign correction ---
+            # Physical sign convention: theta > 0 (pole tilts right) requires u > 0
+            # (push cart right) to restore upright equilibrium.  If K_hat was computed
+            # with an inverted B_hat sign, we auto-correct here.
             model.eval()
-            for _theta,_label in [(+0.05,'right'),(- 0.05,'left')]:
+            sign_votes=[]
+            for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
                 _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.]))
                 _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
                 with torch.no_grad():
                     _z=model.encoder(_obs_t).cpu().numpy()[0]
                 _dz=_z-z_star
                 _u=float(-K_hat@_dz)
-                _u_clip=float(np.clip(_u,-10.,10.))
                 _sign_ok=(_u>0 if _theta>0 else _u<0)
+                sign_votes.append(_sign_ok)
                 print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): '
-                      f'|Δz|={np.linalg.norm(_dz):.4f}  u={_u:.4f}  '
-                      f'u_clip={_u_clip:.4f}  sign_ok={_sign_ok}')
-            # --- end diagnostic ---
+                      f'|Δz|={np.linalg.norm(_dz):.4f}  u={_u:.6f}  sign_ok={_sign_ok}')
+            n_ok=sum(sign_votes)
+            if n_ok==0:
+                K_hat=-K_hat
+                print('[control] SIGN FLIP: both sign checks failed — negating K_hat')
+            elif n_ok==1:
+                print('[control] WARNING: mixed sign checks (1/2 OK) — proceeding without flip')
+            else:
+                print('[control] Sign checks passed (2/2 OK)')
+            # --- end sign diagnostic ---
             # init_scale=0.05: matches training distribution, keeps theta_0
             # well below 12-deg (0.2094 rad) termination boundary.
             ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
