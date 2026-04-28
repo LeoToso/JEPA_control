@@ -196,9 +196,6 @@ class Trainer:
 
     def save_checkpoint(self,tag='latest'):
         path=self.save_dir/f'checkpoint_{tag}.pt'
-        # Save model state only (no optimizer) to halve checkpoint size.
-        # Optimizer state is only needed to resume training mid-run, which we
-        # don't support; keeping it was doubling disk usage for no benefit.
         torch.save({'epoch':self.epoch,'global_step':self.global_step,'model_state':self.model.state_dict(),'best_val_loss':self.best_val_loss,'config':self.model.get_config_dict()},path)
 
     def load_checkpoint(self,path):
@@ -209,9 +206,14 @@ class Trainer:
         self.best_val_loss=ckpt.get('best_val_loss',float('inf'))
 
     def fit(self,train_loader,val_loader,epochs=None,checkpoint_every=10):
+        import copy
         if epochs is None:
             epochs=int(self.cfg.get('epochs',100))
         history={'train':[],'val':[]}
+        # Keep the best model weights in CPU memory instead of writing to disk.
+        # This avoids all intermediate checkpoint I/O, which is important when
+        # the filesystem is nearly full.
+        best_state=None
         for epoch in range(epochs):
             self.epoch=epoch
             t0=time.time()
@@ -223,21 +225,15 @@ class Trainer:
             val_loss=val_metrics.get('total_loss',float('inf'))
             if val_loss<self.best_val_loss:
                 self.best_val_loss=val_loss
-                self.save_checkpoint('best')
-            if (epoch+1)%checkpoint_every==0:
-                self.save_checkpoint(f'epoch_{epoch+1:04d}')
-            self.save_checkpoint('latest')
+                best_state={k:v.cpu().clone() for k,v in self.model.state_dict().items()}
             self._log_csv(epoch,'train',self.global_step,train_metrics)
             self._log_csv(epoch,'val',self.global_step,val_metrics)
             dt=time.time()-t0
             print(f'[Epoch {epoch+1:3d}/{epochs}] train_loss={train_metrics.get("total_loss",0):.4f}  val_loss={val_loss:.4f}  lr={self.optimizer.param_groups[0]["lr"]:.2e}  dt={dt:.1f}s')
-        # Restore best-val checkpoint so downstream DMDc and control use
-        # the generalising model, not the final (potentially overfit) one.
-        best_ckpt=self.save_dir/'checkpoint_best.pt'
-        if best_ckpt.exists():
-            ckpt=torch.load(best_ckpt,map_location=self.device)
-            self.model.load_state_dict(ckpt['model_state'])
-            print(f'[train] Restored best checkpoint (val_loss={self.best_val_loss:.4f})')
+        # Restore best weights from memory (no disk read needed).
+        if best_state is not None:
+            self.model.load_state_dict({k:v.to(self.device) for k,v in best_state.items()})
+            print(f'[train] Restored best model from memory (val_loss={self.best_val_loss:.4f})')
         return history
 
     def post_training_dmdc(self,full_loader,Y_loader=None):
