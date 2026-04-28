@@ -134,23 +134,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             )
             ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig_dare':max_cl_dare,'n_trials':probe_cfg['n_trials_control']}
         else:
-            # Augmented-state LQR: [z_t, z_{t-1}] gives the controller implicit
-            # velocity feedback via z_t - z_{t-1}, compensating for the missing
-            # velocity information in single-frame latent encodings.
-            d_aug=2*d
-            A_aug=np.zeros((d_aug,d_aug))
-            A_aug[:d,:d]=A_dare
-            A_aug[d:,:d]=np.eye(d)
-            B_aug=np.zeros((d_aug,d_u))
-            B_aug[:d]=B_hat
-            Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),0.1*Q_lqr]])
-            K_aug,_,cl_eigs_aug=solve_discrete_lqr(A_aug,B_aug,Q_aug,R_lqr)
-            max_cl_aug=float(np.max(np.abs(cl_eigs_aug)))
-            print(f'[control] Augmented LQR max|cl_eig|: {max_cl_aug:.4f}')
-            print(f'[control] K_aug norm: {np.linalg.norm(K_aug):.3f}')
-            # Sign check using K1 = K_aug[:, :d] (proportional part).
-            # At t=0 with z_prev=z_star this equals the full action.
-            K1=K_aug[:,:d]
+            # Sign check on K_hat before building augmented gain.
             model.eval()
             sign_votes=[]
             for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
@@ -159,18 +143,24 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
                 with torch.no_grad():
                     _z=model.encoder(_obs_t).cpu().numpy()[0]
                 _dz=_z-z_star
-                _u=float(-K1@_dz)
+                _u=float(-K_hat@_dz)
                 _sign_ok=(_u>0 if _theta>0 else _u<0)
                 sign_votes.append(_sign_ok)
                 print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  sign_ok={_sign_ok}')
             n_ok=sum(sign_votes)
             if n_ok==0:
-                K_aug=-K_aug
-                print('[control] SIGN FLIP: negating K_aug')
+                K_hat=-K_hat
+                print('[control] SIGN FLIP: negating K_hat')
             elif n_ok==1:
                 print('[control] WARNING: mixed sign votes (1/2) — no flip')
             else:
                 print('[control] Sign checks passed (2/2)')
+            # PD augmented gain: u_t = -K(z_t-z*) - γ·K(z_t-z_{t-1})
+            # Equivalent to K_aug = [(1+γ)·K, -γ·K] on aug state [dz_t; dz_{t-1}].
+            # DARE on singular A_aug gives K₂≈0 so we construct the gain manually.
+            gamma_pd=float(ctrl_cfg.get('pd_gamma',5.0))
+            K_aug=np.hstack([(1+gamma_pd)*K_hat,-gamma_pd*K_hat])
+            print(f'[control] PD gain: gamma={gamma_pd}, K_aug norm={np.linalg.norm(K_aug):.3f}')
             ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_aug,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
             print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:

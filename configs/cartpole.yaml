@@ -58,6 +58,7 @@ control:
   observer_pole_scale: 0.8
   stabilization_threshold: 0.1
   settling_threshold: 0.05
+  pd_gamma: 5.0
 
 data:
   n_random: 50000
