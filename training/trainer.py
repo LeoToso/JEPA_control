@@ -196,12 +196,14 @@ class Trainer:
 
     def save_checkpoint(self,tag='latest'):
         path=self.save_dir/f'checkpoint_{tag}.pt'
-        torch.save({'epoch':self.epoch,'global_step':self.global_step,'model_state':self.model.state_dict(),'optimizer_state':self.optimizer.state_dict(),'best_val_loss':self.best_val_loss,'config':self.model.get_config_dict()},path)
+        # Save model state only (no optimizer) to halve checkpoint size.
+        # Optimizer state is only needed to resume training mid-run, which we
+        # don't support; keeping it was doubling disk usage for no benefit.
+        torch.save({'epoch':self.epoch,'global_step':self.global_step,'model_state':self.model.state_dict(),'best_val_loss':self.best_val_loss,'config':self.model.get_config_dict()},path)
 
     def load_checkpoint(self,path):
         ckpt=torch.load(path,map_location=self.device)
         self.model.load_state_dict(ckpt['model_state'])
-        self.optimizer.load_state_dict(ckpt['optimizer_state'])
         self.epoch=ckpt.get('epoch',0)
         self.global_step=ckpt.get('global_step',0)
         self.best_val_loss=ckpt.get('best_val_loss',float('inf'))

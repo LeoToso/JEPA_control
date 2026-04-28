@@ -34,7 +34,7 @@ training:
   vicreg_mu: 25.0
   vicreg_nu: 1.0
   use_vicreg: true
-  checkpoint_every: 10
+  checkpoint_every: 50
   log_wandb: false
 
 identification:
