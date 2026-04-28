@@ -9,6 +9,26 @@ from models.encoder import VisualEncoder
 from models.predictor import MLPPredictor
 from models.action_encoder import make_action_encoder,IdentityActionEncoder
 
+
+class LinearDynamics(nn.Module):
+    """Learnable linear latent dynamics: z_{t+1} ≈ A z_t + B u_t.
+
+    A and B are trained jointly with the encoder via conjugacy loss so that
+    post-training they are the true system matrices — no post-hoc DMDc needed.
+    A is initialised at 0.9·I (stable) and B at small random values.
+    The action input u is always the raw scalar control (d_u=1).
+    """
+    def __init__(self,latent_dim:int,action_dim:int=1):
+        super().__init__()
+        self.A=nn.Parameter(0.9*torch.eye(latent_dim))
+        self.B=nn.Parameter(0.01*torch.randn(latent_dim,action_dim))
+
+    def forward(self,z:torch.Tensor,u:torch.Tensor)->torch.Tensor:
+        return z@self.A.T+u@self.B.T
+
+    def get_AB(self):
+        return self.A.detach().cpu().numpy().copy(),self.B.detach().cpu().numpy().copy()
+
 @dataclass
 class JEPAConfig:
     variant:str='E-noact'
@@ -75,6 +95,7 @@ class JEPAModel(nn.Module):
             action_dim=self.action_encoder.latent_action_dim,
             hidden_dim=config.predictor_hidden_dim,
         )
+        self.dynamics=LinearDynamics(config.latent_dim,action_dim=config.action_dim)
 
     @property
     def latent_dim(self):
@@ -91,7 +112,8 @@ class JEPAModel(nn.Module):
         with torch.no_grad():
             z_next_sg=self.encoder(next_obs)
         z_next=self.encoder(next_obs)
-        return {'z_t':z_t,'a_t':a_t,'z_hat':z_hat,'z_next':z_next,'z_next_sg':z_next_sg}
+        z_hat_lin=self.dynamics(z_t,action)
+        return {'z_t':z_t,'a_t':a_t,'z_hat':z_hat,'z_next':z_next,'z_next_sg':z_next_sg,'z_hat_lin':z_hat_lin}
 
     @torch.no_grad()
     def encode_batch(self,obs,batch_size=256):

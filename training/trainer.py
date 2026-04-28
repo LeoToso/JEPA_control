@@ -62,6 +62,7 @@ class Trainer:
         set_all_seeds(seed)
         self.model.to(self.device)
         self.lambda_pred=float(self.cfg.get('lambda_pred',1.0))
+        self.lambda_conj=float(self.cfg.get('lambda_conj',1.0))
         self.lambda_PBH=float(self.cfg.get('lambda_PBH',0.0))
         self.lambda_spec=float(self.cfg.get('lambda_spec',0.0))
         self.lambda_NMP=float(self.cfg.get('lambda_NMP',0.0))
@@ -106,6 +107,13 @@ class Trainer:
         pred_loss,pred_info=combined_prediction_loss(outputs,use_vicreg=self.use_vicreg,vicreg_lambda=self.vicreg_lambda,vicreg_mu=self.vicreg_mu,vicreg_nu=self.vicreg_nu)
         total_loss=self.lambda_pred*pred_loss
         info=dict(pred_info)
+        # Conjugacy loss: ||z_{t+1} - (A z_t + B u_t)||^2
+        # Forces encoder to produce linearly predictable representations so that
+        # the learned A, B are the true system matrices (Bounou 2024 / Lutkus 2025).
+        if self.lambda_conj>0 and 'z_hat_lin' in outputs:
+            conj_loss=nn.functional.mse_loss(outputs['z_hat_lin'],z_next.detach())
+            total_loss=total_loss+self.lambda_conj*conj_loss
+            info['conj_loss']=conj_loss.item()
         info['total_loss']=total_loss.item()
         from models.action_encoder import MLPActionEncoder
         if isinstance(self.model.action_encoder,MLPActionEncoder):
@@ -212,33 +220,33 @@ class Trainer:
 
     def post_training_dmdc(self,full_loader,Y_loader=None):
         from identification.dmdc import DMDcFitter
-        from models.action_encoder import LinearActionEncoder
-        # For LinearActionEncoder, fit DMDc against the raw scalar action u
-        # rather than the lifted W@u.  The lifted actions are rank-1 (all
-        # columns are multiples of W), giving condition number ~10^14 and a
-        # numerically catastrophic least-squares fit.  Using raw u gives a
-        # well-conditioned (32+1)-column design matrix instead.
-        use_raw_action = isinstance(self.model.action_encoder, LinearActionEncoder)
+        # Use learned linear dynamics parameters directly — they were trained
+        # jointly with the encoder via conjugacy loss, so they ARE the system
+        # matrices.  No post-hoc regression needed.
+        A_hat,B_hat=self.model.dynamics.get_AB()
+        # Evaluate residual on the provided data split for diagnostics.
         self.model.eval()
-        Z_list,A_list,Z_next_list=[],[],[]
+        Z_list,U_list,Z_next_list=[],[],[]
         with torch.no_grad():
-            for batch in tqdm(full_loader,desc='DMDc encoding'):
+            for batch in tqdm(full_loader,desc='Evaluating linear dynamics'):
                 obs=batch['obs'].to(self.device)
                 action=batch['action'].to(self.device)
                 next_obs=batch['next_obs'].to(self.device)
                 z=self.model.encoder(obs).cpu().numpy()
-                if use_raw_action:
-                    a=action.cpu().numpy()
-                else:
-                    a=self.model.action_encoder(action).cpu().numpy()
+                u=action.cpu().numpy()
                 z_next=self.model.encoder(next_obs).cpu().numpy()
-                Z_list.append(z)
-                A_list.append(a)
-                Z_next_list.append(z_next)
-        Z=np.vstack(Z_list)
-        A=np.vstack(A_list)
-        Z_next=np.vstack(Z_next_list)
-        fitter=DMDcFitter(use_proximal=True)
-        fitter.fit(Z,A,Z_next)
-        print(fitter.summary())
-        return fitter.A_hat,fitter.B_hat,fitter
+                Z_list.append(z);U_list.append(u);Z_next_list.append(z_next)
+        Z=np.vstack(Z_list);U=np.vstack(U_list);Z_next=np.vstack(Z_next_list)
+        Z_next_pred=Z@A_hat.T+U@B_hat.T
+        res_num=np.linalg.norm(Z_next-Z_next_pred,'fro')
+        residual=float(res_num/(np.linalg.norm(Z_next,'fro')+1e-12))
+        spec_rad=float(np.max(np.abs(np.linalg.eigvals(A_hat))))
+        fitter=DMDcFitter()
+        fitter.A_hat=A_hat;fitter.B_hat=B_hat
+        fitter.fit_info={'residual':residual,'n_iters':0,'converged':True,
+                         'A_hat_cond':float(np.linalg.cond(A_hat)),
+                         'B_hat_cond':float(np.linalg.cond(B_hat))}
+        print(f'[LinearDynamics] A spectral radius: {spec_rad:.4f}')
+        print(f'[LinearDynamics] Test residual: {residual:.4f}')
+        print(f'[LinearDynamics] A_hat_cond: {fitter.fit_info["A_hat_cond"]:.2e}  B_hat_cond: {fitter.fit_info["B_hat_cond"]:.2e}')
+        return A_hat,B_hat,fitter

@@ -21,6 +21,7 @@ training:
   batch_size: 256
   epochs: 100
   lambda_pred: 1.0
+  lambda_conj: 1.0
   lambda_PBH: 0.0
   lambda_spec: 0.0
   lambda_NMP: 0.0
