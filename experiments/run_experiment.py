@@ -124,14 +124,9 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # Solve DARE on the pre-stabilised system; cl_eigs are on A_dare.
         K_hat,P_hat,cl_eigs_dare=solve_discrete_lqr(A_dare,B_hat,Q_lqr,R_lqr)
         max_cl_dare=float(np.max(np.abs(cl_eigs_dare)))
-        # Also report cl_eigs on original A_hat (phantom modes stay > 1; expected).
-        cl_eigs_orig=np.linalg.eigvals(A_hat-B_hat@K_hat)
-        max_cl_orig=float(np.max(np.abs(cl_eigs_orig)))
         print(f'[control] Max |cl_eig| (pre-stab A): {max_cl_dare:.4f}')
-        print(f'[control] Max |cl_eig| (original A): {max_cl_orig:.4f}')
-        print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}, max|K|: {np.max(np.abs(K_hat)):.3f}')
+        print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}')
         if max_cl_dare>=1.0:
-            # Even on the pre-stabilised system DARE didn't converge.
             warnings.warn(
                 f'LQR failed on pre-stabilised system (max|cl_eig|={max_cl_dare:.4f} >= 1).\n'
                 f'Likely cause: near-uncontrollable physical unstable mode (mu_S={probe_results.get("P2_1",{}).get("mu_S","?")}).\n'
@@ -139,16 +134,23 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             )
             ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig_dare':max_cl_dare,'n_trials':probe_cfg['n_trials_control']}
         else:
-            # Phantom modes cause max_cl_orig > 1 but the rollout uses the encoder
-            # directly (not A_hat propagation), so phantom latent dynamics don't
-            # affect the physical cartpole.  Run rollouts against the real env.
-            if max_cl_orig>=1.0:
-                warnings.warn(f'Phantom modes: max|cl_eig|={max_cl_orig:.4f} on original A_hat; '
-                               f'pre-stabilised cl_eig={max_cl_dare:.4f}. Running rollouts.')
-            # --- Sign diagnostic + automatic sign correction ---
-            # Physical sign convention: theta > 0 (pole tilts right) requires u > 0
-            # (push cart right) to restore upright equilibrium.  If K_hat was computed
-            # with an inverted B_hat sign, we auto-correct here.
+            # Augmented-state LQR: [z_t, z_{t-1}] gives the controller implicit
+            # velocity feedback via z_t - z_{t-1}, compensating for the missing
+            # velocity information in single-frame latent encodings.
+            d_aug=2*d
+            A_aug=np.zeros((d_aug,d_aug))
+            A_aug[:d,:d]=A_dare
+            A_aug[d:,:d]=np.eye(d)
+            B_aug=np.zeros((d_aug,d_u))
+            B_aug[:d]=B_hat
+            Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),0.1*Q_lqr]])
+            K_aug,_,cl_eigs_aug=solve_discrete_lqr(A_aug,B_aug,Q_aug,R_lqr)
+            max_cl_aug=float(np.max(np.abs(cl_eigs_aug)))
+            print(f'[control] Augmented LQR max|cl_eig|: {max_cl_aug:.4f}')
+            print(f'[control] K_aug norm: {np.linalg.norm(K_aug):.3f}')
+            # Sign check using K1 = K_aug[:, :d] (proportional part).
+            # At t=0 with z_prev=z_star this equals the full action.
+            K1=K_aug[:,:d]
             model.eval()
             sign_votes=[]
             for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
@@ -157,23 +159,19 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
                 with torch.no_grad():
                     _z=model.encoder(_obs_t).cpu().numpy()[0]
                 _dz=_z-z_star
-                _u=float(-K_hat@_dz)
+                _u=float(-K1@_dz)
                 _sign_ok=(_u>0 if _theta>0 else _u<0)
                 sign_votes.append(_sign_ok)
-                print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): '
-                      f'|Δz|={np.linalg.norm(_dz):.4f}  u={_u:.6f}  sign_ok={_sign_ok}')
+                print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  sign_ok={_sign_ok}')
             n_ok=sum(sign_votes)
             if n_ok==0:
-                K_hat=-K_hat
-                print('[control] SIGN FLIP: both sign checks failed — negating K_hat')
+                K_aug=-K_aug
+                print('[control] SIGN FLIP: negating K_aug')
             elif n_ok==1:
-                print('[control] WARNING: mixed sign checks (1/2 OK) — proceeding without flip')
+                print('[control] WARNING: mixed sign votes (1/2) — no flip')
             else:
-                print('[control] Sign checks passed (2/2 OK)')
-            # --- end sign diagnostic ---
-            # init_scale=0.05: matches training distribution, keeps theta_0
-            # well below 12-deg (0.2094 rad) termination boundary.
-            ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_hat,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
+                print('[control] Sign checks passed (2/2)')
+            ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_aug,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
             print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
     except Exception as exc:
         warnings.warn(f'Control validation failed: {exc}')

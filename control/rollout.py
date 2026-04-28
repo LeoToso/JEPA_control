@@ -8,10 +8,12 @@ import torch
 def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,
                        stabilization_threshold=0.1,settling_threshold=0.05,
                        device=None,z_star=None):
-    """Roll out u_t = -K(z_t - z_star) on the real environment.
+    """Roll out u_t = -K * aug_state on the real environment.
 
-    Fully-observed latent model: z_t = encoder(obs_t) is treated as the
-    complete latent state at every step.  No observer required.
+    If K_hat has shape (d_u, 2*d) it is treated as an augmented-state gain:
+      aug_state = [z_t - z_star; z_{t-1} - z_star]
+    giving the controller implicit velocity information (z_t - z_{t-1}).
+    Otherwise the standard u_t = -K(z_t - z_star) is used.
     """
     if device is None:
         try:
@@ -23,17 +25,26 @@ def rollout_latent_lqr(encoder,A_hat,B_hat,K_hat,env,x0,T=200,
     states,latent_states,actions,latent_actions=[],[],[],[]
     d=A_hat.shape[0]
     d_u=B_hat.shape[1]
+    use_aug=(K_hat.shape[1]==2*d)
     if z_star is None:
         z_star=np.zeros(d)
     settling_time=T
     x_star=np.zeros(4)
+    z_prev=None
     for t in range(T):
         states.append(state.copy())
         obs_t=torch.from_numpy(obs).float().permute(2,0,1)[None].to(device)/255.0
         with torch.no_grad():
             z_t=encoder(obs_t).cpu().numpy()[0]
         latent_states.append(z_t.copy())
-        a_t=-K_hat@(z_t-z_star)
+        if use_aug:
+            if z_prev is None:
+                z_prev=z_t
+            aug=np.concatenate([z_t-z_star,z_prev-z_star])
+            a_t=-K_hat@aug
+            z_prev=z_t
+        else:
+            a_t=-K_hat@(z_t-z_star)
         latent_actions.append(a_t.copy())
         try:
             u_scalar=float(np.clip(a_t[0],-10.0,10.0))
