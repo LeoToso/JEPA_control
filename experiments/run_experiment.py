@@ -58,7 +58,10 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     n_params=sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'\n[model] {encoder_variant} - {n_params:,} trainable parameters')
     from training.trainer import Trainer
-    variant_weights={'E-noact':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-spec':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.1),'E-PBH':dict(lambda_pred=1.0,lambda_PBH=0.1,lambda_spec=0.0),'E-both-r':dict(lambda_pred=1.0,lambda_PBH=0.1,lambda_spec=0.1),'E-lift':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-full':dict(lambda_pred=1.0,lambda_PBH=0.1,lambda_spec=0.1)}
+    # lambda_spec and lambda_PBH now act directly on model.dynamics.A/B
+    # (not mini_batch_dmdc), so the effective gradient scale is ~1 per unit.
+    # Use 1.0 for spectral (matches conjugacy loss scale) and 0.5 for PBH.
+    variant_weights={'E-noact':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-spec':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=1.0),'E-PBH':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=0.0),'E-both-r':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=1.0),'E-lift':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-full':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=1.0)}
     train_cfg_exp=dict(train_cfg)
     train_cfg_exp.update(variant_weights.get(encoder_variant,{}))
     trainer=Trainer(model=model,config_dict=train_cfg_exp,gt=gt,save_dir=str(out_dir/'checkpoints'),device=device,seed=seed)

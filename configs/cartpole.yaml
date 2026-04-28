@@ -26,6 +26,8 @@ training:
   lambda_spec: 0.0
   lambda_NMP: 0.0
   lambda_curv: 0.0
+  lambda_NMP: 0.0
+  lambda_curv: 0.0
   dmdc_window: 1000
   dmdc_refit_every: 50
   vicreg_lambda: 25.0

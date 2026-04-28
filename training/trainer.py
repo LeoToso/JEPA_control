@@ -120,21 +120,41 @@ class Trainer:
             recon_loss=self.model.action_encoder.reconstruction_loss(action)
             total_loss=total_loss+recon_loss
             info['action_recon_loss']=recon_loss.item()
-        if self.lambda_PBH>0 and is_train:
-            try:
-                _,pbh_info=pbh_stabilizability_loss(z_t.detach(),a_t.detach(),z_next.detach())
-                pbh_loss_grad,_=pbh_stabilizability_loss(z_t,a_t,z_next)
-                total_loss=total_loss+self.lambda_PBH*pbh_loss_grad
-                info.update(pbh_info)
-            except Exception as exc:
-                warnings.warn(f'PBH loss failed: {exc}')
-        if self.lambda_spec>0 and self.true_unstable_eigs is not None and is_train:
-            try:
-                spec_loss,spec_info=spectral_matching_loss(z_t,a_t,z_next,self.true_unstable_eigs)
-                total_loss=total_loss+self.lambda_spec*spec_loss
-                info.update(spec_info)
-            except Exception as exc:
-                warnings.warn(f'Spectral loss failed: {exc}')
+        # Spectral and PBH losses act directly on model.dynamics.A and B.
+        # The mini_batch_dmdc approach was indirect and inconsistent with the
+        # control-relevant matrices; this is the correct target.
+        if (self.lambda_spec>0 or self.lambda_PBH>0) and is_train and self.true_unstable_eigs is not None and len(self.true_unstable_eigs)>0:
+            A_dyn=self.model.dynamics.A
+            B_dyn=self.model.dynamics.B
+            d_dyn=A_dyn.shape[0]
+            if self.lambda_spec>0:
+                try:
+                    eigvals_dyn=torch.linalg.eigvals(A_dyn)
+                    true_eigs_t=torch.tensor(self.true_unstable_eigs,dtype=eigvals_dyn.dtype,device=eigvals_dyn.device)
+                    spec_terms=[]
+                    for lam_star in true_eigs_t:
+                        diff=eigvals_dyn-lam_star
+                        dist_sq=diff.real**2+diff.imag**2
+                        spec_terms.append(dist_sq.min())
+                    spec_loss_dyn=torch.stack(spec_terms).sum()
+                    total_loss=total_loss+self.lambda_spec*spec_loss_dyn
+                    info['spec_loss']=spec_loss_dyn.item()
+                except Exception as exc:
+                    warnings.warn(f'Spectral loss on dynamics failed: {exc}')
+            if self.lambda_PBH>0:
+                try:
+                    pbh_terms=[]
+                    for lam_star_val in self.true_unstable_eigs:
+                        lam_r=torch.tensor(float(np.real(lam_star_val)),dtype=A_dyn.dtype,device=A_dyn.device)
+                        M_S=torch.cat([lam_r*torch.eye(d_dyn,device=A_dyn.device,dtype=A_dyn.dtype)-A_dyn,B_dyn],dim=-1)
+                        sv=torch.linalg.svdvals(M_S)
+                        sigma_min=sv[-1]
+                        pbh_terms.append(-torch.log(sigma_min+1e-6))
+                    pbh_loss_dyn=torch.stack(pbh_terms).mean()
+                    total_loss=total_loss+self.lambda_PBH*pbh_loss_dyn
+                    info['pbh_loss']=pbh_loss_dyn.item()
+                except Exception as exc:
+                    warnings.warn(f'PBH loss on dynamics failed: {exc}')
         if self.lambda_NMP>0 and self.true_nmp_zeros is not None and self.C_hat_for_nmp is not None and is_train:
             try:
                 nmp_l,nmp_info=nmp_zero_loss(z_t,a_t,z_next,self.C_hat_for_nmp,self.true_nmp_zeros)
