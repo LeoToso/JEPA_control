@@ -1,7 +1,7 @@
-"""True-system closed-loop rollout with fully-observed latent LQR."""
+"""True-system closed-loop rollout: latent LQR and latent MPC variants."""
 from __future__ import annotations
 import warnings
-from typing import Optional,Dict,Any
+from typing import Optional, Dict, Any, List
 import numpy as np
 import torch
 
@@ -118,3 +118,171 @@ def evaluate_stabilization(encoder,A_hat,B_hat,K_hat,env,n_trials=100,T=200,
             'true_lqr_cost':float(np.mean(true_costs)) if true_costs else float('nan'),
             'latent_lqr_cost':float(np.mean(latent_costs)) if latent_costs else float('nan'),
             'n_trials':n_trials,'all_results':all_results}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MPC rollout
+# ─────────────────────────────────────────────────────────────────────────────
+
+def rollout_latent_mpc(
+    encoder,
+    mpc,
+    env,
+    x0: np.ndarray,
+    T: int = 200,
+    stabilization_threshold: float = 0.1,
+    settling_threshold: float = 0.05,
+    device=None,
+    z_star: Optional[np.ndarray] = None,
+    save_frames: bool = False,
+) -> Dict:
+    """Roll out a LatentMPC controller on the real environment.
+
+    At each re-planning event (every mpc.chunk_size steps) the controller
+    encodes the current observation, plans H steps ahead using the learned
+    linear dynamics, and deploys the first chunk_size actions before
+    re-planning.
+
+    Parameters
+    ----------
+    save_frames : if True, stores {'obs', 'pred_states', 't'} for every
+                  re-planning event (used for visualization).
+    """
+    if device is None:
+        try:
+            device = next(encoder.parameters()).device
+        except StopIteration:
+            device = torch.device('cpu')
+    encoder.eval()
+
+    d = mpc.A.shape[0]
+    if z_star is None:
+        z_star = np.zeros(d)
+    x_star = np.zeros(4)
+    settling_time = T
+
+    obs, state, _ = env.reset_to_state(x0)
+    states: List[np.ndarray] = []
+    latent_states: List[np.ndarray] = []
+    actions: List[np.ndarray] = []
+    frames: List[Dict] = []
+
+    # Buffer of actions planned but not yet applied (action chunking).
+    pending: List[np.ndarray] = []
+    z_t = np.zeros(d)
+
+    t = 0
+    while t < T:
+        states.append(state.copy())
+
+        obs_t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
+        with torch.no_grad():
+            z_t = encoder(obs_t).cpu().numpy()[0]
+        latent_states.append(z_t.copy())
+
+        # Re-plan when the action buffer is exhausted.
+        if len(pending) == 0:
+            chunk, pred_zs = mpc.plan(z_t, z_star)
+            pending = list(chunk)
+            if save_frames:
+                frames.append({'obs': obs.copy(), 'pred_states': pred_zs, 't': t})
+
+        u_vec = pending.pop(0)
+        u_scalar = float(np.clip(u_vec[0], mpc.action_lb, mpc.action_ub))
+        actions.append(np.array([u_scalar]))
+
+        obs, state, _, done, _ = env.step(u_scalar)
+        if np.linalg.norm(state - x_star) < settling_threshold and settling_time == T:
+            settling_time = t
+
+        t += 1
+        if done:
+            for _ in range(T - t):
+                states.append(state.copy())
+                latent_states.append(z_t.copy())
+                actions.append(np.array([0.0]))
+            break
+
+    states_arr = np.array(states)
+    latent_states_arr = np.array(latent_states)
+    actions_arr = np.array(actions)
+    final_error = float(np.linalg.norm(states_arr[-1] - x_star))
+
+    return {
+        'states': states_arr,
+        'latent_states': latent_states_arr,
+        'actions': actions_arr,
+        'frames': frames,
+        'final_state_error': final_error,
+        'stabilized': bool(final_error < stabilization_threshold),
+        'settling_time': settling_time,
+    }
+
+
+def evaluate_stabilization_mpc(
+    encoder,
+    mpc,
+    env,
+    n_trials: int = 100,
+    T: int = 200,
+    init_scale: float = 0.05,
+    stabilization_threshold: float = 0.1,
+    settling_threshold: float = 0.05,
+    seed: int = 0,
+    device=None,
+    z_star: Optional[np.ndarray] = None,
+    vis_trial: int = 0,
+) -> Dict:
+    """Evaluate a LatentMPC controller over multiple random initial conditions.
+
+    Parameters
+    ----------
+    vis_trial : index of the trial for which frames are saved (for visualization).
+                Set to -1 to disable frame saving entirely.
+    """
+    rng = np.random.RandomState(seed)
+    d = mpc.A.shape[0]
+    d_u = mpc.B.shape[1]
+    Q_phys = np.diag([1.0, 1.0, 10.0, 1.0])
+    R_phys = 0.01 * np.eye(1)
+
+    successes, settling_times, final_errors, true_costs = [], [], [], []
+    vis_result = None
+
+    for trial in range(n_trials):
+        x0 = rng.uniform(-init_scale, init_scale, size=4).astype(np.float32)
+        save = (trial == vis_trial)
+        try:
+            result = rollout_latent_mpc(
+                encoder=encoder, mpc=mpc, env=env, x0=x0, T=T,
+                stabilization_threshold=stabilization_threshold,
+                settling_threshold=settling_threshold,
+                device=device, z_star=z_star,
+                save_frames=save,
+            )
+            if save:
+                vis_result = result
+            successes.append(result['stabilized'])
+            settling_times.append(result['settling_time'])
+            final_errors.append(result['final_state_error'])
+            xs, us = result['states'], result['actions']
+            true_costs.append(
+                sum(float(xs[k] @ Q_phys @ xs[k] + us[k] @ R_phys @ us[k])
+                    for k in range(len(xs)))
+            )
+        except Exception as exc:
+            warnings.warn(f'MPC trial {trial} failed: {exc}')
+            successes.append(False)
+            settling_times.append(T)
+            final_errors.append(float('nan'))
+
+    return {
+        'success_rate': float(np.mean(successes)),
+        'mean_settling_time': float(np.mean(settling_times)),
+        'mean_final_error': float(np.nanmean(final_errors)),
+        'true_lqr_cost': float(np.mean(true_costs)) if true_costs else float('nan'),
+        'n_trials': n_trials,
+        'horizon': mpc.horizon,
+        'chunk_size': mpc.chunk_size,
+        'vis_result': vis_result,
+    }

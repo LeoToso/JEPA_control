@@ -53,12 +53,16 @@ probes:
   T_rollout: 200
 
 control:
-  Q_lqr: [1.0, 1.0, 10.0, 1.0]
   R_lqr: 0.01
-  observer_pole_scale: 0.8
+  init_scale: 0.05
   stabilization_threshold: 0.1
   settling_threshold: 0.05
-  pd_gamma: 5.0
+
+mpc:
+  horizon: 20
+  chunk_size: 1
+  Q_f_multiplier: 10.0
+  n_vis_frames: 8
 
 data:
   n_random: 50000

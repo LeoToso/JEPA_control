@@ -97,16 +97,27 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from probes.suite import run_all_probes
     probe_results=run_all_probes(model=model,encoder_variant=encoder_variant,dataset=data,gt=gt,rollout_data=rollout_data,paired_data=paired_data,env=env,device=device,config=probe_cfg)
     print('\n[control] Running control validation...')
-    from control.lqr import solve_discrete_lqr
-    from control.rollout import evaluate_stabilization
+    from control.lqr import solve_discrete_lqr, pre_stabilize_A
+    from control.mpc import LatentMPC
+    from control.rollout import evaluate_stabilization_mpc
+    from control.visualize import visualize_mpc_rollout
     d_u=B_hat.shape[1]
-    # Fully-observed latent model: Q = I_d, uniform cost on all latent dimensions.
+    mpc_cfg=cfg.get('mpc',{})
+    # Training uses single-step (obs, action, next_obs) transitions at
+    # dt=env_dt * frame_skip. MPC compounds this model for `horizon` steps.
+    mpc_horizon=int(mpc_cfg.get('horizon',20))
+    mpc_chunk=int(mpc_cfg.get('chunk_size',1))
+    mpc_Qf_mult=float(mpc_cfg.get('Q_f_multiplier',10.0))
+    n_vis_frames=int(mpc_cfg.get('n_vis_frames',8))
+    print(f'[control] MPC: horizon={mpc_horizon} steps '
+          f'({mpc_horizon*env_cfg["dt"]*frame_skip*1000:.0f} ms)  '
+          f'chunk={mpc_chunk}  training uses 1-step transitions')
+    # Cost matrices in latent space: Q=I_d (uniform), R=0.01, Q_f=mult*Q.
     Q_lqr=np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
-    print(f'[control] Q_lqr=I_{d} (fully-observed)  R={R_lqr[0,0]:.4f}')
-    # Compute z_star: latent encoding of the upright equilibrium image.
-    # The LQR control law u = -K(z - z_star) requires this offset so the
-    # controller drives the system to the physical equilibrium, not z=0.
+    Q_f=mpc_Qf_mult*Q_lqr
+    print(f'[control] Q=I_{d}  R={R_lqr[0,0]:.4f}  Q_f={mpc_Qf_mult:.1f}*Q')
+    # z_star: latent encoding of the upright equilibrium (all-zero physical state).
     model.eval()
     obs_eq,_,_=env.reset_to_state(np.zeros(4))
     obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
@@ -115,55 +126,62 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     ctrl_results={}
     try:
-        from control.lqr import pre_stabilize_A
-        # Pre-stabilise: deflate phantom eigenvalues before DARE so K_hat doesn't blow up.
-        A_dare,n_def=pre_stabilize_A(A_hat,gt.unstable_eigenvalues,tol=0.05,target=0.9)
+        # Pre-stabilise A: deflate phantom eigenvalues so MPC planning doesn't diverge.
+        A_mpc,n_def=pre_stabilize_A(A_hat,gt.unstable_eigenvalues,tol=0.05,target=0.9)
+        rho_mpc=float(np.max(np.abs(np.linalg.eigvals(A_mpc))))
         if n_def>0:
-            rho_dare=float(np.max(np.abs(np.linalg.eigvals(A_dare))))
-            print(f'[control] Pre-stabilised {n_def} phantom mode(s); A_dare rho={rho_dare:.4f}')
-        # Solve DARE on the pre-stabilised system; cl_eigs are on A_dare.
-        K_hat,P_hat,cl_eigs_dare=solve_discrete_lqr(A_dare,B_hat,Q_lqr,R_lqr)
-        max_cl_dare=float(np.max(np.abs(cl_eigs_dare)))
-        print(f'[control] Max |cl_eig| (pre-stab A): {max_cl_dare:.4f}')
-        print(f'[control] K_hat norm: {np.linalg.norm(K_hat):.3f}')
-        if max_cl_dare>=1.0:
-            warnings.warn(
-                f'LQR failed on pre-stabilised system (max|cl_eig|={max_cl_dare:.4f} >= 1).\n'
-                f'Likely cause: near-uncontrollable physical unstable mode (mu_S={probe_results.get("P2_1",{}).get("mu_S","?")}).\n'
-                f'Try: --dataset mixed.'
-            )
-            ctrl_results={'success_rate':0.0,'error':'lqr_unstable','max_cl_eig_dare':max_cl_dare,'n_trials':probe_cfg['n_trials_control']}
+            print(f'[control] Pre-stabilised {n_def} phantom mode(s); rho(A_mpc)={rho_mpc:.4f}')
         else:
-            # Sign check on K_hat before building augmented gain.
-            model.eval()
-            sign_votes=[]
-            for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
-                _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.]))
-                _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
-                with torch.no_grad():
-                    _z=model.encoder(_obs_t).cpu().numpy()[0]
-                _dz=_z-z_star
-                _u=float(-K_hat@_dz)
-                _sign_ok=(_u>0 if _theta>0 else _u<0)
-                sign_votes.append(_sign_ok)
-                print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  sign_ok={_sign_ok}')
-            n_ok=sum(sign_votes)
-            if n_ok==0:
-                K_hat=-K_hat
-                print('[control] SIGN FLIP: negating K_hat')
-            elif n_ok==1:
-                print('[control] WARNING: mixed sign votes (1/2) — no flip')
-            else:
-                print('[control] Sign checks passed (2/2)')
-            # PD augmented gain: u_t = -K(z_t-z*) - γ·K(z_t-z_{t-1})
-            # Equivalent to K_aug = [(1+γ)·K, -γ·K] on aug state [dz_t; dz_{t-1}].
-            # DARE on singular A_aug gives K₂≈0 so we construct the gain manually.
-            gamma_pd=float(ctrl_cfg.get('pd_gamma',5.0))
-            K_aug=np.hstack([(1+gamma_pd)*K_hat,-gamma_pd*K_hat])
-            print(f'[control] PD gain: gamma={gamma_pd}, K_aug norm={np.linalg.norm(K_aug):.3f}')
-            ctrl_results=evaluate_stabilization(encoder=model.encoder,A_hat=A_hat,B_hat=B_hat,K_hat=K_aug,env=env,n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],seed=seed,device=device,z_star=z_star,init_scale=0.05)
-            print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}')
+            print(f'[control] rho(A_mpc)={rho_mpc:.4f}  (no phantom modes deflated)')
+        # Sign check: use DARE gain as a proxy for the sign of B_hat.
+        # If both checks fail, B_hat has wrong sign → negate it at source so that
+        # MPC planning uses a model where u>0 moves the system in the correct direction.
+        K_sign,_,_=solve_discrete_lqr(A_mpc,B_hat,Q_lqr,R_lqr)
+        model.eval()
+        sign_votes=[]
+        for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
+            _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.],dtype=np.float32))
+            _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
+            with torch.no_grad():
+                _z=model.encoder(_obs_t).cpu().numpy()[0]
+            _u=float(-K_sign@(_z-z_star))
+            _ok=(_u>0 if _theta>0 else _u<0)
+            sign_votes.append(_ok)
+            print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  ok={_ok}')
+        n_ok=sum(sign_votes)
+        if n_ok==0:
+            B_hat=-B_hat
+            print('[control] SIGN FLIP: negating B_hat (fixed at source for MPC)')
+        elif n_ok==1:
+            print('[control] WARNING: mixed sign votes — no flip')
+        else:
+            print('[control] Sign checks passed (2/2)')
+        # Build MPC with pre-stabilised A and sign-corrected B.
+        mpc=LatentMPC(A=A_mpc,B=B_hat,Q=Q_lqr,R=R_lqr,
+                      horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f,
+                      action_lb=float(env_cfg.get('action_range',[-10,10])[0]),
+                      action_ub=float(env_cfg.get('action_range',[-10,10])[1]))
+        print(f'[control] {mpc.summary()}')
+        ctrl_results=evaluate_stabilization_mpc(
+            encoder=model.encoder,mpc=mpc,env=env,
+            n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],
+            init_scale=float(ctrl_cfg.get('init_scale',0.05)),
+            stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold',0.1)),
+            settling_threshold=float(ctrl_cfg.get('settling_threshold',0.05)),
+            seed=seed,device=device,z_star=z_star,vis_trial=0)
+        print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}  '
+              f'mean_settling: {ctrl_results["mean_settling_time"]:.1f}  '
+              f'mean_final_err: {ctrl_results["mean_final_error"]:.4f}')
+        # Save visualization for the first trial.
+        vis_result=ctrl_results.pop('vis_result',None)
+        if vis_result is not None:
+            visualize_mpc_rollout(
+                vis_result,
+                out_path=out_dir/'mpc_rollout_vis.png',
+                n_frames=n_vis_frames,
+                title=f'{exp_name}  H={mpc_horizon}  chunk={mpc_chunk}')
     except Exception as exc:
+        import traceback; traceback.print_exc()
         warnings.warn(f'Control validation failed: {exc}')
         ctrl_results={'error':str(exc)}
     env.close()
