@@ -206,7 +206,13 @@ def rollout_latent_mpc(
     states_arr = np.array(states)
     latent_states_arr = np.array(latent_states)
     actions_arr = np.array(actions)
-    final_error = float(np.linalg.norm(states_arr[-1] - x_star))
+
+    n_real = t  # number of real (non-padded) timesteps
+    final_error = float(np.linalg.norm(states_arr[n_real - 1] - x_star))
+
+    # Fraction of real timesteps where ||state|| < settling_threshold.
+    real_errors = np.linalg.norm(states_arr[:n_real] - x_star, axis=1)
+    fraction_stable = float(np.mean(real_errors < settling_threshold))
 
     return {
         'states': states_arr,
@@ -216,6 +222,8 @@ def rollout_latent_mpc(
         'final_state_error': final_error,
         'stabilized': bool(final_error < stabilization_threshold),
         'settling_time': settling_time,
+        'done_at': n_real,           # episode length before done / T
+        'fraction_stable': fraction_stable,  # fraction of time near equilibrium
     }
 
 
@@ -247,6 +255,7 @@ def evaluate_stabilization_mpc(
     R_phys = 0.01 * np.eye(1)
 
     successes, settling_times, final_errors, true_costs = [], [], [], []
+    done_ats, frac_stables = [], []
     vis_result = None
 
     for trial in range(n_trials):
@@ -265,21 +274,27 @@ def evaluate_stabilization_mpc(
             successes.append(result['stabilized'])
             settling_times.append(result['settling_time'])
             final_errors.append(result['final_state_error'])
+            done_ats.append(result['done_at'])
+            frac_stables.append(result['fraction_stable'])
             xs, us = result['states'], result['actions']
             true_costs.append(
                 sum(float(xs[k] @ Q_phys @ xs[k] + us[k] @ R_phys @ us[k])
-                    for k in range(len(xs)))
+                    for k in range(result['done_at']))
             )
         except Exception as exc:
             warnings.warn(f'MPC trial {trial} failed: {exc}')
             successes.append(False)
             settling_times.append(T)
             final_errors.append(float('nan'))
+            done_ats.append(0)
+            frac_stables.append(0.0)
 
     return {
         'success_rate': float(np.mean(successes)),
         'mean_settling_time': float(np.mean(settling_times)),
         'mean_final_error': float(np.nanmean(final_errors)),
+        'mean_episode_length': float(np.mean(done_ats)),  # avg steps before done
+        'mean_fraction_stable': float(np.mean(frac_stables)),  # avg time near eq.
         'true_lqr_cost': float(np.mean(true_costs)) if true_costs else float('nan'),
         'n_trials': n_trials,
         'horizon': mpc.horizon,

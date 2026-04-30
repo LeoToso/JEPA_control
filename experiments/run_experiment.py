@@ -169,9 +169,10 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold',0.1)),
             settling_threshold=float(ctrl_cfg.get('settling_threshold',0.05)),
             seed=seed,device=device,z_star=z_star,vis_trial=0)
-        print(f'[control] Success rate: {ctrl_results["success_rate"]:.3f}  '
-              f'mean_settling: {ctrl_results["mean_settling_time"]:.1f}  '
-              f'mean_final_err: {ctrl_results["mean_final_error"]:.4f}')
+        print(f'[control] Success rate:       {ctrl_results["success_rate"]:.3f}')
+        print(f'[control] Mean episode length: {ctrl_results["mean_episode_length"]:.1f} / {probe_cfg["T_rollout"]} steps')
+        print(f'[control] Mean frac stable:    {ctrl_results["mean_fraction_stable"]:.3f}  (fraction of time ||state|| < settling_thr)')
+        print(f'[control] Mean final error:    {ctrl_results["mean_final_error"]:.4f}')
         # Save visualization for the first trial.
         vis_result=ctrl_results.pop('vis_result',None)
         if vis_result is not None:

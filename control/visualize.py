@@ -93,8 +93,17 @@ def visualize_mpc_rollout(
         ax_a.axvline(fd["t"], color="gray", linestyle=":", linewidth=0.4, alpha=0.5)
     ax_a.set_xlabel("timestep")
     ax_a.set_ylabel("action u")
-    ax_a.set_title("Control input (│ = re-plan)")
+    ax_a.set_title("Control input (│ = re-plan,  ✕ = done)")
     ax_a.legend(fontsize=7)
+
+    # Mark episode termination (done) on both plots if episode ended early.
+    done_at = result.get("done_at", T)
+    if done_at < T:
+        for ax in (ax_s, ax_a):
+            ax.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
+                       label=f"done t={done_at}")
+        ax_s.legend(fontsize=7, loc="upper right", ncol=2)
+        ax_a.legend(fontsize=7)
 
     stabilized = result.get("stabilized", False)
     final_err = result.get("final_state_error", float("nan"))
