@@ -124,39 +124,13 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     # W (4,d) maps latent deviation dz = z-z* to physical state deviation.
     # Concentrates cost on the ~4 dims that encode theta/x, suppresses noise dims.
     Q_lqr=np.eye(d)  # fallback
-    # Generate W probe with varied x position to test whether the encoder encodes x.
-    # rollout_data uses x0=±0.05 (nearly zero x variation), making W's x-row unreliable.
-    # Here we sweep x ∈ [-2.0, 2.0] while keeping theta small (near-upright).
-    _rng_w=np.random.RandomState(314)
-    _w_zs=[]; _w_xs=[]
-    model.eval()
-    for _ in range(2000):
-        _x0=np.array([_rng_w.uniform(-2.0,2.0),_rng_w.uniform(-1.0,1.0),
-                      _rng_w.uniform(-0.08,0.08),_rng_w.uniform(-0.1,0.1)],
-                     dtype=np.float32)
-        _obs_w,_st_w,_=env.reset_to_state(_x0)
-        _obs_wt=torch.from_numpy(_obs_w).float().permute(2,0,1)[None].to(device)/255.0
-        with torch.no_grad():
-            _z_w=model.encoder(_obs_wt).cpu().numpy()[0]
-        _w_xs.append(_st_w.copy()); _w_zs.append(_z_w)
-    _Z_flat=np.array(_w_zs); _X_flat=np.array(_w_xs)
+    _Z_flat=rollout_data['latent_states'].reshape(-1,d)
+    _X_flat=rollout_data['states'].reshape(-1,4)
     _dZ=_Z_flat-z_star[None,:]
     if len(_dZ)>50:
         _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
         W_probe=_W_T[:-1].T  # (4,d)
-        print(f'[control] W row norms: x={np.linalg.norm(W_probe[0,:]):.3f}  '
-              f'xdot={np.linalg.norm(W_probe[1,:]):.3f}  '
-              f'theta={np.linalg.norm(W_probe[2,:]):.3f}  '
-              f'thetadot={np.linalg.norm(W_probe[3,:]):.3f}')
-        # Desired effective cost per unit physical deviation (theta > x for stability).
-        # Q_phys[i] = desired[i] / ||W[i,:]||² so that W^T Q_phys W gives the right ratio.
-        _desired=np.array([10.0,1.0,100.0,10.0])  # x, xdot, theta, thetadot
-        _w_row_sq=np.sum(W_probe**2,axis=1)+1e-8
-        _q_phys_diag=_desired/_w_row_sq
-        print(f'[control] Q_phys (norm-adjusted): x={_q_phys_diag[0]:.1f}  '
-              f'xdot={_q_phys_diag[1]:.1f}  theta={_q_phys_diag[2]:.1f}  '
-              f'thetadot={_q_phys_diag[3]:.1f}  (effective: {_desired})')
-        Q_phys_ctrl=np.diag(_q_phys_diag)
+        Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
         Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
         Q_z*=d/(np.trace(Q_z)+1e-12)
         Q_lqr=Q_z
