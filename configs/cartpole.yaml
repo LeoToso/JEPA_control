@@ -59,9 +59,9 @@ control:
   settling_threshold: 0.05
 
 mpc:
-  horizon: 10
-  chunk_size: 1
-  Q_f_multiplier: 50.0
+  horizon: 30
+  chunk_size: 5
+  Q_f_multiplier: 10.0
   n_vis_frames: 8
   n_seq_steps: 10000      # sequential transitions for 2nd-order system ID
   history_cost_weight: 0.01  # weight on z_{t-1} component in augmented Q
