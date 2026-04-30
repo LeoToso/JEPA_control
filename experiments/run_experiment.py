@@ -124,16 +124,16 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     ctrl_results={}
     try:
         # ── 2nd-order dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t ──────
-        # A2 encodes velocity via Takens delay embedding (single-frame encoder
-        # only sees position; consecutive frame pair implicitly gives velocity).
-        # The augmented MPC state [z_t, z_{t-1}] gives K₂ ≠ 0 in the Riccati.
+        # A1=A_hat (from LinearDynamics, known-good spectral structure).
+        # A2 fitted from 1st-order residuals captures velocity via Takens embedding.
+        # Jointly fitting A1 from random rollouts produces phantom modes — avoid it.
         A1,A2,B_2nd,info_2nd=trainer.post_training_2nd_order(
-            env,n_steps=n_seq_steps,seed=seed)
-        # Pre-stabilise A1 (phantom deflation, same as before).
+            env,A1_fixed=A_hat,B_fixed=B_hat,n_steps=n_seq_steps,seed=seed)
+        # Pre-stabilise A1 using the known-good A_hat (expects 0 deflations for E-full).
         A1_mpc,n_def=pre_stabilize_A(A1,gt.unstable_eigenvalues,tol=0.05,target=0.9)
         rho_mpc=float(np.max(np.abs(np.linalg.eigvals(A1_mpc))))
         print(f'[control] A1 pre-stab: deflated={n_def}  rho={rho_mpc:.4f}')
-        # Sign check on A1, B_2nd using 1st-order DARE proxy.
+        # Sign check using A_hat directly (same check that worked in 1st-order MPC).
         K_sign,_,_=solve_discrete_lqr(A1_mpc,B_2nd,Q_lqr,R_lqr)
         model.eval()
         sign_votes=[]

@@ -261,24 +261,43 @@ class Trainer:
                 z_cur=encode(obs); z_prv=z_cur.copy()
         return np.array(Z_prev),np.array(Z_curr),np.array(U_list),np.array(Z_next)
 
-    def post_training_2nd_order(self,env,n_steps=10000,seed=123):
-        """Fit z_{t+1}=A1 z_t+A2 z_{t-1}+B u_t on sequential env rollouts.
+    def post_training_2nd_order(self,env,A1_fixed=None,B_fixed=None,n_steps=10000,seed=123):
+        """Fit velocity correction A2 for z_{t+1}=A1 z_t+A2 z_{t-1}+B u_t.
 
-        A2 encodes velocity information via Takens delay embedding, solving
-        the velocity-blindness problem of single-frame encoders.
+        When A1_fixed and B_fixed are supplied (recommended: use the learned
+        LinearDynamics A, B), only A2 is fitted from residuals. This preserves
+        the spectral structure of A1 and avoids phantom-mode proliferation that
+        arises when A1 is fitted jointly on short random-action rollouts.
+
+        A2 captures velocity via Takens delay embedding:
+          residual_t = z_{t+1} - A1 z_t - B u_t ≈ A2 z_{t-1}
         """
-        from identification.dmdc import fit_second_order
         print(f'[2nd-order] Collecting {n_steps} sequential transitions...')
         Z_prev,Z_curr,U,Z_next=self.collect_sequential_data(env,n_steps=n_steps,seed=seed)
-        A1,A2,B=fit_second_order(Z_prev,Z_curr,U,Z_next)
-        Z_next_pred=Z_curr@A1.T+Z_prev@A2.T+U@B.T
-        res=float(np.linalg.norm(Z_next-Z_next_pred,'fro')/(np.linalg.norm(Z_next,'fro')+1e-12))
-        a2_norm=float(np.linalg.norm(A2,'fro'))
-        print(f'[2nd-order] A1 rho={np.max(np.abs(np.linalg.eigvals(A1))):.4f}'
-              f'  ||A2||_F={a2_norm:.4f}  residual={res:.4f}')
+        if A1_fixed is not None and B_fixed is not None:
+            # Fixed A1, B: fit only velocity correction A2 from 1st-order residuals.
+            Z_res=Z_next-Z_curr@A1_fixed.T-U@B_fixed.T
+            A2_T,_,_,_=np.linalg.lstsq(Z_prev,Z_res,rcond=1e-5)
+            A2=A2_T.T
+            A1,B=A1_fixed,B_fixed
+            res_1st=float(np.linalg.norm(Z_res,'fro')/(np.linalg.norm(Z_next,'fro')+1e-12))
+            Z_next_pred=Z_curr@A1.T+Z_prev@A2.T+U@B.T
+            res=float(np.linalg.norm(Z_next-Z_next_pred,'fro')/(np.linalg.norm(Z_next,'fro')+1e-12))
+            a2_norm=float(np.linalg.norm(A2,'fro'))
+            print(f'[2nd-order] 1st-order residual={res_1st:.4f} → 2nd-order residual={res:.4f}'
+                  f'  ||A2||_F={a2_norm:.4f}  rho(A1)={np.max(np.abs(np.linalg.eigvals(A1))):.4f}')
+        else:
+            # Joint fit of A1, A2, B (may produce phantom modes on short rollouts).
+            from identification.dmdc import fit_second_order
+            A1,A2,B=fit_second_order(Z_prev,Z_curr,U,Z_next)
+            Z_next_pred=Z_curr@A1.T+Z_prev@A2.T+U@B.T
+            res=float(np.linalg.norm(Z_next-Z_next_pred,'fro')/(np.linalg.norm(Z_next,'fro')+1e-12))
+            a2_norm=float(np.linalg.norm(A2,'fro')); res_1st=float('nan')
+            print(f'[2nd-order] A1 rho={np.max(np.abs(np.linalg.eigvals(A1))):.4f}'
+                  f'  ||A2||_F={a2_norm:.4f}  residual={res:.4f}')
         if a2_norm<1e-4:
             warnings.warn('A2≈0: 2nd-order model adds no velocity info.')
-        return A1,A2,B,{'residual':res,'A2_norm':a2_norm}
+        return A1,A2,B,{'residual':res,'residual_1st':res_1st,'A2_norm':a2_norm}
 
     def post_training_dmdc(self,full_loader,Y_loader=None):
         from identification.dmdc import DMDcFitter
