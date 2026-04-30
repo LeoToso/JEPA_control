@@ -112,15 +112,33 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     dt_eff=env_cfg['dt']*frame_skip
     print(f'[control] MPC: horizon={mpc_horizon} steps ({mpc_horizon*dt_eff*1000:.0f} ms)'
           f'  chunk={mpc_chunk}  training: 1-step transitions at dt={dt_eff*1000:.0f} ms')
-    Q_lqr=np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
-    print(f'[control] Q=I_{d}  R={R_lqr[0,0]:.4f}  Q_f={mpc_Qf_mult:.1f}*Q')
+    print(f'[control] R={R_lqr[0,0]:.4f}  Q_f={mpc_Qf_mult:.1f}*Q  hist_w={hist_weight}')
     model.eval()
     obs_eq,_,_=env.reset_to_state(np.zeros(4))
     obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
     with torch.no_grad():
         z_star=model.encoder(obs_eq_t).cpu().numpy()[0]
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
+    # Physics-weighted latent Q: Q_z = W^T @ Q_phys @ W.
+    # W (4,d) maps latent deviation dz = z-z* to physical state deviation.
+    # Concentrates cost on the ~4 dims that encode theta/x, suppresses noise dims.
+    Q_lqr=np.eye(d)  # fallback
+    _Z_flat=rollout_data['latent_states'].reshape(-1,d)
+    _X_flat=rollout_data['states'].reshape(-1,4)
+    _dZ=_Z_flat-z_star[None,:]
+    if len(_dZ)>50:
+        _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
+        W_probe=_W_T[:-1].T  # (4,d)
+        Q_phys_ctrl=np.diag([1.0,0.01,100.0,0.01])  # theta=100, x=1, velocities small
+        Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
+        Q_z*=d/(np.trace(Q_z)+1e-12)  # normalize so trace(Q_z)=d, same scale as I_d
+        Q_lqr=Q_z
+        print(f'[control] Physics-weighted Q: ||W||={np.linalg.norm(W_probe):.3f}  '
+              f'trace(Q)/d={np.trace(Q_lqr)/d:.3f}  '
+              f'||Q||_F={np.linalg.norm(Q_lqr,"fro"):.3f}')
+    else:
+        print('[control] Insufficient rollout data; keeping Q=I')
     ctrl_results={}
     try:
         # ── 2nd-order dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t ──────

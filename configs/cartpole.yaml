@@ -64,7 +64,7 @@ mpc:
   Q_f_multiplier: 10.0
   n_vis_frames: 8
   n_seq_steps: 10000      # sequential transitions for 2nd-order system ID
-  history_cost_weight: 0.1  # weight on z_{t-1} component in augmented Q
+  history_cost_weight: 0.01  # weight on z_{t-1} component in augmented Q
 
 data:
   n_random: 50000
