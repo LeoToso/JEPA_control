@@ -148,7 +148,15 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
               f'xdot={np.linalg.norm(W_probe[1,:]):.3f}  '
               f'theta={np.linalg.norm(W_probe[2,:]):.3f}  '
               f'thetadot={np.linalg.norm(W_probe[3,:]):.3f}')
-        Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
+        # Desired effective cost per unit physical deviation (theta > x for stability).
+        # Q_phys[i] = desired[i] / ||W[i,:]||² so that W^T Q_phys W gives the right ratio.
+        _desired=np.array([10.0,1.0,100.0,10.0])  # x, xdot, theta, thetadot
+        _w_row_sq=np.sum(W_probe**2,axis=1)+1e-8
+        _q_phys_diag=_desired/_w_row_sq
+        print(f'[control] Q_phys (norm-adjusted): x={_q_phys_diag[0]:.1f}  '
+              f'xdot={_q_phys_diag[1]:.1f}  theta={_q_phys_diag[2]:.1f}  '
+              f'thetadot={_q_phys_diag[3]:.1f}  (effective: {_desired})')
+        Q_phys_ctrl=np.diag(_q_phys_diag)
         Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
         Q_z*=d/(np.trace(Q_z)+1e-12)
         Q_lqr=Q_z
