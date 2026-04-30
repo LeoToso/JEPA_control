@@ -130,7 +130,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     if len(_dZ)>50:
         _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
         W_probe=_W_T[:-1].T  # (4,d)
-        Q_phys_ctrl=np.diag([1.0,0.01,100.0,0.01])  # theta=100, x=1, velocities small
+        Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])  # theta=100, x=10, velocities small
         Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
         Q_z*=d/(np.trace(Q_z)+1e-12)  # normalize so trace(Q_z)=d, same scale as I_d
         Q_lqr=Q_z
