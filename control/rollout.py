@@ -155,9 +155,13 @@ def rollout_latent_mpc(
             device = torch.device('cpu')
     encoder.eval()
 
-    d = mpc.A.shape[0]
+    d_mpc = mpc.A.shape[0]
+    # Detect augmented-state MPC: A is (2d × 2d) built from 2nd-order dynamics.
+    # In that case we maintain z_prev and pass [z_t, z_{t-1}] as the MPC state.
+    d_lat = d_mpc // 2 if d_mpc % 2 == 0 else d_mpc   # actual latent dim
+    use_aug_state = False  # determined after first encode
     if z_star is None:
-        z_star = np.zeros(d)
+        z_star = np.zeros(d_lat)
     x_star = np.zeros(4)
     settling_time = T
 
@@ -167,9 +171,9 @@ def rollout_latent_mpc(
     actions: List[np.ndarray] = []
     frames: List[Dict] = []
 
-    # Buffer of actions planned but not yet applied (action chunking).
     pending: List[np.ndarray] = []
-    z_t = np.zeros(d)
+    z_t = np.zeros(d_lat)
+    z_prev: Optional[np.ndarray] = None
 
     t = 0
     while t < T:
@@ -180,12 +184,24 @@ def rollout_latent_mpc(
             z_t = encoder(obs_t).cpu().numpy()[0]
         latent_states.append(z_t.copy())
 
+        # Determine if MPC expects augmented state [z_t, z_{t-1}] on first step.
+        if t == 0:
+            use_aug_state = (d_mpc == 2 * len(z_t))
+
         # Re-plan when the action buffer is exhausted.
         if len(pending) == 0:
-            chunk, pred_zs = mpc.plan(z_t, z_star)
+            if use_aug_state:
+                z_p = z_t if z_prev is None else z_prev
+                s_t = np.concatenate([z_t, z_p])
+                s_star = np.concatenate([z_star, z_star])
+                chunk, pred_zs = mpc.plan(s_t, s_star)
+            else:
+                chunk, pred_zs = mpc.plan(z_t, z_star)
             pending = list(chunk)
             if save_frames:
                 frames.append({'obs': obs.copy(), 'pred_states': pred_zs, 't': t})
+
+        z_prev = z_t
 
         u_vec = pending.pop(0)
         u_scalar = float(np.clip(u_vec[0], mpc.action_lb, mpc.action_ub))

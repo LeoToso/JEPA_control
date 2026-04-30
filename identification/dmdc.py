@@ -7,6 +7,24 @@ import numpy as np
 import scipy.linalg
 
 
+def fit_second_order(Z_prev, Z_curr, U, Z_next, rcond=1e-10):
+    """Fit 2nd-order latent dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t.
+
+    Using consecutive pairs (z_{t-1}, z_t) gives the MPC implicit velocity
+    information via the Takens delay-embedding principle, solving the
+    velocity-blindness problem of single-frame encoders.
+    """
+    d = Z_curr.shape[1]
+    d_u = U.shape[1]
+    X = np.hstack([Z_curr, Z_prev, U])   # (N, 2d+d_u)
+    Y = Z_next                            # (N, d)
+    Theta, _, _, _ = np.linalg.lstsq(X, Y, rcond=rcond)
+    A1 = Theta[:d].T          # (d, d)  current-state gain
+    A2 = Theta[d:2*d].T       # (d, d)  history gain  — provides velocity info
+    B  = Theta[2*d:].T        # (d, d_u)
+    return A1, A2, B
+
+
 def fit_dmdc(Z, A_actions, Z_next, rcond=1e-10):
     N, d = Z.shape; d_u = A_actions.shape[1]
     X = np.hstack([Z, A_actions]); Y = Z_next

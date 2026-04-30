@@ -236,6 +236,50 @@ class Trainer:
             print(f'[train] Restored best model from memory (val_loss={self.best_val_loss:.4f})')
         return history
 
+    def collect_sequential_data(self,env,n_steps=10000,seed=123):
+        """Random-action rollouts → consecutive (z_{t-1}, z_t, u, z_{t+1}) tuples."""
+        import torch
+        rng=np.random.RandomState(seed)
+        self.model.eval()
+        device=self.device
+        def encode(obs_np):
+            t=torch.from_numpy(obs_np).float().permute(2,0,1)[None].to(device)/255.0
+            with torch.no_grad():
+                return self.model.encoder(t).cpu().numpy()[0]
+        Z_prev,Z_curr,U_list,Z_next=[],[],[],[]
+        obs,_,_=env.reset_to_state(rng.uniform(-0.1,0.1,4).astype(np.float32))
+        z_cur=encode(obs); z_prv=z_cur.copy()
+        for _ in range(n_steps):
+            u=rng.uniform(-5.0,5.0)
+            obs_next,_,_,done,_=env.step(u)
+            z_nxt=encode(obs_next)
+            Z_prev.append(z_prv.copy()); Z_curr.append(z_cur.copy())
+            U_list.append(np.array([u])); Z_next.append(z_nxt.copy())
+            z_prv=z_cur; z_cur=z_nxt
+            if done:
+                obs,_,_=env.reset_to_state(rng.uniform(-0.1,0.1,4).astype(np.float32))
+                z_cur=encode(obs); z_prv=z_cur.copy()
+        return np.array(Z_prev),np.array(Z_curr),np.array(U_list),np.array(Z_next)
+
+    def post_training_2nd_order(self,env,n_steps=10000,seed=123):
+        """Fit z_{t+1}=A1 z_t+A2 z_{t-1}+B u_t on sequential env rollouts.
+
+        A2 encodes velocity information via Takens delay embedding, solving
+        the velocity-blindness problem of single-frame encoders.
+        """
+        from identification.dmdc import fit_second_order
+        print(f'[2nd-order] Collecting {n_steps} sequential transitions...')
+        Z_prev,Z_curr,U,Z_next=self.collect_sequential_data(env,n_steps=n_steps,seed=seed)
+        A1,A2,B=fit_second_order(Z_prev,Z_curr,U,Z_next)
+        Z_next_pred=Z_curr@A1.T+Z_prev@A2.T+U@B.T
+        res=float(np.linalg.norm(Z_next-Z_next_pred,'fro')/(np.linalg.norm(Z_next,'fro')+1e-12))
+        a2_norm=float(np.linalg.norm(A2,'fro'))
+        print(f'[2nd-order] A1 rho={np.max(np.abs(np.linalg.eigvals(A1))):.4f}'
+              f'  ||A2||_F={a2_norm:.4f}  residual={res:.4f}')
+        if a2_norm<1e-4:
+            warnings.warn('A2≈0: 2nd-order model adds no velocity info.')
+        return A1,A2,B,{'residual':res,'A2_norm':a2_norm}
+
     def post_training_dmdc(self,full_loader,Y_loader=None):
         from identification.dmdc import DMDcFitter
         # Use learned linear dynamics parameters directly — they were trained

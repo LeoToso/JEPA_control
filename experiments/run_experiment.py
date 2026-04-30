@@ -103,21 +103,18 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from control.visualize import visualize_mpc_rollout
     d_u=B_hat.shape[1]
     mpc_cfg=cfg.get('mpc',{})
-    # Training uses single-step (obs, action, next_obs) transitions at
-    # dt=env_dt * frame_skip. MPC compounds this model for `horizon` steps.
     mpc_horizon=int(mpc_cfg.get('horizon',20))
     mpc_chunk=int(mpc_cfg.get('chunk_size',1))
     mpc_Qf_mult=float(mpc_cfg.get('Q_f_multiplier',10.0))
     n_vis_frames=int(mpc_cfg.get('n_vis_frames',8))
-    print(f'[control] MPC: horizon={mpc_horizon} steps '
-          f'({mpc_horizon*env_cfg["dt"]*frame_skip*1000:.0f} ms)  '
-          f'chunk={mpc_chunk}  training uses 1-step transitions')
-    # Cost matrices in latent space: Q=I_d (uniform), R=0.01, Q_f=mult*Q.
+    n_seq_steps=int(mpc_cfg.get('n_seq_steps',10000))
+    hist_weight=float(mpc_cfg.get('history_cost_weight',0.1))
+    dt_eff=env_cfg['dt']*frame_skip
+    print(f'[control] MPC: horizon={mpc_horizon} steps ({mpc_horizon*dt_eff*1000:.0f} ms)'
+          f'  chunk={mpc_chunk}  training: 1-step transitions at dt={dt_eff*1000:.0f} ms')
     Q_lqr=np.eye(d)
     R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
-    Q_f=mpc_Qf_mult*Q_lqr
     print(f'[control] Q=I_{d}  R={R_lqr[0,0]:.4f}  Q_f={mpc_Qf_mult:.1f}*Q')
-    # z_star: latent encoding of the upright equilibrium (all-zero physical state).
     model.eval()
     obs_eq,_,_=env.reset_to_state(np.zeros(4))
     obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
@@ -126,17 +123,18 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     ctrl_results={}
     try:
-        # Pre-stabilise A: deflate phantom eigenvalues so MPC planning doesn't diverge.
-        A_mpc,n_def=pre_stabilize_A(A_hat,gt.unstable_eigenvalues,tol=0.05,target=0.9)
-        rho_mpc=float(np.max(np.abs(np.linalg.eigvals(A_mpc))))
-        if n_def>0:
-            print(f'[control] Pre-stabilised {n_def} phantom mode(s); rho(A_mpc)={rho_mpc:.4f}')
-        else:
-            print(f'[control] rho(A_mpc)={rho_mpc:.4f}  (no phantom modes deflated)')
-        # Sign check: use DARE gain as a proxy for the sign of B_hat.
-        # If both checks fail, B_hat has wrong sign → negate it at source so that
-        # MPC planning uses a model where u>0 moves the system in the correct direction.
-        K_sign,_,_=solve_discrete_lqr(A_mpc,B_hat,Q_lqr,R_lqr)
+        # ── 2nd-order dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t ──────
+        # A2 encodes velocity via Takens delay embedding (single-frame encoder
+        # only sees position; consecutive frame pair implicitly gives velocity).
+        # The augmented MPC state [z_t, z_{t-1}] gives K₂ ≠ 0 in the Riccati.
+        A1,A2,B_2nd,info_2nd=trainer.post_training_2nd_order(
+            env,n_steps=n_seq_steps,seed=seed)
+        # Pre-stabilise A1 (phantom deflation, same as before).
+        A1_mpc,n_def=pre_stabilize_A(A1,gt.unstable_eigenvalues,tol=0.05,target=0.9)
+        rho_mpc=float(np.max(np.abs(np.linalg.eigvals(A1_mpc))))
+        print(f'[control] A1 pre-stab: deflated={n_def}  rho={rho_mpc:.4f}')
+        # Sign check on A1, B_2nd using 1st-order DARE proxy.
+        K_sign,_,_=solve_discrete_lqr(A1_mpc,B_2nd,Q_lqr,R_lqr)
         model.eval()
         sign_votes=[]
         for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
@@ -150,18 +148,32 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  ok={_ok}')
         n_ok=sum(sign_votes)
         if n_ok==0:
-            B_hat=-B_hat
-            print('[control] SIGN FLIP: negating B_hat (fixed at source for MPC)')
+            B_2nd=-B_2nd
+            print('[control] SIGN FLIP: negating B_2nd')
         elif n_ok==1:
             print('[control] WARNING: mixed sign votes — no flip')
         else:
             print('[control] Sign checks passed (2/2)')
-        # Build MPC with pre-stabilised A and sign-corrected B.
-        mpc=LatentMPC(A=A_mpc,B=B_hat,Q=Q_lqr,R=R_lqr,
-                      horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f,
-                      action_lb=float(env_cfg.get('action_range',[-10,10])[0]),
-                      action_ub=float(env_cfg.get('action_range',[-10,10])[1]))
+        # ── Augmented state MPC: s_t = [z_t, z_{t-1}], s* = [z*, z*] ────────
+        # Dynamics: s_{t+1} = [[A1, A2]; [I, 0]] s_t + [[B]; [0]] u_t
+        # Riccati gives K = [K1, K2] with K2 ≠ 0 (velocity feedback).
+        d_aug=2*d
+        A_aug=np.zeros((d_aug,d_aug)); A_aug[:d,:d]=A1_mpc; A_aug[:d,d:]=A2
+        A_aug[d:,:d]=np.eye(d)
+        B_aug=np.zeros((d_aug,d_u)); B_aug[:d]=B_2nd
+        Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),hist_weight*Q_lqr]])
+        Q_f_aug=mpc_Qf_mult*Q_aug
+        action_lb=float(env_cfg.get('action_range',[-10,10])[0])
+        action_ub=float(env_cfg.get('action_range',[-10,10])[1])
+        mpc=LatentMPC(A=A_aug,B=B_aug,Q=Q_aug,R=R_lqr,
+                      horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
+                      action_lb=action_lb,action_ub=action_ub)
         print(f'[control] {mpc.summary()}')
+        K_gain=mpc.K_list[0]
+        K1_norm=float(np.linalg.norm(K_gain[:,:d]))
+        K2_norm=float(np.linalg.norm(K_gain[:,d:]))
+        print(f'[control] K[0]: ||K1||={K1_norm:.3f}  ||K2||={K2_norm:.3f}'
+              f'  (K2/K1={K2_norm/(K1_norm+1e-9):.2f})')
         ctrl_results=evaluate_stabilization_mpc(
             encoder=model.encoder,mpc=mpc,env=env,
             n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],
