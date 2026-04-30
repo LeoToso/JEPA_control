@@ -37,6 +37,7 @@ class LatentMPC:
         action_ub: float = 10.0,
         chunk_size: int = 1,
         Q_f: Optional[np.ndarray] = None,
+        u_offset: float = 0.0,
     ):
         self.A = A
         self.B = B
@@ -47,6 +48,7 @@ class LatentMPC:
         self.action_lb = action_lb
         self.action_ub = action_ub
         self.chunk_size = min(chunk_size, horizon)
+        self.u_offset = u_offset   # constant feedforward: cancels (A-I)z* bias
         self._precompute_gains()
 
     def _precompute_gains(self):
@@ -80,7 +82,7 @@ class LatentMPC:
         pred_zs = [z.copy()]
         for k in range(self.horizon):
             u = np.clip(
-                -self.K_list[k] @ (z - z_star),
+                -self.K_list[k] @ (z - z_star) + self.u_offset,
                 self.action_lb,
                 self.action_ub,
             )

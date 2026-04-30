@@ -139,6 +139,29 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
               f'||Q||_F={np.linalg.norm(Q_lqr,"fro"):.3f}')
     else:
         print('[control] Insufficient rollout data; keeping Q=I')
+    action_lb=float(env_cfg.get('action_range',[-10,10])[0])
+    action_ub=float(env_cfg.get('action_range',[-10,10])[1])
+    # Ground truth sanity check: LQR on physical state (no encoder).
+    # Confirms the environment is controllable before blaming the latent model.
+    try:
+        K_gt,_,_=solve_discrete_lqr(gt.A_star,gt.B_star,
+                                     np.diag([10.0,0.1,100.0,0.1]),R_lqr)
+        rng_gt=np.random.RandomState(seed+1000)
+        gt_succs=[]
+        for _ in range(20):
+            x0_gt=rng_gt.uniform(-float(ctrl_cfg.get('init_scale',0.05)),
+                                   float(ctrl_cfg.get('init_scale',0.05)),4).astype(np.float32)
+            _,s_gt,_=env.reset_to_state(x0_gt)
+            done_gt=False
+            for _t in range(probe_cfg['T_rollout']):
+                u_gt=float(np.clip((-K_gt@s_gt)[0],action_lb,action_ub))
+                _,s_gt,_,done_gt,_=env.step(u_gt)
+                if done_gt: break
+            gt_succs.append(int(not done_gt))
+        print(f'[control] GT-LQR (physical state): success={np.mean(gt_succs):.2f}  '
+              f'({sum(gt_succs)}/20 trials)')
+    except Exception as _e:
+        print(f'[control] GT-LQR failed: {_e}')
     ctrl_results={}
     try:
         # ── 2nd-order dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t ──────
@@ -181,11 +204,19 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         B_aug=np.zeros((d_aug,d_u)); B_aug[:d]=B_2nd
         Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),hist_weight*Q_lqr]])
         Q_f_aug=mpc_Qf_mult*Q_aug
-        action_lb=float(env_cfg.get('action_range',[-10,10])[0])
-        action_ub=float(env_cfg.get('action_range',[-10,10])[1])
+        # Feedforward correction: A@z_star ≠ z_star in general, so the LQR
+        # would settle at z_eq ≠ z_star without this constant offset.
+        # u_ff = b^T (I-A) s* / ||b||² makes z_eq = z_star the true steady-state.
+        s_star_aug=np.concatenate([z_star,z_star])
+        c_bias=A_aug@s_star_aug-s_star_aug         # (A-I) @ s*
+        b_aug=B_aug[:,0]
+        u_ff=-float(np.dot(b_aug,c_bias))/(float(np.dot(b_aug,b_aug))+1e-12)
+        print(f'[control] Bias ||c||={np.linalg.norm(c_bias):.3f}  '
+              f'||A1@z*-z*||={np.linalg.norm(A1_mpc@z_star-z_star):.3f}  '
+              f'u_ff={u_ff:.4f}')
         mpc=LatentMPC(A=A_aug,B=B_aug,Q=Q_aug,R=R_lqr,
                       horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
-                      action_lb=action_lb,action_ub=action_ub)
+                      action_lb=action_lb,action_ub=action_ub,u_offset=u_ff)
         print(f'[control] {mpc.summary()}')
         K_gain=mpc.K_list[0]
         K1_norm=float(np.linalg.norm(K_gain[:,:d]))
