@@ -223,6 +223,11 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         K2_norm=float(np.linalg.norm(K_gain[:,d:]))
         print(f'[control] K[0]: ||K1||={K1_norm:.3f}  ||K2||={K2_norm:.3f}'
               f'  (K2/K1={K2_norm/(K1_norm+1e-9):.2f})')
+        # Latent closed-loop stability: rho(A - B K) < 1 ↔ latent system is stable.
+        A_cl=A_aug-B_aug@K_gain
+        rho_cl=float(np.max(np.abs(np.linalg.eigvals(A_cl))))
+        print(f'[control] Closed-loop latent rho(A_cl)={rho_cl:.4f}'
+              f'  (< 1 = latent system stable under K)')
         ctrl_results=evaluate_stabilization_mpc(
             encoder=model.encoder,mpc=mpc,env=env,
             n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],
@@ -237,6 +242,9 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # Save visualization for the first trial.
         vis_result=ctrl_results.pop('vis_result',None)
         if vis_result is not None:
+            # Attach model matrices so the visualiser can show latent diagnostics.
+            vis_result['z_star']=z_star
+            vis_result['A_aug']=A_aug; vis_result['B_aug']=B_aug; vis_result['K0']=K_gain
             visualize_mpc_rollout(
                 vis_result,
                 out_path=out_dir/'mpc_rollout_vis.png',

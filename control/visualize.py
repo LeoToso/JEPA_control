@@ -72,6 +72,48 @@ def visualize_mpc_rollout(
         ax.set_title("planned ‖Δz‖", fontsize=8)
         ax.tick_params(labelsize=6)
 
+    # ── Row 2 middle: latent distance ||z_t - z*|| actual vs simulated ───────
+    z_star  = result.get("z_star")
+    A_aug   = result.get("A_aug")
+    B_aug   = result.get("B_aug")
+    K0      = result.get("K0")
+    lat     = np.asarray(result.get("latent_states", []))
+    if z_star is not None and len(lat) > 0:
+        d_mpc = A_aug.shape[0] if A_aug is not None else lat.shape[1]
+        d_lat = lat.shape[1]
+        # Build augmented latent states [z_t, z_{t-1}] matching MPC dimension
+        if d_mpc == 2 * d_lat and A_aug is not None:
+            s_star = np.concatenate([z_star, z_star])
+            s_lat  = np.array([np.concatenate([lat[t], lat[t-1] if t > 0 else lat[0]])
+                                for t in range(len(lat))])
+        else:
+            s_star = z_star
+            s_lat  = lat
+        actual_dist = np.linalg.norm(s_lat - s_star[None, :], axis=1)
+        # Simulate closed-loop latent trajectory from z_0 using (A, B, K)
+        if A_aug is not None and K0 is not None:
+            u_ff_vis = result.get("u_ff", 0.0)
+            s_sim = [s_lat[0].copy()]
+            for _ in range(len(s_lat) - 1):
+                u_sim = np.clip(-K0 @ (s_sim[-1] - s_star) + u_ff_vis, -10.0, 10.0)
+                s_sim.append(A_aug @ s_sim[-1] + B_aug @ u_sim)
+            sim_dist = np.linalg.norm(np.array(s_sim) - s_star[None, :], axis=1)
+        else:
+            sim_dist = None
+
+        ax_lat = fig.add_subplot(gs[2, n_show // 2 - 1 : n_show // 2 + 1])
+        t_ax2 = np.arange(len(actual_dist))
+        ax_lat.plot(t_ax2, actual_dist, color="steelblue", linewidth=1.2,
+                    label="actual ‖z−z*‖")
+        if sim_dist is not None:
+            ax_lat.plot(t_ax2, sim_dist[:len(t_ax2)], color="tomato",
+                        linestyle="--", linewidth=1.2, label="model sim")
+        ax_lat.set_xlabel("timestep"); ax_lat.set_ylabel("‖z − z*‖")
+        ax_lat.set_title("Latent distance to z*")
+        ax_lat.legend(fontsize=7)
+        if done_at < T:
+            ax_lat.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
+
     # ── Row 2 left: state trajectory ─────────────────────────────────────────
     t_ax = np.arange(T)
     ax_s = fig.add_subplot(gs[2, : n_show // 2])
