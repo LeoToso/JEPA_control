@@ -100,7 +100,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     from control.lqr import solve_discrete_lqr, pre_stabilize_A
     from control.mpc import LatentMPC
     from control.rollout import evaluate_stabilization_mpc
-    from control.visualize import visualize_mpc_rollout
+    from control.visualize import visualize_mpc_rollout, create_mpc_video
     d_u=B_hat.shape[1]
     mpc_cfg=cfg.get('mpc',{})
     mpc_horizon=int(mpc_cfg.get('horizon',20))
@@ -241,6 +241,11 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
                 vis_result,
                 out_path=out_dir/'mpc_rollout_vis.png',
                 n_frames=n_vis_frames,
+                title=f'{exp_name}  H={mpc_horizon}  chunk={mpc_chunk}')
+            create_mpc_video(
+                vis_result,
+                out_path=out_dir/'mpc_rollout_vis.mp4',
+                fps=25,
                 title=f'{exp_name}  H={mpc_horizon}  chunk={mpc_chunk}')
     except Exception as exc:
         import traceback; traceback.print_exc()

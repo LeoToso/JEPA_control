@@ -135,6 +135,7 @@ def rollout_latent_mpc(
     device=None,
     z_star: Optional[np.ndarray] = None,
     save_frames: bool = False,
+    save_all_obs: bool = False,
 ) -> Dict:
     """Roll out a LatentMPC controller on the real environment.
 
@@ -170,6 +171,7 @@ def rollout_latent_mpc(
     latent_states: List[np.ndarray] = []
     actions: List[np.ndarray] = []
     frames: List[Dict] = []
+    all_obs_list: List[np.ndarray] = []
 
     pending: List[np.ndarray] = []
     z_t = np.zeros(d_lat)
@@ -178,6 +180,8 @@ def rollout_latent_mpc(
     t = 0
     while t < T:
         states.append(state.copy())
+        if save_all_obs:
+            all_obs_list.append(obs.copy())
 
         obs_t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
         with torch.no_grad():
@@ -235,11 +239,12 @@ def rollout_latent_mpc(
         'latent_states': latent_states_arr,
         'actions': actions_arr,
         'frames': frames,
+        'all_obs': all_obs_list,     # per-step obs for video (empty unless save_all_obs)
         'final_state_error': final_error,
         'stabilized': bool(final_error < stabilization_threshold),
         'settling_time': settling_time,
-        'done_at': n_real,           # episode length before done / T
-        'fraction_stable': fraction_stable,  # fraction of time near equilibrium
+        'done_at': n_real,
+        'fraction_stable': fraction_stable,
     }
 
 
@@ -284,6 +289,7 @@ def evaluate_stabilization_mpc(
                 settling_threshold=settling_threshold,
                 device=device, z_star=z_star,
                 save_frames=save,
+                save_all_obs=save,
             )
             if save:
                 vis_result = result

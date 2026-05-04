@@ -119,3 +119,110 @@ def visualize_mpc_rollout(
     plt.savefig(out_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
     print(f"[vis] Saved MPC visualization → {out_path}")
+
+
+def create_mpc_video(
+    result: Dict,
+    out_path: str | Path,
+    fps: int = 10,
+    title: str = "",
+    state_labels: Optional[List[str]] = None,
+) -> None:
+    """Save an mp4/gif video of the MPC rollout (one frame per timestep).
+
+    Requires either ffmpeg (for .mp4) or pillow (for .gif) to be installed.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.animation as animation
+        import matplotlib.gridspec as gridspec
+    except ImportError:
+        warnings.warn("matplotlib unavailable; skipping video")
+        return
+
+    all_obs: List = result.get("all_obs", [])
+    if not all_obs:
+        warnings.warn("No per-step observations in result — rollout must be run "
+                      "with save_all_obs=True")
+        return
+
+    if state_labels is None:
+        state_labels = ["x", "x_dot", "θ", "θ_dot"]
+
+    states  = np.asarray(result.get("states",  [[0, 0, 0, 0]]))
+    actions = np.asarray(result.get("actions", [[0]]))
+    done_at = result.get("done_at", len(states))
+    T_vid   = min(done_at, len(all_obs))
+    T_total = len(states)
+    colors  = ["tab:blue", "tab:cyan", "tab:red", "tab:orange"]
+
+    fig = plt.figure(figsize=(11, 4))
+    gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.35)
+
+    ax_obs = fig.add_subplot(gs[0, 0])
+    ax_s   = fig.add_subplot(gs[0, 1])
+    ax_a   = fig.add_subplot(gs[0, 2])
+
+    # Observation panel
+    im      = ax_obs.imshow(all_obs[0])
+    t_title = ax_obs.set_title("t=0", fontsize=9)
+    ax_obs.axis("off")
+
+    # State trajectory panel
+    s_lines = []
+    for i, (lbl, col) in enumerate(zip(state_labels, colors)):
+        ln, = ax_s.plot([], [], color=col, label=lbl, linewidth=1.2)
+        s_lines.append(ln)
+    s_cursor = ax_s.axvline(0, color="k", linewidth=1.2)
+    s_ylim   = (np.min(states) - 0.1, np.max(states) + 0.1)
+    ax_s.set_xlim(0, T_total); ax_s.set_ylim(*s_ylim)
+    ax_s.axhline(0, color="k", linestyle="--", linewidth=0.5)
+    ax_s.legend(fontsize=7, loc="upper right", ncol=2)
+    ax_s.set_xlabel("timestep"); ax_s.set_title("State trajectory")
+    if done_at < T_total:
+        ax_s.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
+
+    # Action panel
+    a_line, = ax_a.plot([], [], color="darkorange", linewidth=1.2, label="u")
+    a_cursor = ax_a.axvline(0, color="k", linewidth=1.2)
+    a_ylim   = (float(actions.min()) - 0.5, float(actions.max()) + 0.5)
+    ax_a.set_xlim(0, T_total); ax_a.set_ylim(*a_ylim)
+    ax_a.axhline(0, color="k", linestyle="--", linewidth=0.5)
+    ax_a.set_xlabel("timestep"); ax_a.set_title("Control input u")
+    if done_at < T_total:
+        ax_a.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
+
+    fig.suptitle(title, fontsize=9)
+
+    def _update(t: int):
+        im.set_data(all_obs[t])
+        t_title.set_text(f"t={t}")
+        for i, ln in enumerate(s_lines):
+            ln.set_data(range(t + 1), states[:t + 1, i])
+        s_cursor.set_xdata([t, t])
+        a_line.set_data(range(t + 1), actions[:t + 1, 0])
+        a_cursor.set_xdata([t, t])
+        return [im, t_title] + s_lines + [s_cursor, a_line, a_cursor]
+
+    anim = animation.FuncAnimation(
+        fig, _update, frames=T_vid, interval=1000 // fps, blit=True
+    )
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = out_path.suffix.lower()
+    try:
+        if suffix == ".gif":
+            anim.save(out_path, writer="pillow", fps=fps)
+        else:
+            anim.save(out_path, writer="ffmpeg", fps=fps,
+                      extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"])
+        print(f"[vis] Saved MPC video → {out_path}")
+    except Exception as exc:
+        warnings.warn(f"Video save failed ({exc}); trying .gif fallback")
+        gif_path = out_path.with_suffix(".gif")
+        anim.save(gif_path, writer="pillow", fps=fps)
+        print(f"[vis] Saved MPC video → {gif_path}")
+    plt.close(fig)
