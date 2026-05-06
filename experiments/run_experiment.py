@@ -177,8 +177,10 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # Sign check using A_hat directly (same check that worked in 1st-order MPC).
         K_sign,_,_=solve_discrete_lqr(A1_mpc,B_2nd,Q_lqr,R_lqr)
         model.eval()
+        # Use 6 theta samples (±0.05, ±0.10, ±0.15) for a more robust sign vote.
         sign_votes=[]
-        for _theta,_label in [(+0.05,'right'),(-0.05,'left')]:
+        for _theta,_label in [(+0.05,'r'),(+0.10,'r'),(+0.15,'r'),
+                               (-0.05,'l'),(-0.10,'l'),(-0.15,'l')]:
             _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.],dtype=np.float32))
             _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
             with torch.no_grad():
@@ -186,15 +188,29 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             _u=float(-K_sign@(_z-z_star))
             _ok=(_u>0 if _theta>0 else _u<0)
             sign_votes.append(_ok)
-            print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:.4f}  ok={_ok}')
+            print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:+.4f}  ok={_ok}')
         n_ok=sum(sign_votes)
-        if n_ok==0:
+        if n_ok<=1:
             B_2nd=-B_2nd
-            print('[control] SIGN FLIP: negating B_2nd')
-        elif n_ok==1:
-            print('[control] WARNING: mixed sign votes — no flip')
+            print(f'[control] SIGN FLIP: negating B_2nd ({n_ok}/6 correct before flip)')
+        elif n_ok>=5:
+            print(f'[control] Sign checks passed ({n_ok}/6)')
         else:
-            print('[control] Sign checks passed (2/2)')
+            print(f'[control] WARNING: mixed sign votes {n_ok}/6 — no flip')
+        # ── Theta sweep diagnostic: K(z(θ)-z*) vs θ ──────────────────────────
+        # Reveals whether the encoder encodes theta direction at all.
+        # If K(z-z*) is monotone in θ: encoder is working.
+        # If it's roughly constant or has wrong sign: theta-blind encoder.
+        print('[control] Theta sweep  K·(z−z*) vs θ:')
+        for _th in [-0.20,-0.15,-0.10,-0.05,0.0,+0.05,+0.10,+0.15,+0.20]:
+            _o,_,_=env.reset_to_state(np.array([0.,0.,_th,0.],dtype=np.float32))
+            _ot=torch.from_numpy(_o).float().permute(2,0,1)[None].to(device)/255.0
+            with torch.no_grad():
+                _zt=model.encoder(_ot).cpu().numpy()[0]
+            _dz=np.linalg.norm(_zt-z_star)
+            _ut=float(-K_sign@(_zt-z_star))
+            _corr=(_th==0.0) or ((_ut>0)==(_th>0))
+            print(f'  θ={_th:+.3f}  ‖z−z*‖={_dz:.3f}  K·Δz={_ut:+.4f}  {"✓" if _corr else "✗"}')
         # ── Augmented state MPC: s_t = [z_t, z_{t-1}], s* = [z*, z*] ────────
         # Dynamics: s_{t+1} = [[A1, A2]; [I, 0]] s_t + [[B]; [0]] u_t
         # Riccati gives K = [K1, K2] with K2 ≠ 0 (velocity feedback).
@@ -304,6 +320,39 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             ctrl_results['cmp_1st_order'] = cr_1st
         else:
             print(f'[control] 1st-order UNSTABLE — skipping eval')
+
+        # ── Comparison C: Gradient MPC through JEPA predictor ────────────────
+        # If the linear W-probe misses nonlinear theta encoding, the predictor
+        # may still capture it. This comparison tests that hypothesis.
+        print('\n[control] --- Comparison C: Gradient MPC (predictor rollout) ---')
+        try:
+            from control.grad_mpc import GradientLatentMPC
+            grad_mpc = GradientLatentMPC(
+                predictor=model.predictor,
+                action_encoder=model.action_encoder,
+                Q=Q_lqr, R=R_lqr, Q_f=mpc_Qf_mult*Q_lqr,
+                horizon=mpc_horizon, chunk_size=mpc_chunk,
+                action_lb=action_lb, action_ub=action_ub,
+                lr=0.05, n_iter=40, device=device)
+            print(f'[control] {grad_mpc.summary()}')
+            # Only run a subset of trials (slower due to gradient opt per step).
+            n_grad_trials = min(20, probe_cfg['n_trials_control'])
+            cr_grad = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=grad_mpc, env=env,
+                n_trials=n_grad_trials, T=probe_cfg['T_rollout'],
+                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
+                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
+                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
+                seed=seed, device=device, z_star=z_star, vis_trial=-1)
+            cr_grad.pop('vis_result', None)
+            print(f'[control] GradMPC  success={cr_grad["success_rate"]:.3f}'
+                  f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
+                  f'  x_term={cr_grad["x_term_rate"]:.2f}'
+                  f'  th_term={cr_grad["theta_term_rate"]:.2f}'
+                  f'  (n={n_grad_trials})')
+            ctrl_results['cmp_grad_mpc'] = cr_grad
+        except Exception as _eg:
+            print(f'[control] GradMPC failed: {_eg}')
 
         # Save visualization for the first trial.
         vis_result=ctrl_results.pop('vis_result',None)
