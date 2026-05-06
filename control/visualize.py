@@ -39,6 +39,7 @@ def visualize_mpc_rollout(
     states: np.ndarray = np.asarray(result.get("states", [[0, 0, 0, 0]]))
     actions: np.ndarray = np.asarray(result.get("actions", [[0]]))
     T = len(states)
+    done_at = result.get("done_at", T)
 
     if len(frames) == 0:
         warnings.warn("No frames in result — run rollout with save_frames=True")
@@ -139,7 +140,6 @@ def visualize_mpc_rollout(
     ax_a.legend(fontsize=7)
 
     # Mark episode termination (done) on both plots if episode ended early.
-    done_at = result.get("done_at", T)
     if done_at < T:
         for ax in (ax_s, ax_a):
             ax.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
