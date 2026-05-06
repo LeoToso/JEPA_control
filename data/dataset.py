@@ -51,17 +51,20 @@ def _collect_transitions(env,n_transitions,mode,lqr_gain,action_low,action_high,
             obs,state=next_obs,next_state
     return {'obs':np.stack(obs_list).astype(np.uint8),'states':np.stack(state_list).astype(np.float32),'actions':np.stack(action_list).astype(np.float32),'next_obs':np.stack(next_obs_list).astype(np.uint8),'next_states':np.stack(next_state_list).astype(np.float32)}
 
-def generate_dataset(dataset_type='random',n_transitions=50000,frame_skip=1,save_path=None,seed=42,train_frac=0.8,val_frac=0.1,action_range=(-5.0,5.0),init_range=0.1,lqr_noise_std=0.1,image_size=64):
+def generate_dataset(dataset_type='random',n_transitions=50000,frame_skip=1,save_path=None,seed=42,train_frac=0.8,val_frac=0.1,action_range=(-5.0,5.0),init_range=0.1,lqr_init_range=None,lqr_noise_std=0.1,image_size=64):
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng=np.random.RandomState(seed)
     lqr_gain=_compute_lqr_gain() if dataset_type in ('lqr','mixed') else None
     env=ContinuousCartpoleVisual(frame_skip=frame_skip,image_size=image_size,action_range=(-10.0,10.0),seed=seed)
     action_low,action_high=action_range
+    # lqr_init_range defaults to half of random init_range to keep LQR data tractable.
+    if lqr_init_range is None:
+        lqr_init_range = max(0.05, init_range * 0.5)
     if dataset_type=='mixed':
         n_random=n_transitions//2
         n_lqr=n_transitions-n_random
-        data_rand=_collect_transitions(env,n_random,'random',lqr_gain,action_low,action_high,init_range=0.1,lqr_noise_std=lqr_noise_std,rng=rng)
-        data_lqr=_collect_transitions(env,n_lqr,'lqr',lqr_gain,action_low,action_high,init_range=0.05,lqr_noise_std=lqr_noise_std,rng=rng)
+        data_rand=_collect_transitions(env,n_random,'random',lqr_gain,action_low,action_high,init_range=init_range,lqr_noise_std=lqr_noise_std,rng=rng)
+        data_lqr=_collect_transitions(env,n_lqr,'lqr',lqr_gain,action_low,action_high,init_range=lqr_init_range,lqr_noise_std=lqr_noise_std,rng=rng)
         data={key:np.concatenate([data_rand[key],data_lqr[key]],axis=0) for key in data_rand}
     else:
         init_r=0.05 if dataset_type=='lqr' else init_range

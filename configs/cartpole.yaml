@@ -26,8 +26,7 @@ training:
   lambda_spec: 0.0
   lambda_NMP: 0.0
   lambda_curv: 0.0
-  lambda_NMP: 0.0
-  lambda_curv: 0.0
+  lambda_state: 1.0
   dmdc_window: 1000
   dmdc_refit_every: 50
   vicreg_lambda: 25.0
@@ -74,7 +73,7 @@ data:
   val_frac: 0.1
   test_frac: 0.1
   random_action_range: [-5, 5]
-  random_init_range: 0.1
-  lqr_init_range: 0.05
+  random_init_range: 0.15
+  lqr_init_range: 0.10
   lqr_noise_std: 0.1
   seed: 42

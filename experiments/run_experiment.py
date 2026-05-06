@@ -46,7 +46,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         data=load_dataset(str(h5_path))
     else:
         print(f'\n[data] Generating {dataset_name} dataset...')
-        data=generate_dataset(dataset_type=dataset_name,n_transitions=cfg['data']['n_random'],frame_skip=frame_skip,save_path=str(h5_path),seed=seed,image_size=env_cfg['image_size'])
+        data=generate_dataset(dataset_type=dataset_name,n_transitions=cfg['data']['n_random'],frame_skip=frame_skip,save_path=str(h5_path),seed=seed,image_size=env_cfg['image_size'],init_range=float(cfg['data'].get('random_init_range',0.1)),lqr_init_range=float(cfg['data'].get('lqr_init_range',0.05)),lqr_noise_std=float(cfg['data'].get('lqr_noise_std',0.1)))
     kappa=data.get('action_cov_condition_number',float('nan'))
     print(f'[data] Action covariance condition number: {kappa:.2f}')
     if kappa>1000:

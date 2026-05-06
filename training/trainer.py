@@ -67,6 +67,7 @@ class Trainer:
         self.lambda_spec=float(self.cfg.get('lambda_spec',0.0))
         self.lambda_NMP=float(self.cfg.get('lambda_NMP',0.0))
         self.lambda_curv=float(self.cfg.get('lambda_curv',0.0))
+        self.lambda_state=float(self.cfg.get('lambda_state',0.0))
         self.use_vicreg=bool(self.cfg.get('use_vicreg',True))
         self.vicreg_lambda=float(self.cfg.get('vicreg_lambda',25.0))
         self.vicreg_mu=float(self.cfg.get('vicreg_mu',25.0))
@@ -74,6 +75,15 @@ class Trainer:
         lr=float(self.cfg.get('lr',1e-4))
         weight_decay=float(self.cfg.get('weight_decay',1e-4))
         self.optimizer=torch.optim.Adam(model.parameters(),lr=lr,weight_decay=weight_decay)
+        # Auxiliary state-prediction head (not part of the model; used as training
+        # regulariser to force the encoder to carry theta/x info in z).
+        # Enabled when lambda_state > 0 in the config.
+        if self.lambda_state > 0:
+            d_lat = model.config.latent_dim
+            self.state_head = nn.Linear(d_lat, 4).to(self.device)
+            self.optimizer.add_param_group({'params': self.state_head.parameters()})
+        else:
+            self.state_head = None
         self.scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer,T_max=int(self.cfg.get('epochs',100)),eta_min=lr*0.1)
         self.sliding_dmdc=SlidingWindowDMDc(int(self.cfg.get('dmdc_window',1000)),int(self.cfg.get('dmdc_refit_every',50)))
         self.true_unstable_eigs=None
@@ -114,6 +124,17 @@ class Trainer:
             conj_loss=nn.functional.mse_loss(outputs['z_hat_lin'],z_next.detach())
             total_loss=total_loss+self.lambda_conj*conj_loss
             info['conj_loss']=conj_loss.item()
+        # State reconstruction loss: forces encoder to carry physical state info
+        # (especially theta) in z.  Uses theta-weighted MSE so the encoder cannot
+        # ignore theta in favour of the easier-to-encode x position.
+        if self.lambda_state > 0 and self.state_head is not None and 'state' in batch:
+            state_true = batch['state'].to(self.device).float()   # (B, 4)
+            state_pred = self.state_head(z_t)                      # (B, 4)
+            # [x, x_dot, theta, theta_dot] — theta weight 10× stronger.
+            w = torch.tensor([1., 0.1, 10., 0.1], device=self.device)
+            state_loss = (w * (state_pred - state_true).pow(2)).mean()
+            total_loss = total_loss + self.lambda_state * state_loss
+            info['state_loss'] = state_loss.item()
         info['total_loss']=total_loss.item()
         from models.action_encoder import MLPActionEncoder
         if isinstance(self.model.action_encoder,MLPActionEncoder):
@@ -175,7 +196,10 @@ class Trainer:
             self.optimizer.zero_grad()
             loss,info=self._compute_loss(batch,is_train=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(),max_norm=1.0)
+            _clip_params = list(self.model.parameters())
+            if self.state_head is not None:
+                _clip_params += list(self.state_head.parameters())
+            torch.nn.utils.clip_grad_norm_(_clip_params, max_norm=1.0)
             self.optimizer.step()
             for k,v in info.items():
                 if isinstance(v,(int,float)):
