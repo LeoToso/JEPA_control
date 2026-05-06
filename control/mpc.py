@@ -52,12 +52,24 @@ class LatentMPC:
         self._precompute_gains()
 
     def _precompute_gains(self):
-        """Backward Riccati: compute time-varying gains K[0], ..., K[H-1].
+        """Compute time-varying MPC gains K[0], ..., K[H-1].
 
-        K[k] is the optimal gain when k steps remain in the horizon.
-        After reversing, K_list[k] = gain to apply at planning step k.
+        Strategy:
+        1. Solve the infinite-horizon DARE (via scipy Schur method) to get P∞.
+        2. Backward-iterate the Riccati from P∞ for H steps to get time-varying
+           gains close to the steady-state.  Starting from P∞ guarantees the
+           gains at step 0 are correct even when H is too small to converge from
+           the terminal Q_f (which fails for poorly-conditioned 2nd-order systems).
+        3. If DARE fails (system not stabilisable), fall back to backward Riccati
+           starting from Q_f — same as the old behaviour.
         """
-        P = self.Q_f.copy()
+        try:
+            import scipy.linalg
+            P_ss = scipy.linalg.solve_discrete_are(self.A, self.B, self.Q, self.R)
+        except Exception:
+            P_ss = self.Q_f.copy()
+
+        P = P_ss.copy()
         gains = []
         for _ in range(self.horizon):
             M = self.R + self.B.T @ P @ self.B          # (d_u, d_u)

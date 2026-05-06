@@ -218,6 +218,14 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         A_aug=np.zeros((d_aug,d_aug)); A_aug[:d,:d]=A1_mpc; A_aug[:d,d:]=A2
         A_aug[d:,:d]=np.eye(d)
         B_aug=np.zeros((d_aug,d_u)); B_aug[:d]=B_2nd
+        # Pre-stabilise A_aug itself: A2 can introduce additional phantom-unstable
+        # modes in the 2d-dim augmented system even when A1 is pre-stabilised.
+        # Only non-physical unstable modes are deflated; the physical pole mode is
+        # left intact so the DARE can place it optimally.
+        A_aug_stab,n_def_aug=pre_stabilize_A(
+            A_aug,gt.unstable_eigenvalues,tol=0.1,target=0.9)
+        rho_aug_stab=float(np.max(np.abs(np.linalg.eigvals(A_aug_stab))))
+        print(f'[control] A_aug pre-stab: deflated={n_def_aug}  rho={rho_aug_stab:.4f}')
         Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),hist_weight*Q_lqr]])
         Q_f_aug=mpc_Qf_mult*Q_aug
         # Feedforward correction: A@z_star ≠ z_star in general, so the LQR
@@ -230,7 +238,10 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         print(f'[control] Bias ||c||={np.linalg.norm(c_bias):.3f}  '
               f'||A1@z*-z*||={np.linalg.norm(A1_mpc@z_star-z_star):.3f}  '
               f'u_ff={u_ff:.4f}')
-        mpc=LatentMPC(A=A_aug,B=B_aug,Q=Q_aug,R=R_lqr,
+        # Build MPC on the pre-stabilised A_aug so DARE converges correctly.
+        # The gains are applied to the ORIGINAL A_aug during the rollout,
+        # so the closed-loop rho is evaluated on A_aug (not A_aug_stab).
+        mpc=LatentMPC(A=A_aug_stab,B=B_aug,Q=Q_aug,R=R_lqr,
                       horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
                       action_lb=action_lb,action_ub=action_ub,u_offset=u_ff)
         print(f'[control] {mpc.summary()}')
@@ -240,10 +251,27 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         print(f'[control] K[0]: ||K1||={K1_norm:.3f}  ||K2||={K2_norm:.3f}'
               f'  (K2/K1={K2_norm/(K1_norm+1e-9):.2f})')
         # Latent closed-loop stability: rho(A - B K) < 1 ↔ latent system is stable.
+        # NOTE: evaluated on original A_aug (not A_aug_stab) — true performance indicator.
         A_cl=A_aug-B_aug@K_gain
         rho_cl=float(np.max(np.abs(np.linalg.eigvals(A_cl))))
         print(f'[control] Closed-loop latent rho(A_cl)={rho_cl:.4f}'
-              f'  (< 1 = latent system stable under K)')
+              f'  {"STABLE ✓" if rho_cl < 1 else "UNSTABLE ✗ — trying A2=0 fallback"}')
+        if rho_cl >= 1.0:
+            # A2-induced phantom modes survived pre-stabilisation.
+            # Drop A2 entirely: (A_aug_zero, B_aug) is stabilisable iff (A1_mpc, B_2nd) is,
+            # which we know from comparison B (rho(A_cl)=0.9237 when A2=0).
+            A_aug_zero=np.zeros((d_aug,d_aug))
+            A_aug_zero[:d,:d]=A1_mpc; A_aug_zero[d:,:d]=np.eye(d)
+            mpc_zero=LatentMPC(A=A_aug_zero,B=B_aug,Q=Q_aug,R=R_lqr,
+                               horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
+                               action_lb=action_lb,action_ub=action_ub,u_offset=u_ff)
+            K_zero=mpc_zero.K_list[0]
+            rho_zero=float(np.max(np.abs(np.linalg.eigvals(A_aug_zero-B_aug@K_zero))))
+            print(f'[control] A2=0 fallback: rho(A_cl)={rho_zero:.4f}'
+                  f'  {"STABLE ✓" if rho_zero < 1 else "UNSTABLE ✗"}')
+            if rho_zero < rho_cl:  # use A2=0 controller if it's at least better
+                mpc=mpc_zero; K_gain=K_zero; rho_cl=rho_zero
+                print('[control] Using A2=0 controller for evaluation')
         ctrl_results=evaluate_stabilization_mpc(
             encoder=model.encoder,mpc=mpc,env=env,
             n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],

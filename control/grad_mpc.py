@@ -128,13 +128,18 @@ class GradientLatentMPC:
         return actions, np.array(traj)
 
     # ------------------------------------------------------------------
+    # Compatibility shims so rollout_latent_mpc can determine the state
+    # dimension (mpc.A.shape[0]) and check use_aug_state correctly.
+    # GradientLatentMPC always operates directly on z_t (no augmentation).
     @property
-    def A(self):
-        raise AttributeError("GradientLatentMPC has no linear A matrix")
+    def A(self) -> np.ndarray:
+        d = self.predictor.latent_dim
+        return np.eye(d)   # shape (d, d) → d_mpc == d → use_aug_state = False
 
     @property
-    def B(self):
-        raise AttributeError("GradientLatentMPC has no linear B matrix")
+    def B(self) -> np.ndarray:
+        d_u = self.R_t.shape[0]
+        return np.zeros((self.predictor.latent_dim, d_u))
 
     def summary(self) -> str:
         return (
