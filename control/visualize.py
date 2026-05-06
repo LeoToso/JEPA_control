@@ -49,8 +49,8 @@ def visualize_mpc_rollout(
     sel_idx = np.linspace(0, len(frames) - 1, n_show, dtype=int)
     sel = [frames[i] for i in sel_idx]
 
-    fig = plt.figure(figsize=(3.2 * n_show, 9))
-    gs = gridspec.GridSpec(3, n_show, figure=fig, hspace=0.55, wspace=0.25)
+    fig = plt.figure(figsize=(3.2 * n_show, 12))
+    gs = gridspec.GridSpec(4, n_show, figure=fig, hspace=0.6, wspace=0.25)
 
     # ── Row 0: observed frames ────────────────────────────────────────────────
     for col, fd in enumerate(sel):
@@ -73,49 +73,7 @@ def visualize_mpc_rollout(
         ax.set_title("planned ‖Δz‖", fontsize=8)
         ax.tick_params(labelsize=6)
 
-    # ── Row 2 middle: latent distance ||z_t - z*|| actual vs simulated ───────
-    z_star  = result.get("z_star")
-    A_aug   = result.get("A_aug")
-    B_aug   = result.get("B_aug")
-    K0      = result.get("K0")
-    lat     = np.asarray(result.get("latent_states", []))
-    if z_star is not None and len(lat) > 0:
-        d_mpc = A_aug.shape[0] if A_aug is not None else lat.shape[1]
-        d_lat = lat.shape[1]
-        # Build augmented latent states [z_t, z_{t-1}] matching MPC dimension
-        if d_mpc == 2 * d_lat and A_aug is not None:
-            s_star = np.concatenate([z_star, z_star])
-            s_lat  = np.array([np.concatenate([lat[t], lat[t-1] if t > 0 else lat[0]])
-                                for t in range(len(lat))])
-        else:
-            s_star = z_star
-            s_lat  = lat
-        actual_dist = np.linalg.norm(s_lat - s_star[None, :], axis=1)
-        # Simulate closed-loop latent trajectory from z_0 using (A, B, K)
-        if A_aug is not None and K0 is not None:
-            u_ff_vis = result.get("u_ff", 0.0)
-            s_sim = [s_lat[0].copy()]
-            for _ in range(len(s_lat) - 1):
-                u_sim = np.clip(-K0 @ (s_sim[-1] - s_star) + u_ff_vis, -10.0, 10.0)
-                s_sim.append(A_aug @ s_sim[-1] + B_aug @ u_sim)
-            sim_dist = np.linalg.norm(np.array(s_sim) - s_star[None, :], axis=1)
-        else:
-            sim_dist = None
-
-        ax_lat = fig.add_subplot(gs[2, n_show // 2 - 1 : n_show // 2 + 1])
-        t_ax2 = np.arange(len(actual_dist))
-        ax_lat.plot(t_ax2, actual_dist, color="steelblue", linewidth=1.2,
-                    label="actual ‖z−z*‖")
-        if sim_dist is not None:
-            ax_lat.plot(t_ax2, sim_dist[:len(t_ax2)], color="tomato",
-                        linestyle="--", linewidth=1.2, label="model sim")
-        ax_lat.set_xlabel("timestep"); ax_lat.set_ylabel("‖z − z*‖")
-        ax_lat.set_title("Latent distance to z*")
-        ax_lat.legend(fontsize=7)
-        if done_at < T:
-            ax_lat.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
-
-    # ── Row 2 left: state trajectory ─────────────────────────────────────────
+    # ── Row 2 left: state trajectory  |  Row 2 right: control input ──────────
     t_ax = np.arange(T)
     ax_s = fig.add_subplot(gs[2, : n_show // 2])
     colors = ["tab:blue", "tab:cyan", "tab:red", "tab:orange"]
@@ -128,7 +86,6 @@ def visualize_mpc_rollout(
     ax_s.legend(fontsize=7, loc="upper right", ncol=2)
     ax_s.set_title("State trajectory")
 
-    # ── Row 2 right: applied actions + re-planning events ────────────────────
     ax_a = fig.add_subplot(gs[2, n_show // 2 :])
     ax_a.plot(t_ax, actions[:, 0], color="darkorange", linewidth=1.2, label="u")
     ax_a.axhline(0, color="k", linestyle="--", linewidth=0.5)
@@ -139,13 +96,58 @@ def visualize_mpc_rollout(
     ax_a.set_title("Control input (│ = re-plan,  ✕ = done)")
     ax_a.legend(fontsize=7)
 
-    # Mark episode termination (done) on both plots if episode ended early.
     if done_at < T:
         for ax in (ax_s, ax_a):
             ax.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
                        label=f"done t={done_at}")
         ax_s.legend(fontsize=7, loc="upper right", ncol=2)
         ax_a.legend(fontsize=7)
+
+    # ── Row 3: latent distance ||z_t - z*|| actual vs model simulation ────────
+    z_star  = result.get("z_star")
+    A_aug   = result.get("A_aug")
+    B_aug   = result.get("B_aug")
+    K0      = result.get("K0")
+    lat     = np.asarray(result.get("latent_states", []))
+    if z_star is not None and len(lat) > 0:
+        d_mpc = A_aug.shape[0] if A_aug is not None else lat.shape[1]
+        d_lat = lat.shape[1]
+        if d_mpc == 2 * d_lat and A_aug is not None:
+            s_star = np.concatenate([z_star, z_star])
+            s_lat  = np.array([np.concatenate([lat[t], lat[t-1] if t > 0 else lat[0]])
+                                for t in range(len(lat))])
+        else:
+            s_star = z_star
+            s_lat  = lat
+        actual_dist = np.linalg.norm(s_lat - s_star[None, :], axis=1)
+        if A_aug is not None and K0 is not None:
+            u_ff_vis = result.get("u_ff", 0.0)
+            s_sim = [s_lat[0].copy()]
+            for _ in range(len(s_lat) - 1):
+                u_sim = np.clip(-K0 @ (s_sim[-1] - s_star) + u_ff_vis, -10.0, 10.0)
+                s_sim.append(A_aug @ s_sim[-1] + B_aug @ u_sim)
+            sim_dist = np.linalg.norm(np.array(s_sim) - s_star[None, :], axis=1)
+        else:
+            sim_dist = None
+
+        ax_lat = fig.add_subplot(gs[3, :])   # full-width row
+        t_ax2 = np.arange(len(actual_dist))
+        ax_lat.plot(t_ax2, actual_dist, color="steelblue", linewidth=1.5,
+                    label="actual  ‖z − z*‖")
+        if sim_dist is not None:
+            ax_lat.plot(t_ax2, sim_dist[:len(t_ax2)], color="tomato",
+                        linestyle="--", linewidth=1.5, label="model sim  ‖z − z*‖")
+        ax_lat.axhline(0, color="k", linestyle="--", linewidth=0.5)
+        if done_at < T:
+            ax_lat.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
+                           label=f"done t={done_at}")
+        ax_lat.set_xlabel("timestep", fontsize=10)
+        ax_lat.set_ylabel("‖z − z*‖", fontsize=10)
+        ax_lat.set_title("Latent distance to equilibrium z*  "
+                         "(converging = latent system stable; "
+                         "gap actual vs sim = model mismatch)", fontsize=9)
+        ax_lat.legend(fontsize=9)
+        ax_lat.tick_params(labelsize=9)
 
     stabilized = result.get("stabilized", False)
     final_err = result.get("final_state_error", float("nan"))
