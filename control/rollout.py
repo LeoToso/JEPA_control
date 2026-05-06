@@ -277,6 +277,7 @@ def evaluate_stabilization_mpc(
 
     successes, settling_times, final_errors, true_costs = [], [], [], []
     done_ats, frac_stables = [], []
+    x_terms, theta_terms, timeout_terms = [], [], []
     vis_result = None
 
     for trial in range(n_trials):
@@ -303,6 +304,14 @@ def evaluate_stabilization_mpc(
                 sum(float(xs[k] @ Q_phys @ xs[k] + us[k] @ R_phys @ us[k])
                     for k in range(result['done_at']))
             )
+            da = result['done_at']
+            if da < T:
+                bnd = result['states'][da]   # first padded = boundary state
+                x_terms.append(int(abs(bnd[0]) > 2.2))
+                theta_terms.append(int(abs(bnd[2]) > 0.18))
+                timeout_terms.append(0)
+            else:
+                x_terms.append(0); theta_terms.append(0); timeout_terms.append(1)
         except Exception as exc:
             warnings.warn(f'MPC trial {trial} failed: {exc}')
             successes.append(False)
@@ -310,6 +319,7 @@ def evaluate_stabilization_mpc(
             final_errors.append(float('nan'))
             done_ats.append(0)
             frac_stables.append(0.0)
+            x_terms.append(0); theta_terms.append(0); timeout_terms.append(0)
 
     return {
         'success_rate': float(np.mean(successes)),
@@ -321,5 +331,8 @@ def evaluate_stabilization_mpc(
         'n_trials': n_trials,
         'horizon': mpc.horizon,
         'chunk_size': mpc.chunk_size,
+        'x_term_rate': float(np.mean(x_terms)) if x_terms else 0.0,
+        'theta_term_rate': float(np.mean(theta_terms)) if theta_terms else 0.0,
+        'timeout_rate': float(np.mean(timeout_terms)) if timeout_terms else 0.0,
         'vis_result': vis_result,
     }

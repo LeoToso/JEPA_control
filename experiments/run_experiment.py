@@ -239,6 +239,72 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         print(f'[control] Mean episode length: {ctrl_results["mean_episode_length"]:.1f} / {probe_cfg["T_rollout"]} steps')
         print(f'[control] Mean frac stable:    {ctrl_results["mean_fraction_stable"]:.3f}  (fraction of time ||state|| < settling_thr)')
         print(f'[control] Mean final error:    {ctrl_results["mean_final_error"]:.4f}')
+        print(f'[control] Termination cause:   x-boundary={ctrl_results["x_term_rate"]:.2f}'
+              f'  theta-boundary={ctrl_results["theta_term_rate"]:.2f}'
+              f'  timeout(success)={ctrl_results["timeout_rate"]:.2f}')
+
+        # ── Comparison A: Q = I (identity on augmented state) ────────────────
+        # Tests whether the physics-weighted Q is helping or hurting.
+        # Q=I penalises all latent dims equally—may capture nonlinear theta encoding
+        # that the linear W-probe Q misses.
+        print('\n[control] --- Comparison A: Q = I (identity) ---')
+        Q_I_aug = np.eye(d_aug)
+        Q_f_I_aug = mpc_Qf_mult * Q_I_aug
+        mpc_Qi = LatentMPC(A=A_aug, B=B_aug, Q=Q_I_aug, R=R_lqr,
+                           horizon=mpc_horizon, chunk_size=mpc_chunk, Q_f=Q_f_I_aug,
+                           action_lb=action_lb, action_ub=action_ub, u_offset=u_ff)
+        K_Qi = mpc_Qi.K_list[0]
+        rho_cl_Qi = float(np.max(np.abs(np.linalg.eigvals(A_aug - B_aug @ K_Qi))))
+        print(f'[control] Q=I  rho(A_cl)={rho_cl_Qi:.4f}  '
+              f'||K1||={np.linalg.norm(K_Qi[:,:d]):.3f}  ||K2||={np.linalg.norm(K_Qi[:,d:]):.3f}')
+        if rho_cl_Qi < 1.0:
+            cr_Qi = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=mpc_Qi, env=env,
+                n_trials=probe_cfg['n_trials_control'], T=probe_cfg['T_rollout'],
+                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
+                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
+                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
+                seed=seed, device=device, z_star=z_star, vis_trial=-1)
+            cr_Qi.pop('vis_result', None)
+            print(f'[control] Q=I  success={cr_Qi["success_rate"]:.3f}'
+                  f'  ep_len={cr_Qi["mean_episode_length"]:.1f}'
+                  f'  x_term={cr_Qi["x_term_rate"]:.2f}'
+                  f'  th_term={cr_Qi["theta_term_rate"]:.2f}')
+            ctrl_results['cmp_q_identity'] = cr_Qi
+        else:
+            print(f'[control] Q=I UNSTABLE — skipping eval')
+
+        # ── Comparison B: 1st-order MPC (no z_{t-1} augmentation) ────────────
+        # Tests whether the A2 (2nd-order) term is helping or injecting noise.
+        print('\n[control] --- Comparison B: 1st-order MPC (no augmentation) ---')
+        c_bias_1st = A1_mpc @ z_star - z_star
+        b_1st = B_2nd[:, 0]
+        u_ff_1st = -float(np.dot(b_1st, c_bias_1st)) / (float(np.dot(b_1st, b_1st)) + 1e-12)
+        mpc_1st = LatentMPC(A=A1_mpc, B=B_2nd, Q=Q_lqr, R=R_lqr,
+                            horizon=mpc_horizon, chunk_size=mpc_chunk,
+                            Q_f=mpc_Qf_mult * Q_lqr,
+                            action_lb=action_lb, action_ub=action_ub, u_offset=u_ff_1st)
+        K_1st = mpc_1st.K_list[0]
+        rho_cl_1st = float(np.max(np.abs(np.linalg.eigvals(A1_mpc - B_2nd @ K_1st))))
+        print(f'[control] 1st-order  rho(A_cl)={rho_cl_1st:.4f}  '
+              f'||K||={np.linalg.norm(K_1st):.3f}  u_ff={u_ff_1st:.4f}')
+        if rho_cl_1st < 1.0:
+            cr_1st = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=mpc_1st, env=env,
+                n_trials=probe_cfg['n_trials_control'], T=probe_cfg['T_rollout'],
+                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
+                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
+                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
+                seed=seed, device=device, z_star=z_star, vis_trial=-1)
+            cr_1st.pop('vis_result', None)
+            print(f'[control] 1st-order  success={cr_1st["success_rate"]:.3f}'
+                  f'  ep_len={cr_1st["mean_episode_length"]:.1f}'
+                  f'  x_term={cr_1st["x_term_rate"]:.2f}'
+                  f'  th_term={cr_1st["theta_term_rate"]:.2f}')
+            ctrl_results['cmp_1st_order'] = cr_1st
+        else:
+            print(f'[control] 1st-order UNSTABLE — skipping eval')
+
         # Save visualization for the first trial.
         vis_result=ctrl_results.pop('vis_result',None)
         if vis_result is not None:
