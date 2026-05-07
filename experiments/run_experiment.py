@@ -11,7 +11,8 @@ import yaml
 def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    seed=42, config_path='configs/cartpole_v2.yaml',
                    data_dir='data', results_dir='results',
-                   device=None, skip_if_exists=True, eval_only=False):
+                   device=None, skip_if_exists=True, eval_only=False,
+                   epochs_override=None):
 
     exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
     out_dir    = Path(results_dir) / exp_name
@@ -95,6 +96,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Train
     from training.trainer import Trainer
     train_cfg_exp = dict(train_cfg)
+    if epochs_override is not None:
+        train_cfg_exp['epochs'] = int(epochs_override)
     trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
                       save_dir=str(out_dir / 'checkpoints'), device=device, seed=seed)
 
@@ -514,6 +517,8 @@ if __name__ == '__main__':
     p.add_argument('--results_dir', default='results')
     p.add_argument('--eval-only', action='store_true')
     p.add_argument('--force',     action='store_true')
+    p.add_argument('--epochs',    type=int, default=None,
+                   help='Override training epochs from config')
     args = p.parse_args()
     run_experiment(
         encoder_variant=args.variant, dataset_name=args.dataset,
@@ -522,4 +527,5 @@ if __name__ == '__main__':
         results_dir=args.results_dir,
         skip_if_exists=not args.force,
         eval_only=args.eval_only,
+        epochs_override=args.epochs,
     )
