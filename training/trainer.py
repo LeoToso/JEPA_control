@@ -68,10 +68,10 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
-        self.use_vicreg   = bool(self.cfg.get('use_vicreg', True))
-        self.vicreg_lambda= float(self.cfg.get('vicreg_lambda', 25.0))
-        self.vicreg_mu    = float(self.cfg.get('vicreg_mu',     25.0))
-        self.vicreg_nu    = float(self.cfg.get('vicreg_nu',      1.0))
+        self.use_vicreg    = bool(self.cfg.get('use_vicreg', True))
+        self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
+        self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
+        self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
 
         lr           = float(self.cfg.get('lr', 1e-4))
@@ -127,13 +127,18 @@ class Trainer:
         B, H1, C, h, w = obs_seq.shape
         H = H1 - 1
 
-        # Encode all frames once
+        # Online encoder: z_all used for prediction input, state_head, Jacobian
         obs_flat = obs_seq.view(B * H1, C, h, w)
-        z_flat   = self.model.encoder(obs_flat)       # (B*(H+1), d)
+        z_flat   = self.model.encoder(obs_flat)        # (B*(H+1), d)
         d        = z_flat.shape[-1]
-        z_all    = z_flat.view(B, H1, d)              # (B, H+1, d)
+        z_all    = z_flat.view(B, H1, d)               # (B, H+1, d) online
 
-        # Maintain EMA of equilibrium encoding across batches (training only)
+        # Target encoder: slowly-moving EMA copy — provides stable pred targets
+        with torch.no_grad():
+            z_tgt_flat = self.model.target_encoder(obs_flat)
+            z_tgt_all  = z_tgt_flat.view(B, H1, d)    # (B, H+1, d) target
+
+        # EMA of z* from online encoder (used for Jacobian regularisation)
         if is_train:
             z0_mean = z_all[:, 0].mean(dim=0).detach()
             if self._z_star_ema is None:
@@ -141,30 +146,32 @@ class Trainer:
             else:
                 self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
-        # Stop-gradient targets for multi-step prediction
-        z_targets = z_all[:, 1:].detach()             # (B, H, d)
+        # Prediction targets: from target encoder (no gradient, stable)
+        z_targets = z_tgt_all[:, 1:]                   # (B, H, d)
 
-        # Multi-step unrolled prediction loss
+        # Multi-step unrolled prediction: online z_t → target z_{t+1}
         z_curr = z_all[:, 0]
         pred_loss = torch.zeros(1, device=self.device)
         for k in range(H):
-            u_k   = actions[:, k]                                   # (B, 1)
-            a_k   = self.model.action_encoder(u_k)                  # (B, d_a)
-            z_hat = self.model.predictor(z_curr, a_k)               # (B, d)
+            u_k   = actions[:, k]
+            a_k   = self.model.action_encoder(u_k)
+            z_hat = self.model.predictor(z_curr, a_k)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
-            z_curr = z_hat   # feed predicted z forward
+            z_curr = z_hat
         pred_loss = pred_loss / H
 
         total_loss = self.lambda_pred * pred_loss
         info = {'pred_loss': pred_loss.item()}
 
-        # VICReg on (z_0, z_1) – prevents representation collapse
+        # VICReg collapse prevention: variance + covariance on online z_0.
+        # No invariance term — invariance between online frames caused collapse
+        # when pred targets were also changing.
         if self.use_vicreg:
-            vic_loss, vic_info = vicreg_loss(
-                z_all[:, 0], z_all[:, 1].detach(),
+            from losses.prediction import vicreg_collapse_loss
+            vic_loss, vic_info = vicreg_collapse_loss(
+                z_all[:, 0],
                 lambda_var=self.vicreg_lambda,
-                mu_cov=self.vicreg_mu,
-                nu_inv=self.vicreg_nu,
+                nu_cov=self.vicreg_nu,
             )
             total_loss = total_loss + vic_loss
             info.update(vic_info)
@@ -265,6 +272,7 @@ class Trainer:
                 params += list(self.state_head.parameters())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             self.optimizer.step()
+            self.model.update_target_encoder(self.ema_momentum)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)

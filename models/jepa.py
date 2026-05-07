@@ -1,5 +1,6 @@
 """JEPA world model: ViT encoder + MLP predictor + action encoder."""
 from __future__ import annotations
+import copy
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 import torch
@@ -61,6 +62,19 @@ class JEPAModel(nn.Module):
             action_dim=self.action_encoder.latent_action_dim,
             hidden_dim=config.predictor_hidden_dim,
         )
+
+        # EMA target encoder: same architecture as online encoder, not in optimizer.
+        # Provides slowly-moving prediction targets that stabilise pred_loss training.
+        self.target_encoder = copy.deepcopy(self.encoder)
+        for p in self.target_encoder.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update_target_encoder(self, momentum: float = 0.996) -> None:
+        """EMA update: target ← momentum * target + (1 - momentum) * online."""
+        for p_online, p_target in zip(self.encoder.parameters(),
+                                       self.target_encoder.parameters()):
+            p_target.data.mul_(momentum).add_(p_online.data, alpha=1 - momentum)
 
     @property
     def latent_dim(self):

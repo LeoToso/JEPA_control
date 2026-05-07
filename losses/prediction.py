@@ -23,6 +23,23 @@ def vicreg_loss(z,z_next,lambda_var=25.0,mu_cov=25.0,nu_inv=1.0,eps=1e-4):
     info={"vicreg_inv":inv_loss.item(),"vicreg_var":var_loss.item(),"vicreg_cov":cov_loss.item()}
     return loss,info
 
+def vicreg_collapse_loss(z, lambda_var=25.0, nu_cov=1.0, eps=1e-4):
+    """Variance + covariance regularization on a single embedding set.
+
+    No invariance term — that caused encoder collapse when applied between
+    online frames whose targets were themselves changing.  Variance prevents
+    mode collapse; covariance decorrelates latent dimensions.
+    """
+    B, d = z.shape
+    std_z    = torch.sqrt(z.var(dim=0) + eps)
+    var_loss = torch.mean(F.relu(1.0 - std_z))
+    z_c      = z - z.mean(dim=0)
+    cov      = (z_c.T @ z_c) / (B - 1)
+    cov_loss = ((cov ** 2).sum() - (torch.diag(cov) ** 2).sum()) / d
+    info = {'vicreg_var': var_loss.item(), 'vicreg_cov': cov_loss.item()}
+    return lambda_var * var_loss + nu_cov * cov_loss, info
+
+
 def combined_prediction_loss(outputs,use_vicreg=True,vicreg_lambda=25.0,vicreg_mu=25.0,vicreg_nu=1.0):
     z_hat=outputs["z_hat"]
     z_next_sg=outputs["z_next_sg"]
