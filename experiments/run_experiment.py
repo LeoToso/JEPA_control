@@ -1,523 +1,336 @@
-"""Single experiment runner."""
+"""JEPA v2 experiment runner."""
 from __future__ import annotations
-import os,sys,json,time,warnings,random
+import os, sys, json, time, warnings, random
 from pathlib import Path
-from typing import Dict,Any,Optional
-# Ensure project root is on sys.path regardless of working directory.
-sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import torch
 import yaml
 
-def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,config_path='configs/cartpole.yaml',data_dir='data',results_dir='results',device=None,skip_if_exists=True,eval_only=False):
-    exp_name=f'{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
-    out_dir=Path(results_dir)/exp_name
-    out_dir.mkdir(parents=True,exist_ok=True)
-    results_file=out_dir/'results.json'
+
+def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
+                   seed=42, config_path='configs/cartpole_v2.yaml',
+                   data_dir='data', results_dir='results',
+                   device=None, skip_if_exists=True, eval_only=False):
+
+    exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
+    out_dir    = Path(results_dir) / exp_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_file = out_dir / 'results.json'
+
     if skip_if_exists and results_file.exists():
         print(f'[skip] {exp_name} already exists.')
         with open(results_file) as f:
             return json.load(f)
+
     print(f'\n{"="*60}\nEXPERIMENT: {exp_name}\n{"="*60}')
-    t_start=time.time()
+    t_start = time.time()
+
     if device is None:
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}')
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+
     with open(config_path) as f:
-        cfg=yaml.safe_load(f)
-    env_cfg=cfg['environment']
-    model_cfg=cfg['model']
-    train_cfg=cfg['training']
-    probe_cfg=cfg['probes']
-    ctrl_cfg=cfg['control']
-    env_cfg['frame_skip']=frame_skip
+        cfg = yaml.safe_load(f)
+    env_cfg   = cfg['environment']
+    model_cfg = cfg['model']
+    train_cfg = cfg['training']
+    ctrl_cfg  = cfg['control']
+    mpc_cfg   = cfg.get('mpc', {})
+    probe_cfg = cfg.get('probes', {})
+    env_cfg['frame_skip'] = frame_skip
+
+    # Ground truth
     from ground_truth.cartpole_gt import CartpoleGroundTruth
-    gt=CartpoleGroundTruth(mass_cart=env_cfg['mass_cart'],mass_pole=env_cfg['mass_pole'],pole_length=env_cfg['pole_length'],gravity=env_cfg['gravity'],dt=env_cfg['dt']*frame_skip)
-    print(f'\n[GT] {gt.summary()}')
-    val_result=gt.validate_linearization()
-    print(f'[GT] Linearisation validation: {val_result}')
-    from data.dataset import load_dataset,make_dataloaders,generate_dataset
-    h5_path=Path(data_dir)/f'cartpole_{dataset_name}_fs{frame_skip}_seed{seed}.h5'
+    gt = CartpoleGroundTruth(
+        mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
+        pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
+        dt=env_cfg['dt'] * frame_skip,
+    )
+    print(f'[GT] unstable eigenvalues: {np.round(gt.unstable_eigenvalues, 4)}')
+
+    # Dataset
+    from data.dataset import load_dataset, make_dataloaders, generate_dataset
+    h5_path = Path(data_dir) / f'cartpole_v2_{dataset_name}_fs{frame_skip}_seed{seed}.h5'
+    horizon = int(train_cfg.get('horizon', 20))
     if h5_path.exists():
-        print(f'\n[data] Loading {h5_path}')
-        data=load_dataset(str(h5_path))
+        print(f'[data] Loading {h5_path}')
+        data = load_dataset(str(h5_path))
     else:
-        print(f'\n[data] Generating {dataset_name} dataset...')
-        data=generate_dataset(dataset_type=dataset_name,n_transitions=cfg['data']['n_random'],frame_skip=frame_skip,save_path=str(h5_path),seed=seed,image_size=env_cfg['image_size'],init_range=float(cfg['data'].get('random_init_range',0.1)),lqr_init_range=float(cfg['data'].get('lqr_init_range',0.05)),lqr_noise_std=float(cfg['data'].get('lqr_noise_std',0.1)))
-    kappa=data.get('action_cov_condition_number',float('nan'))
-    print(f'[data] Action covariance condition number: {kappa:.2f}')
-    if kappa>1000:
-        warnings.warn('kappa > 1000: B_hat estimate may be unreliable!')
-    loaders=make_dataloaders(data,batch_size=train_cfg['batch_size'])
-    from models.jepa import make_jepa,JEPAConfig
-    model=make_jepa(encoder_variant,latent_dim=model_cfg['latent_dim'],action_latent_dim=model_cfg['action_latent_dim'],encoder_channels=model_cfg['encoder_channels'],predictor_hidden_dim=model_cfg['predictor_hidden_dim'],image_size=env_cfg['image_size'])
+        print(f'[data] Generating {dataset_name} dataset...')
+        data = generate_dataset(
+            dataset_type=dataset_name,
+            n_transitions=cfg['data']['n_random'],
+            frame_skip=frame_skip,
+            save_path=str(h5_path),
+            seed=seed,
+            image_size=env_cfg['image_size'],
+            init_range=float(cfg['data'].get('random_init_range', 0.15)),
+            lqr_init_range=float(cfg['data'].get('lqr_init_range', 0.10)),
+            lqr_noise_std=float(cfg['data'].get('lqr_noise_std', 0.1)),
+        )
+    loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
+                               horizon=horizon)
+    print(f'[data] train={len(loaders["train"].dataset)}  '
+          f'val={len(loaders["val"].dataset)}  horizon={horizon}')
+
+    # Model
+    from models.jepa import make_jepa, JEPAConfig
+    model = make_jepa(
+        variant=encoder_variant,
+        latent_dim=model_cfg['latent_dim'],
+        action_latent_dim=model_cfg['action_latent_dim'],
+        image_size=env_cfg['image_size'],
+        patch_size=model_cfg.get('patch_size', 8),
+        vit_embed_dim=model_cfg.get('vit_embed_dim', 128),
+        vit_depth=model_cfg.get('vit_depth', 4),
+        vit_num_heads=model_cfg.get('vit_num_heads', 4),
+        predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
+    )
     model.to(device)
-    n_params=sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f'\n[model] {encoder_variant} - {n_params:,} trainable parameters')
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f'[model] {encoder_variant}  {n_params:,} trainable params')
+
+    # Train
     from training.trainer import Trainer
-    # lambda_spec and lambda_PBH now act directly on model.dynamics.A/B
-    # (not mini_batch_dmdc), so the effective gradient scale is ~1 per unit.
-    # Use 1.0 for spectral (matches conjugacy loss scale) and 0.5 for PBH.
-    variant_weights={'E-noact':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-spec':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=1.0),'E-PBH':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=0.0),'E-both-r':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=1.0),'E-lift':dict(lambda_pred=1.0,lambda_PBH=0.0,lambda_spec=0.0),'E-full':dict(lambda_pred=1.0,lambda_PBH=1.0,lambda_spec=1.0)}
-    train_cfg_exp=dict(train_cfg)
-    train_cfg_exp.update(variant_weights.get(encoder_variant,{}))
-    trainer=Trainer(model=model,config_dict=train_cfg_exp,gt=gt,save_dir=str(out_dir/'checkpoints'),device=device,seed=seed)
-    # --eval-only: load saved model weights and skip training.
-    # Useful when re-running just DMDc/probes/control after a hyperparameter change.
-    # _state_head_trained tracks whether the state_head weights are meaningful
-    # (trained or loaded from checkpoint) vs randomly initialised.
-    _state_head_trained=False
-    saved_model=out_dir/'model_final.pt'
+    train_cfg_exp = dict(train_cfg)
+    trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
+                      save_dir=str(out_dir / 'checkpoints'), device=device, seed=seed)
+
+    _state_head_trained = False
+    saved_model = out_dir / 'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
-        # strict=False: W_pinv may be present in old checkpoints (saved after
-        # compute_pseudoinverse()); it is ignored here and recomputed below.
-        model.load_state_dict(torch.load(saved_model,map_location=device),strict=False)
-        state_head_path=out_dir/'state_head.pt'
-        if state_head_path.exists():
-            import torch.nn as nn
-            if trainer.state_head is None:
-                trainer.state_head=nn.Linear(model.config.latent_dim,4).to(device)
-            trainer.state_head.load_state_dict(torch.load(state_head_path,map_location=device))
-            _state_head_trained=True
-            print(f'[train] --eval-only: loaded state_head from {state_head_path}')
-        else:
-            print('[train] --eval-only: no state_head.pt; will use training-data regression for W_probe')
-        history={'train':[],'val':[]}
+        model.load_state_dict(torch.load(saved_model, map_location=device), strict=False)
+        sh_path = out_dir / 'state_head.pt'
+        if sh_path.exists() and trainer.state_head is not None:
+            trainer.state_head.load_state_dict(
+                torch.load(sh_path, map_location=device))
+            _state_head_trained = True
+            print(f'[train] loaded state_head from {sh_path}')
+        history = {'train': [], 'val': []}
     else:
-        print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
-        history=trainer.fit(loaders['train'],loaders['val'],epochs=train_cfg_exp['epochs'],checkpoint_every=train_cfg_exp.get('checkpoint_every',10))
-        _state_head_trained=True
-    from models.action_encoder import LinearActionEncoder
-    if isinstance(model.action_encoder,LinearActionEncoder):
-        model.action_encoder.compute_pseudoinverse()
-        ipe=float(torch.norm(model.action_encoder.W_pinv@model.action_encoder.W.weight.data-torch.eye(1,device=device)).item())
-        print(f'[model] W_pinv @ W identity error: {ipe:.2e}')
-    print('\n[DMDc] Fitting latent system on test set...')
-    A_hat,B_hat,dmdc_fitter=trainer.post_training_dmdc(loaders['test'])
-    # Fully-observed latent model: C_hat = I_d (latent state IS the observation).
-    d=A_hat.shape[0]
-    C_hat=np.eye(d)
-    print(f'[DMDc] Using C_hat = I_{d} (fully-observed latent model)')
-    print('\n[rollout] Generating probe rollout data...')
+        print(f'[train] training for {train_cfg_exp["epochs"]} epochs ...')
+        history = trainer.fit(
+            loaders['train'], loaders['val'],
+            epochs=train_cfg_exp['epochs'],
+            checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
+        )
+        _state_head_trained = True
+
+    # Compute z*
     from envs.cartpole_visual import ContinuousCartpoleVisual
-    env=ContinuousCartpoleVisual(frame_skip=frame_skip,image_size=env_cfg['image_size'],mass_cart=env_cfg['mass_cart'],mass_pole=env_cfg['mass_pole'],pole_length=env_cfg['pole_length'],gravity=env_cfg['gravity'],dt=env_cfg['dt'],seed=seed)
-    rollout_data=_generate_rollout_data(model,env,gt,n_rollouts=probe_cfg['n_rollouts_probes'],T=probe_cfg['T_rollout'],device=device,A_hat=A_hat,B_hat=B_hat,C_hat=C_hat)
-    paired_data=_generate_paired_data(model,env,n_pairs=1000,device=device)
-    print('\n[probes] Running probe suite...')
-    from probes.suite import run_all_probes
-    probe_results=run_all_probes(model=model,encoder_variant=encoder_variant,dataset=data,gt=gt,rollout_data=rollout_data,paired_data=paired_data,env=env,device=device,config=probe_cfg)
-    print('\n[control] Running control validation...')
-    from control.lqr import solve_discrete_lqr, pre_stabilize_A
-    from control.mpc import LatentMPC
-    from control.rollout import evaluate_stabilization_mpc
-    from control.visualize import visualize_mpc_rollout, create_mpc_video
-    d_u=B_hat.shape[1]
-    mpc_cfg=cfg.get('mpc',{})
-    mpc_horizon=int(mpc_cfg.get('horizon',20))
-    mpc_chunk=int(mpc_cfg.get('chunk_size',1))
-    mpc_Qf_mult=float(mpc_cfg.get('Q_f_multiplier',10.0))
-    n_vis_frames=int(mpc_cfg.get('n_vis_frames',8))
-    n_seq_steps=int(mpc_cfg.get('n_seq_steps',10000))
-    hist_weight=float(mpc_cfg.get('history_cost_weight',0.1))
-    dt_eff=env_cfg['dt']*frame_skip
-    print(f'[control] MPC: horizon={mpc_horizon} steps ({mpc_horizon*dt_eff*1000:.0f} ms)'
-          f'  chunk={mpc_chunk}  training: 1-step transitions at dt={dt_eff*1000:.0f} ms')
-    R_lqr=float(ctrl_cfg.get('R_lqr',0.01))*np.eye(d_u)
-    print(f'[control] R={R_lqr[0,0]:.4f}  Q_f={mpc_Qf_mult:.1f}*Q  hist_w={hist_weight}')
+    env = ContinuousCartpoleVisual(
+        frame_skip=frame_skip, image_size=env_cfg['image_size'],
+        mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
+        pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
+        dt=env_cfg['dt'], seed=seed,
+    )
     model.eval()
-    obs_eq,_,_=env.reset_to_state(np.zeros(4))
-    obs_eq_t=torch.from_numpy(obs_eq).float().permute(2,0,1)[None].to(device)/255.0
+    obs_eq, _, _ = env.reset_to_state(np.zeros(4))
+    obs_eq_t = (torch.from_numpy(obs_eq).float()
+                .permute(2, 0, 1)[None].to(device) / 255.0)
     with torch.no_grad():
-        z_star=model.encoder(obs_eq_t).cpu().numpy()[0]
+        z_star = model.encoder(obs_eq_t).cpu().numpy()[0]
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
-    # Physics-weighted latent Q: Q_z = W^T @ Q_phys @ W.
-    # W (4,d) maps latent → physical state. Source priority:
-    #  1. Trained state_head.weight  — supervised directly on theta with 10× weight
-    #  2. Training-data regression   — 50k balanced samples; better than passive rollouts
-    # Using an untrained (random) state_head would give a garbage Q, so we gate on
-    # _state_head_trained to ensure the weights are meaningful.
-    Q_lqr=np.eye(d)  # fallback
-    Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
-    W_probe=None
+
+    # Jacobian A_jac, B_jac
+    print('[control] Computing Jacobian at z* ...')
+    from control.jacobian import compute_jacobian_np
+    A_jac, B_jac = compute_jacobian_np(
+        model.predictor, model.action_encoder, z_star, device)
+    rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
+    print(f'[control] rho(A_jac)={rho_jac:.4f}')
+
+    # Probes
+    print('\n[probes] Running probes ...')
+    from probes.suite import run_all_probes
+    probe_results = run_all_probes(
+        A_jac=A_jac, B_jac=B_jac, gt=gt,
+        model=model, env=env, z_star=z_star,
+        device=device, config=probe_cfg,
+    )
+
+    # MPC setup
+    action_lb = float(env_cfg.get('action_range', [-10, 10])[0])
+    action_ub = float(env_cfg.get('action_range', [-10, 10])[1])
+    mpc_horizon  = int(mpc_cfg.get('horizon', 20))
+    mpc_chunk    = int(mpc_cfg.get('chunk_size', 1))
+    mpc_Qf_mult  = float(mpc_cfg.get('Q_f_multiplier', 10.0))
+    n_trials     = int(probe_cfg.get('n_trials_control', 100))
+    T_rollout    = int(probe_cfg.get('T_rollout', 200))
+    init_scale   = float(ctrl_cfg.get('init_scale', 0.05))
+    R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(B_jac.shape[1])
+    d            = len(z_star)
+
+    # Q from state_head if available, else identity
     if _state_head_trained and trainer.state_head is not None:
-        W_probe=trainer.state_head.weight.detach().cpu().numpy()  # (4,d)
-        print(f'[control] W_probe: state_head  ||W||={np.linalg.norm(W_probe):.3f}')
+        W = trainer.state_head.weight.detach().cpu().numpy()  # (4, d)
+        Q_phys_ctrl = np.diag([10.0, 0.1, 100.0, 0.1])
+        Q_lqr = W.T @ Q_phys_ctrl @ W + 0.01 * np.eye(d)
+        Q_lqr *= d / (np.trace(Q_lqr) + 1e-12)
     else:
-        # Fit from training data: broader, more symmetric theta coverage than passive rollouts.
-        print('[control] Fitting W_probe from training data (no trained state_head)...')
-        _Z_tr,_S_tr=[],[]
-        model.eval()
-        with torch.no_grad():
-            for _b in loaders['train']:
-                _Z_tr.append(model.encoder(_b['obs'].to(device)).cpu().numpy())
-                _S_tr.append(_b['state'].numpy())
-        _Z_tr=np.vstack(_Z_tr); _S_tr=np.vstack(_S_tr)
-        _W_T,_,_,_=np.linalg.lstsq(np.hstack([_Z_tr,np.ones((len(_Z_tr),1))]),_S_tr,rcond=1e-5)
-        W_probe=_W_T[:-1].T  # (4,d)
-        print(f'[control] W_probe: training-data regression  ||W||={np.linalg.norm(W_probe):.3f}')
-    if W_probe is not None:
-        Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
-        Q_z*=d/(np.trace(Q_z)+1e-12)
-        Q_lqr=Q_z
-        print(f'[control] Physics-weighted Q: trace(Q)/d={np.trace(Q_lqr)/d:.3f}  '
-              f'||Q||_F={np.linalg.norm(Q_lqr,"fro"):.3f}')
-    action_lb=float(env_cfg.get('action_range',[-10,10])[0])
-    action_ub=float(env_cfg.get('action_range',[-10,10])[1])
-    # Ground truth sanity check: LQR on physical state (no encoder).
-    # Confirms the environment is controllable before blaming the latent model.
+        Q_lqr = np.eye(d)
+    Q_f = mpc_Qf_mult * Q_lqr
+
+    from control.rollout import evaluate_stabilization_mpc
+    from control.visualize import save_rollout_frames, save_rollout_video
+    ctrl_results = {}
+
+    # ── GT-LQR sanity check ───────────────────────────────────────────────────
     try:
-        K_gt,_,_=solve_discrete_lqr(gt.A_star,gt.B_star,
-                                     np.diag([10.0,0.1,100.0,0.1]),R_lqr)
-        rng_gt=np.random.RandomState(seed+1000)
-        gt_succs=[]
+        from control.lqr import solve_discrete_lqr
+        K_gt, _, _ = solve_discrete_lqr(gt.A_star, gt.B_star,
+                                         np.diag([10., 0.1, 100., 0.1]), R_lqr)
+        rng_gt = np.random.RandomState(seed + 999)
+        gt_succs = []
         for _ in range(20):
-            x0_gt=rng_gt.uniform(-float(ctrl_cfg.get('init_scale',0.05)),
-                                   float(ctrl_cfg.get('init_scale',0.05)),4).astype(np.float32)
-            _,s_gt,_=env.reset_to_state(x0_gt)
-            done_gt=False
-            for _t in range(probe_cfg['T_rollout']):
-                u_gt=float(np.clip((-K_gt@s_gt)[0],action_lb,action_ub))
-                _,s_gt,_,done_gt,_=env.step(u_gt)
+            x0_gt = rng_gt.uniform(-init_scale, init_scale, 4).astype(np.float32)
+            _, s_gt, _ = env.reset_to_state(x0_gt)
+            done_gt = False
+            for _ in range(T_rollout):
+                u_gt = float(np.clip((-K_gt @ s_gt)[0], action_lb, action_ub))
+                _, s_gt, _, done_gt, _ = env.step(u_gt)
                 if done_gt: break
             gt_succs.append(int(not done_gt))
-        print(f'[control] GT-LQR (physical state): success={np.mean(gt_succs):.2f}  '
-              f'({sum(gt_succs)}/20 trials)')
-    except Exception as _e:
-        print(f'[control] GT-LQR failed: {_e}')
-    ctrl_results={}
+        print(f'[control] GT-LQR sanity: {np.mean(gt_succs):.2f}  ({sum(gt_succs)}/20)')
+    except Exception as e:
+        print(f'[control] GT-LQR failed: {e}')
+
+    # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
+    print('\n[control] --- Linear MPC (Jacobian) ---')
     try:
-        # ── 2nd-order dynamics: z_{t+1} = A1 z_t + A2 z_{t-1} + B u_t ──────
-        # A1=A_hat (from LinearDynamics, known-good spectral structure).
-        # A2 fitted from 1st-order residuals captures velocity via Takens embedding.
-        # Jointly fitting A1 from random rollouts produces phantom modes — avoid it.
-        A1,A2,B_2nd,info_2nd=trainer.post_training_2nd_order(
-            env,A1_fixed=A_hat,B_fixed=B_hat,n_steps=n_seq_steps,seed=seed)
-        # Pre-stabilise A1 using the known-good A_hat (expects 0 deflations for E-full).
-        A1_mpc,n_def=pre_stabilize_A(A1,gt.unstable_eigenvalues,tol=0.05,target=0.9)
-        rho_mpc=float(np.max(np.abs(np.linalg.eigvals(A1_mpc))))
-        print(f'[control] A1 pre-stab: deflated={n_def}  rho={rho_mpc:.4f}')
-        # Sign check using A_hat directly (same check that worked in 1st-order MPC).
-        K_sign,_,_=solve_discrete_lqr(A1_mpc,B_2nd,Q_lqr,R_lqr)
-        model.eval()
-        # Use 6 theta samples (±0.05, ±0.10, ±0.15) for a more robust sign vote.
-        sign_votes=[]
-        for _theta,_label in [(+0.05,'r'),(+0.10,'r'),(+0.15,'r'),
-                               (-0.05,'l'),(-0.10,'l'),(-0.15,'l')]:
-            _obs,_,_=env.reset_to_state(np.array([0.,0.,_theta,0.],dtype=np.float32))
-            _obs_t=torch.from_numpy(_obs).float().permute(2,0,1)[None].to(device)/255.0
-            with torch.no_grad():
-                _z=model.encoder(_obs_t).cpu().numpy()[0]
-            _u=float(-K_sign@(_z-z_star))
-            _ok=(_u>0 if _theta>0 else _u<0)
-            sign_votes.append(_ok)
-            print(f'[control] Sign diag  theta={_theta:+.3f}({_label}): u={_u:+.4f}  ok={_ok}')
-        n_ok=sum(sign_votes)
-        if n_ok<=1:
-            B_2nd=-B_2nd
-            print(f'[control] SIGN FLIP: negating B_2nd ({n_ok}/6 correct before flip)')
-        elif n_ok>=5:
-            print(f'[control] Sign checks passed ({n_ok}/6)')
-        else:
-            print(f'[control] WARNING: mixed sign votes {n_ok}/6 — no flip')
-        # ── Theta sweep diagnostic: K(z(θ)-z*) vs θ ──────────────────────────
-        # Reveals whether the encoder encodes theta direction at all.
-        # If K(z-z*) is monotone in θ: encoder is working.
-        # If it's roughly constant or has wrong sign: theta-blind encoder.
-        print('[control] Theta sweep  K·(z−z*) vs θ:')
-        _sh=trainer.state_head if (_state_head_trained and hasattr(trainer,'state_head')) else None
-        for _th in [-0.20,-0.15,-0.10,-0.05,0.0,+0.05,+0.10,+0.15,+0.20]:
-            _o,_,_=env.reset_to_state(np.array([0.,0.,_th,0.],dtype=np.float32))
-            _ot=torch.from_numpy(_o).float().permute(2,0,1)[None].to(device)/255.0
-            with torch.no_grad():
-                _zt=model.encoder(_ot).cpu().numpy()[0]
-                _sh_str=''
-                if _sh is not None:
-                    _zt_t=torch.from_numpy(_zt).float().unsqueeze(0).to(device)
-                    _th_hat=float(_sh(_zt_t).cpu().numpy()[0,2])
-                    _sh_str=f'  sh_θ={_th_hat:+.4f}'
-            _dz=np.linalg.norm(_zt-z_star)
-            _ut=float(-K_sign@(_zt-z_star))
-            _corr=(_th==0.0) or ((_ut>0)==(_th>0))
-            print(f'  θ={_th:+.3f}  ‖z−z*‖={_dz:.3f}  K·Δz={_ut:+.4f}  {"✓" if _corr else "✗"}{_sh_str}')
-        # ── Augmented state MPC: s_t = [z_t, z_{t-1}], s* = [z*, z*] ────────
-        # Dynamics: s_{t+1} = [[A1, A2]; [I, 0]] s_t + [[B]; [0]] u_t
-        # Riccati gives K = [K1, K2] with K2 ≠ 0 (velocity feedback).
-        d_aug=2*d
-        A_aug=np.zeros((d_aug,d_aug)); A_aug[:d,:d]=A1_mpc; A_aug[:d,d:]=A2
-        A_aug[d:,:d]=np.eye(d)
-        B_aug=np.zeros((d_aug,d_u)); B_aug[:d]=B_2nd
-        # Pre-stabilise A_aug itself: A2 can introduce additional phantom-unstable
-        # modes in the 2d-dim augmented system even when A1 is pre-stabilised.
-        # Only non-physical unstable modes are deflated; the physical pole mode is
-        # left intact so the DARE can place it optimally.
-        A_aug_stab,n_def_aug=pre_stabilize_A(
-            A_aug,gt.unstable_eigenvalues,tol=0.1,target=0.9)
-        rho_aug_stab=float(np.max(np.abs(np.linalg.eigvals(A_aug_stab))))
-        print(f'[control] A_aug pre-stab: deflated={n_def_aug}  rho={rho_aug_stab:.4f}')
-        Q_aug=np.block([[Q_lqr,np.zeros((d,d))],[np.zeros((d,d)),hist_weight*Q_lqr]])
-        Q_f_aug=mpc_Qf_mult*Q_aug
-        # Feedforward correction: A@z_star ≠ z_star in general, so the LQR
-        # would settle at z_eq ≠ z_star without this constant offset.
-        # u_ff = b^T (I-A) s* / ||b||² makes z_eq = z_star the true steady-state.
-        s_star_aug=np.concatenate([z_star,z_star])
-        c_bias=A_aug@s_star_aug-s_star_aug         # (A-I) @ s*
-        b_aug=B_aug[:,0]
-        u_ff=-float(np.dot(b_aug,c_bias))/(float(np.dot(b_aug,b_aug))+1e-12)
-        print(f'[control] Bias ||c||={np.linalg.norm(c_bias):.3f}  '
-              f'||A1@z*-z*||={np.linalg.norm(A1_mpc@z_star-z_star):.3f}  '
-              f'u_ff={u_ff:.4f}')
-        # Build MPC on the pre-stabilised A_aug so DARE converges correctly.
-        # The gains are applied to the ORIGINAL A_aug during the rollout,
-        # so the closed-loop rho is evaluated on A_aug (not A_aug_stab).
-        mpc=LatentMPC(A=A_aug_stab,B=B_aug,Q=Q_aug,R=R_lqr,
-                      horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
-                      action_lb=action_lb,action_ub=action_ub,u_offset=u_ff)
-        print(f'[control] {mpc.summary()}')
-        K_gain=mpc.K_list[0]
-        K1_norm=float(np.linalg.norm(K_gain[:,:d]))
-        K2_norm=float(np.linalg.norm(K_gain[:,d:]))
-        print(f'[control] K[0]: ||K1||={K1_norm:.3f}  ||K2||={K2_norm:.3f}'
-              f'  (K2/K1={K2_norm/(K1_norm+1e-9):.2f})')
-        # Latent closed-loop stability: rho(A - B K) < 1 ↔ latent system is stable.
-        # NOTE: evaluated on original A_aug (not A_aug_stab) — true performance indicator.
-        A_cl=A_aug-B_aug@K_gain
-        rho_cl=float(np.max(np.abs(np.linalg.eigvals(A_cl))))
-        print(f'[control] Closed-loop latent rho(A_cl)={rho_cl:.4f}'
-              f'  {"STABLE ✓" if rho_cl < 1 else "UNSTABLE ✗ — trying A2=0 fallback"}')
-        if rho_cl >= 1.0:
-            # A2-induced phantom modes survived pre-stabilisation.
-            # Drop A2 entirely: (A_aug_zero, B_aug) is stabilisable iff (A1_mpc, B_2nd) is,
-            # which we know from comparison B (rho(A_cl)=0.9237 when A2=0).
-            A_aug_zero=np.zeros((d_aug,d_aug))
-            A_aug_zero[:d,:d]=A1_mpc; A_aug_zero[d:,:d]=np.eye(d)
-            mpc_zero=LatentMPC(A=A_aug_zero,B=B_aug,Q=Q_aug,R=R_lqr,
-                               horizon=mpc_horizon,chunk_size=mpc_chunk,Q_f=Q_f_aug,
-                               action_lb=action_lb,action_ub=action_ub,u_offset=u_ff)
-            K_zero=mpc_zero.K_list[0]
-            rho_zero=float(np.max(np.abs(np.linalg.eigvals(A_aug_zero-B_aug@K_zero))))
-            print(f'[control] A2=0 fallback: rho(A_cl)={rho_zero:.4f}'
-                  f'  {"STABLE ✓" if rho_zero < 1 else "UNSTABLE ✗"}')
-            if rho_zero < rho_cl:  # use A2=0 controller if it's at least better
-                mpc=mpc_zero; K_gain=K_zero; rho_cl=rho_zero
-                print('[control] Using A2=0 controller for evaluation')
-        ctrl_results=evaluate_stabilization_mpc(
-            encoder=model.encoder,mpc=mpc,env=env,
-            n_trials=probe_cfg['n_trials_control'],T=probe_cfg['T_rollout'],
-            init_scale=float(ctrl_cfg.get('init_scale',0.05)),
-            stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold',0.1)),
-            settling_threshold=float(ctrl_cfg.get('settling_threshold',0.05)),
-            seed=seed,device=device,z_star=z_star,vis_trial=0)
-        print(f'[control] Success rate:       {ctrl_results["success_rate"]:.3f}')
-        print(f'[control] Mean episode length: {ctrl_results["mean_episode_length"]:.1f} / {probe_cfg["T_rollout"]} steps')
-        print(f'[control] Mean frac stable:    {ctrl_results["mean_fraction_stable"]:.3f}  (fraction of time ||state|| < settling_thr)')
-        print(f'[control] Mean final error:    {ctrl_results["mean_final_error"]:.4f}')
-        print(f'[control] Termination cause:   x-boundary={ctrl_results["x_term_rate"]:.2f}'
-              f'  theta-boundary={ctrl_results["theta_term_rate"]:.2f}'
-              f'  timeout(success)={ctrl_results["timeout_rate"]:.2f}')
+        from control.mpc import LatentMPC
+        # Pre-stabilise if needed
+        from control.lqr import pre_stabilize_A
+        A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
+                                          tol=0.05, target=0.9)
+        print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
+        mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_lqr, R=R_lqr,
+                             horizon=mpc_horizon, chunk_size=mpc_chunk,
+                             Q_f=Q_f, action_lb=action_lb, action_ub=action_ub)
+        K_lin   = mpc_lin.K_list[0]
+        A_cl    = A_jac - B_jac @ K_lin
+        rho_cl  = float(np.max(np.abs(np.linalg.eigvals(A_cl))))
+        print(f'[control] {mpc_lin.summary()}')
+        print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
 
-        # ── Comparison A: Q = I (identity on augmented state) ────────────────
-        # Tests whether the physics-weighted Q is helping or hurting.
-        # Q=I penalises all latent dims equally—may capture nonlinear theta encoding
-        # that the linear W-probe Q misses.
-        print('\n[control] --- Comparison A: Q = I (identity) ---')
-        Q_I_aug = np.eye(d_aug)
-        Q_f_I_aug = mpc_Qf_mult * Q_I_aug
-        mpc_Qi = LatentMPC(A=A_aug, B=B_aug, Q=Q_I_aug, R=R_lqr,
-                           horizon=mpc_horizon, chunk_size=mpc_chunk, Q_f=Q_f_I_aug,
-                           action_lb=action_lb, action_ub=action_ub, u_offset=u_ff)
-        K_Qi = mpc_Qi.K_list[0]
-        rho_cl_Qi = float(np.max(np.abs(np.linalg.eigvals(A_aug - B_aug @ K_Qi))))
-        print(f'[control] Q=I  rho(A_cl)={rho_cl_Qi:.4f}  '
-              f'||K1||={np.linalg.norm(K_Qi[:,:d]):.3f}  ||K2||={np.linalg.norm(K_Qi[:,d:]):.3f}')
-        if rho_cl_Qi < 1.0:
-            cr_Qi = evaluate_stabilization_mpc(
-                encoder=model.encoder, mpc=mpc_Qi, env=env,
-                n_trials=probe_cfg['n_trials_control'], T=probe_cfg['T_rollout'],
-                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
-                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
-                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
-                seed=seed, device=device, z_star=z_star, vis_trial=-1)
-            cr_Qi.pop('vis_result', None)
-            print(f'[control] Q=I  success={cr_Qi["success_rate"]:.3f}'
-                  f'  ep_len={cr_Qi["mean_episode_length"]:.1f}'
-                  f'  x_term={cr_Qi["x_term_rate"]:.2f}'
-                  f'  th_term={cr_Qi["theta_term_rate"]:.2f}')
-            ctrl_results['cmp_q_identity'] = cr_Qi
-        else:
-            print(f'[control] Q=I UNSTABLE — skipping eval')
+        cr_lin = evaluate_stabilization_mpc(
+            encoder=model.encoder, mpc=mpc_lin, env=env,
+            n_trials=n_trials, T=T_rollout, init_scale=init_scale,
+            seed=seed, device=device, z_star=z_star, vis_trial=0,
+        )
+        print(f'[control] Linear MPC: success={cr_lin["success_rate"]:.3f}'
+              f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
+              f'  frac_stable={cr_lin["mean_fraction_stable"]:.3f}')
+        ctrl_results['linear_mpc'] = {k: v for k, v in cr_lin.items()
+                                       if k != 'vis_result'}
 
-        # ── Comparison B: 1st-order MPC (no z_{t-1} augmentation) ────────────
-        # Tests whether the A2 (2nd-order) term is helping or injecting noise.
-        print('\n[control] --- Comparison B: 1st-order MPC (no augmentation) ---')
-        c_bias_1st = A1_mpc @ z_star - z_star
-        b_1st = B_2nd[:, 0]
-        u_ff_1st = -float(np.dot(b_1st, c_bias_1st)) / (float(np.dot(b_1st, b_1st)) + 1e-12)
-        mpc_1st = LatentMPC(A=A1_mpc, B=B_2nd, Q=Q_lqr, R=R_lqr,
-                            horizon=mpc_horizon, chunk_size=mpc_chunk,
-                            Q_f=mpc_Qf_mult * Q_lqr,
-                            action_lb=action_lb, action_ub=action_ub, u_offset=u_ff_1st)
-        K_1st = mpc_1st.K_list[0]
-        rho_cl_1st = float(np.max(np.abs(np.linalg.eigvals(A1_mpc - B_2nd @ K_1st))))
-        print(f'[control] 1st-order  rho(A_cl)={rho_cl_1st:.4f}  '
-              f'||K||={np.linalg.norm(K_1st):.3f}  u_ff={u_ff_1st:.4f}')
-        if rho_cl_1st < 1.0:
-            cr_1st = evaluate_stabilization_mpc(
-                encoder=model.encoder, mpc=mpc_1st, env=env,
-                n_trials=probe_cfg['n_trials_control'], T=probe_cfg['T_rollout'],
-                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
-                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
-                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
-                seed=seed, device=device, z_star=z_star, vis_trial=-1)
-            cr_1st.pop('vis_result', None)
-            print(f'[control] 1st-order  success={cr_1st["success_rate"]:.3f}'
-                  f'  ep_len={cr_1st["mean_episode_length"]:.1f}'
-                  f'  x_term={cr_1st["x_term_rate"]:.2f}'
-                  f'  th_term={cr_1st["theta_term_rate"]:.2f}')
-            ctrl_results['cmp_1st_order'] = cr_1st
-        else:
-            print(f'[control] 1st-order UNSTABLE — skipping eval')
-
-        # ── Comparison C: Gradient MPC through JEPA predictor ────────────────
-        # If the linear W-probe misses nonlinear theta encoding, the predictor
-        # may still capture it. This comparison tests that hypothesis.
-        print('\n[control] --- Comparison C: Gradient MPC (predictor rollout) ---')
-        try:
-            from control.grad_mpc import GradientLatentMPC
-            grad_mpc = GradientLatentMPC(
-                predictor=model.predictor,
-                action_encoder=model.action_encoder,
-                Q=Q_lqr, R=R_lqr, Q_f=mpc_Qf_mult*Q_lqr,
-                horizon=mpc_horizon, chunk_size=mpc_chunk,
-                action_lb=action_lb, action_ub=action_ub,
-                lr=0.05, n_iter=40, device=device)
-            print(f'[control] {grad_mpc.summary()}')
-            # Only run a subset of trials (slower due to gradient opt per step).
-            n_grad_trials = min(20, probe_cfg['n_trials_control'])
-            cr_grad = evaluate_stabilization_mpc(
-                encoder=model.encoder, mpc=grad_mpc, env=env,
-                n_trials=n_grad_trials, T=probe_cfg['T_rollout'],
-                init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
-                stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
-                settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
-                seed=seed, device=device, z_star=z_star, vis_trial=-1)
-            cr_grad.pop('vis_result', None)
-            print(f'[control] GradMPC  success={cr_grad["success_rate"]:.3f}'
-                  f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
-                  f'  x_term={cr_grad["x_term_rate"]:.2f}'
-                  f'  th_term={cr_grad["theta_term_rate"]:.2f}'
-                  f'  (n={n_grad_trials})')
-            ctrl_results['cmp_grad_mpc'] = cr_grad
-        except Exception as _eg:
-            print(f'[control] GradMPC failed: {_eg}')
-
-        # Save visualization for the first trial.
-        vis_result=ctrl_results.pop('vis_result',None)
-        if vis_result is not None:
-            # Attach model matrices so the visualiser can show latent diagnostics.
-            vis_result['z_star']=z_star
-            vis_result['A_aug']=A_aug; vis_result['B_aug']=B_aug; vis_result['K0']=K_gain
-            visualize_mpc_rollout(
-                vis_result,
-                out_path=out_dir/'mpc_rollout_vis.png',
-                n_frames=n_vis_frames,
-                title=f'{exp_name}  H={mpc_horizon}  chunk={mpc_chunk}')
-            create_mpc_video(
-                vis_result,
-                out_path=out_dir/'mpc_rollout_vis.mp4',
-                fps=25,
-                title=f'{exp_name}  H={mpc_horizon}  chunk={mpc_chunk}')
+        vis = cr_lin.get('vis_result')
+        if vis:
+            save_rollout_frames(vis, out_dir / 'linear_mpc_frames.png',
+                                n_frames=8, title=f'{exp_name}  Linear MPC')
+            save_rollout_video(vis, out_dir / 'linear_mpc.gif',
+                               fps=15, title=f'{exp_name}  Linear MPC')
     except Exception as exc:
         import traceback; traceback.print_exc()
-        warnings.warn(f'Control validation failed: {exc}')
-        ctrl_results={'error':str(exc)}
+        print(f'[control] Linear MPC failed: {exc}')
+        ctrl_results['linear_mpc'] = {'error': str(exc)}
+
+    # ── Nonlinear gradient MPC ────────────────────────────────────────────────
+    print('\n[control] --- Nonlinear Gradient MPC ---')
+    try:
+        from control.grad_mpc import GradientLatentMPC
+        grad_mpc = GradientLatentMPC(
+            predictor=model.predictor,
+            action_encoder=model.action_encoder,
+            Q=Q_lqr, R=R_lqr, Q_f=Q_f,
+            horizon=mpc_horizon, chunk_size=mpc_chunk,
+            action_lb=action_lb, action_ub=action_ub,
+            lr=float(mpc_cfg.get('grad_lr', 0.05)),
+            n_iter=int(mpc_cfg.get('grad_n_iter', 40)),
+            device=device,
+        )
+        print(f'[control] {grad_mpc.summary()}')
+        n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
+        cr_grad = evaluate_stabilization_mpc(
+            encoder=model.encoder, mpc=grad_mpc, env=env,
+            n_trials=n_grad, T=T_rollout, init_scale=init_scale,
+            seed=seed, device=device, z_star=z_star, vis_trial=0,
+        )
+        print(f'[control] Grad MPC:   success={cr_grad["success_rate"]:.3f}'
+              f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
+              f'  frac_stable={cr_grad["mean_fraction_stable"]:.3f}'
+              f'  (n={n_grad})')
+        ctrl_results['grad_mpc'] = {k: v for k, v in cr_grad.items()
+                                     if k != 'vis_result'}
+
+        vis_g = cr_grad.get('vis_result')
+        if vis_g:
+            save_rollout_frames(vis_g, out_dir / 'grad_mpc_frames.png',
+                                n_frames=8, title=f'{exp_name}  Grad MPC')
+            save_rollout_video(vis_g, out_dir / 'grad_mpc.gif',
+                               fps=15, title=f'{exp_name}  Grad MPC')
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        print(f'[control] Grad MPC failed: {exc}')
+        ctrl_results['grad_mpc'] = {'error': str(exc)}
+
     env.close()
-    results={'experiment':{'encoder_variant':encoder_variant,'dataset_name':dataset_name,'frame_skip':frame_skip,'seed':seed,'exp_name':exp_name},'gt_validation':val_result,'data_quality':{'action_cov_condition_number':kappa,'n_train':int(len(data['splits'].get('train',[]))),'n_test':int(len(data['splits'].get('test',[])))}, 'dmdc':{'residual':float(dmdc_fitter.fit_info.get('residual',float('nan'))),'A_hat_spectral_radius':float(np.max(np.abs(np.linalg.eigvals(A_hat)))),'n_iters':int(dmdc_fitter.fit_info.get('n_iters',0))},'probes':probe_results,'control':ctrl_results,'training_time_s':time.time()-t_start,'n_params':n_params}
-    def _make_serializable(obj):
-        if isinstance(obj,dict):
-            return {k:_make_serializable(v) for k,v in obj.items()}
-        elif isinstance(obj,(list,tuple)):
-            return [_make_serializable(v) for v in obj]
-        elif isinstance(obj,np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj,(np.integer,np.floating)):
-            return float(obj)
-        elif isinstance(obj,complex):
-            return {'real':float(obj.real),'imag':float(obj.imag)}
-        elif isinstance(obj,bool):
-            return bool(obj)
+
+    # Save
+    torch.save(model.state_dict(), out_dir / 'model_final.pt')
+    np.save(out_dir / 'A_jac.npy', A_jac)
+    np.save(out_dir / 'B_jac.npy', B_jac)
+    np.save(out_dir / 'z_star.npy', z_star)
+    if trainer.state_head is not None and _state_head_trained:
+        torch.save(trainer.state_head.state_dict(), out_dir / 'state_head.pt')
+
+    results = {
+        'experiment': {'name': exp_name, 'variant': encoder_variant,
+                       'dataset': dataset_name, 'seed': seed},
+        'model':   {'n_params': n_params},
+        'probes':  probe_results,
+        'control': ctrl_results,
+        'jacobian':{'rho': rho_jac},
+        'elapsed_s': time.time() - t_start,
+    }
+
+    def _serial(obj):
+        if isinstance(obj, dict):   return {k: _serial(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)): return [_serial(v) for v in obj]
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, (np.integer, np.floating)): return float(obj)
+        if isinstance(obj, complex): return {'re': float(obj.real), 'im': float(obj.imag)}
         return obj
-    results_serializable=_make_serializable(results)
-    if 'control' in results_serializable and 'all_results' in results_serializable['control']:
-        del results_serializable['control']['all_results']
-    with open(results_file,'w') as f:
-        json.dump(results_serializable,f,indent=2)
-    np.save(out_dir/'A_hat.npy',A_hat)
-    np.save(out_dir/'B_hat.npy',B_hat)
-    np.save(out_dir/'C_hat.npy',C_hat)
-    torch.save(model.state_dict(),out_dir/'model_final.pt')
-    if hasattr(trainer,'state_head') and trainer.state_head is not None:
-        torch.save(trainer.state_head.state_dict(),out_dir/'state_head.pt')
-    elapsed=time.time()-t_start
-    print(f'\n[done] {exp_name} completed in {elapsed:.1f}s')
+
+    with open(results_file, 'w') as f:
+        json.dump(_serial(results), f, indent=2)
+    print(f'\n[done] {exp_name} in {time.time()-t_start:.1f}s')
     return results
 
-def _generate_rollout_data(model,env,gt,n_rollouts,T,device,A_hat,B_hat,C_hat):
-    model.eval()
-    all_states=[]
-    all_latent_states=[]
-    rng=np.random.RandomState(99)
-    for i in range(n_rollouts):
-        x0=rng.uniform(-0.05,0.05,size=4)
-        obs,state,_=env.reset_to_state(x0)
-        traj_states=[]
-        traj_z=[]
-        for t in range(T):
-            traj_states.append(state.copy())
-            obs_t=torch.from_numpy(obs).float().permute(2,0,1)[None].to(device)/255.0
-            with torch.no_grad():
-                z=model.encoder(obs_t).cpu().numpy()[0]
-            traj_z.append(z)
-            obs,state,_,done,_=env.step(0.0)
-            if done:
-                for _ in range(T-t-1):
-                    traj_states.append(state.copy())
-                    traj_z.append(z.copy())
-                break
-        all_states.append(np.array(traj_states))
-        all_latent_states.append(np.array(traj_z))
-    return {'states':np.array(all_states),'latent_states':np.array(all_latent_states),'A_hat':A_hat,'B_hat':B_hat,'C_hat':C_hat}
 
-def _generate_paired_data(model,env,n_pairs,device):
-    model.eval()
-    rng=np.random.RandomState(77)
-    states_list=[]
-    latent_list=[]
-    for _ in range(n_pairs):
-        x0=rng.uniform(-0.1,0.1,size=4)
-        obs,state,_=env.reset_to_state(x0)
-        obs_t=torch.from_numpy(obs).float().permute(2,0,1)[None].to(device)/255.0
-        with torch.no_grad():
-            z=model.encoder(obs_t).cpu().numpy()[0]
-        states_list.append(state.copy())
-        latent_list.append(z)
-    return {'states':np.array(states_list),'latent_states':np.array(latent_list)}
-
-if __name__=='__main__':
+if __name__ == '__main__':
     import argparse
-    parser=argparse.ArgumentParser()
-    parser.add_argument('--variant',default='E-noact',choices=['E-noact','E-spec','E-PBH','E-both-r','E-lift','E-full'])
-    parser.add_argument('--dataset',default='random',choices=['random','lqr','mixed'])
-    parser.add_argument('--frame_skip',type=int,default=1,choices=[1,5,10])
-    parser.add_argument('--seed',type=int,default=42)
-    parser.add_argument('--config',default='configs/cartpole.yaml')
-    parser.add_argument('--data_dir',default='data')
-    parser.add_argument('--results_dir',default='results')
-    parser.add_argument('--eval-only',action='store_true',help='Load model_final.pt and skip training; only re-run DMDc/probes/control')
-    parser.add_argument('--force',action='store_true',help='Re-run even if results.json already exists')
-    args=parser.parse_args()
-    results=run_single_experiment(encoder_variant=args.variant,dataset_name=args.dataset,frame_skip=args.frame_skip,seed=args.seed,config_path=args.config,data_dir=args.data_dir,results_dir=args.results_dir,skip_if_exists=not args.force,eval_only=args.eval_only)
-    print(f'\nControl success rate: {results["control"].get("success_rate","N/A")}')
+    p = argparse.ArgumentParser()
+    p.add_argument('--variant',   default='E-full',
+                   choices=['E-full', 'E-noact'])
+    p.add_argument('--dataset',   default='mixed',
+                   choices=['random', 'lqr', 'mixed'])
+    p.add_argument('--frame_skip',type=int, default=1)
+    p.add_argument('--seed',      type=int, default=42)
+    p.add_argument('--config',    default='configs/cartpole_v2.yaml')
+    p.add_argument('--data_dir',  default='data')
+    p.add_argument('--results_dir', default='results')
+    p.add_argument('--eval-only', action='store_true')
+    p.add_argument('--force',     action='store_true')
+    args = p.parse_args()
+    run_experiment(
+        encoder_variant=args.variant, dataset_name=args.dataset,
+        frame_skip=args.frame_skip, seed=args.seed,
+        config_path=args.config, data_dir=args.data_dir,
+        results_dir=args.results_dir,
+        skip_if_exists=not args.force,
+        eval_only=args.eval_only,
+    )

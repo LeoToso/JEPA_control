@@ -1,272 +1,125 @@
-"""Visualization for MPC rollouts in the learned latent space."""
+"""Visualization for MPC rollouts."""
 from __future__ import annotations
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import numpy as np
 
 
-def visualize_mpc_rollout(
-    result: Dict,
-    out_path: str | Path,
-    n_frames: int = 8,
-    state_labels: Optional[List[str]] = None,
-    title: str = "",
-) -> None:
-    """Save a PNG visualizing an MPC rollout.
-
-    Layout
-    ------
-    Row 0 : n_frames observed RGB frames from the actual rollout
-    Row 1 : predicted ||Δz|| over the planning horizon at each shown frame
-    Row 2 : physical state trajectory (theta, x) + applied actions
-
-    Frames are subsampled evenly from the saved re-planning events.
-    """
+def save_rollout_frames(result: Dict, out_path, n_frames: int = 8, title: str = '') -> None:
+    """Save PNG: top row = n_frames observation images; bottom = theta + action plots."""
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        import matplotlib; matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         import matplotlib.gridspec as gridspec
     except ImportError:
-        warnings.warn("matplotlib unavailable; skipping MPC visualization")
-        return
+        warnings.warn('matplotlib unavailable'); return
 
-    if state_labels is None:
-        state_labels = ["x", "x_dot", "θ", "θ_dot"]
+    all_obs = result.get('all_obs', [])
+    states  = np.asarray(result.get('states', [[0, 0, 0, 0]]))
+    actions = np.asarray(result.get('actions', [[0]]))
+    done_at = result.get('done_at', len(states))
+    T       = len(states)
 
-    frames: List[Dict] = result.get("frames", [])
-    states: np.ndarray = np.asarray(result.get("states", [[0, 0, 0, 0]]))
-    actions: np.ndarray = np.asarray(result.get("actions", [[0]]))
-    T = len(states)
-    done_at = result.get("done_at", T)
+    if len(all_obs) == 0:
+        warnings.warn('No observations in result; skipping frame save'); return
 
-    if len(frames) == 0:
-        warnings.warn("No frames in result — run rollout with save_frames=True")
-        return
+    # Select n_frames evenly from the real portion of the rollout
+    sel_idx = np.linspace(0, min(done_at, len(all_obs)) - 1, n_frames, dtype=int)
 
-    n_show = min(n_frames, len(frames))
-    sel_idx = np.linspace(0, len(frames) - 1, n_show, dtype=int)
-    sel = [frames[i] for i in sel_idx]
+    fig = plt.figure(figsize=(2.5 * n_frames, 7))
+    gs  = gridspec.GridSpec(3, n_frames, figure=fig, hspace=0.5, wspace=0.2)
 
-    fig = plt.figure(figsize=(3.2 * n_show, 12))
-    gs = gridspec.GridSpec(4, n_show, figure=fig, hspace=0.6, wspace=0.25)
-
-    # ── Row 0: observed frames ────────────────────────────────────────────────
-    for col, fd in enumerate(sel):
+    for col, i in enumerate(sel_idx):
         ax = fig.add_subplot(gs[0, col])
-        ax.imshow(fd["obs"])
-        stabilized_marker = "✓" if result.get("stabilized") else ""
-        ax.set_title(f"t={fd['t']} {stabilized_marker}", fontsize=9)
-        ax.axis("off")
+        ax.imshow(all_obs[i])
+        ax.set_title(f't={i}', fontsize=8)
+        ax.axis('off')
 
-    # ── Row 1: predicted ||Δz|| along planning horizon ────────────────────────
-    for col, fd in enumerate(sel):
-        ax = fig.add_subplot(gs[1, col])
-        pred = fd["pred_states"]          # (H+1, d)
-        dz = np.linalg.norm(pred - pred[0:1], axis=1)
-        ax.plot(dz, color="steelblue", linewidth=1.5)
-        ax.fill_between(range(len(dz)), dz, alpha=0.18, color="steelblue")
-        ax.set_xlabel("steps ahead", fontsize=7)
-        if col == 0:
-            ax.set_ylabel("‖Δz‖", fontsize=8)
-        ax.set_title("planned ‖Δz‖", fontsize=8)
-        ax.tick_params(labelsize=6)
-
-    # ── Row 2 left: state trajectory  |  Row 2 right: control input ──────────
     t_ax = np.arange(T)
-    ax_s = fig.add_subplot(gs[2, : n_show // 2])
-    colors = ["tab:blue", "tab:cyan", "tab:red", "tab:orange"]
-    for i, (lbl, col) in enumerate(zip(state_labels, colors)):
-        if i < states.shape[1]:
-            ax_s.plot(t_ax, states[:, i], label=lbl, color=col, linewidth=1.2)
-    ax_s.axhline(0, color="k", linestyle="--", linewidth=0.5)
-    ax_s.set_xlabel("timestep")
-    ax_s.set_ylabel("state")
-    ax_s.legend(fontsize=7, loc="upper right", ncol=2)
-    ax_s.set_title("State trajectory")
-
-    ax_a = fig.add_subplot(gs[2, n_show // 2 :])
-    ax_a.plot(t_ax, actions[:, 0], color="darkorange", linewidth=1.2, label="u")
-    ax_a.axhline(0, color="k", linestyle="--", linewidth=0.5)
-    for fd in frames:
-        ax_a.axvline(fd["t"], color="gray", linestyle=":", linewidth=0.4, alpha=0.5)
-    ax_a.set_xlabel("timestep")
-    ax_a.set_ylabel("action u")
-    ax_a.set_title("Control input (│ = re-plan,  ✕ = done)")
-    ax_a.legend(fontsize=7)
-
+    ax_theta = fig.add_subplot(gs[1, :])
+    ax_theta.plot(t_ax, states[:, 2], color='tab:red',    label='θ (rad)')
+    ax_theta.plot(t_ax, states[:, 0], color='tab:blue',   label='x (m)', linestyle='--')
+    ax_theta.axhline(0, color='k', linestyle=':', linewidth=0.8)
     if done_at < T:
-        for ax in (ax_s, ax_a):
-            ax.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
-                       label=f"done t={done_at}")
-        ax_s.legend(fontsize=7, loc="upper right", ncol=2)
-        ax_a.legend(fontsize=7)
+        ax_theta.axvline(done_at, color='red', linestyle='--', linewidth=1.2,
+                         label=f'done t={done_at}')
+    ax_theta.set_xlabel('timestep'); ax_theta.set_ylabel('state')
+    ax_theta.legend(fontsize=8, ncol=3)
+    ax_theta.set_title('State trajectory (θ, x)')
 
-    # ── Row 3: latent distance ||z_t - z*|| actual vs model simulation ────────
-    z_star  = result.get("z_star")
-    A_aug   = result.get("A_aug")
-    B_aug   = result.get("B_aug")
-    K0      = result.get("K0")
-    lat     = np.asarray(result.get("latent_states", []))
-    if z_star is not None and len(lat) > 0:
-        d_mpc = A_aug.shape[0] if A_aug is not None else lat.shape[1]
-        d_lat = lat.shape[1]
-        if d_mpc == 2 * d_lat and A_aug is not None:
-            s_star = np.concatenate([z_star, z_star])
-            s_lat  = np.array([np.concatenate([lat[t], lat[t-1] if t > 0 else lat[0]])
-                                for t in range(len(lat))])
-        else:
-            s_star = z_star
-            s_lat  = lat
-        actual_dist = np.linalg.norm(s_lat - s_star[None, :], axis=1)
-        if A_aug is not None and K0 is not None:
-            u_ff_vis = result.get("u_ff", 0.0)
-            s_sim = [s_lat[0].copy()]
-            for _ in range(len(s_lat) - 1):
-                u_sim = np.clip(-K0 @ (s_sim[-1] - s_star) + u_ff_vis, -10.0, 10.0)
-                s_sim.append(A_aug @ s_sim[-1] + B_aug @ u_sim)
-            sim_dist = np.linalg.norm(np.array(s_sim) - s_star[None, :], axis=1)
-        else:
-            sim_dist = None
+    ax_act = fig.add_subplot(gs[2, :])
+    ax_act.plot(t_ax, actions[:, 0], color='darkorange', label='u')
+    ax_act.axhline(0, color='k', linestyle=':', linewidth=0.8)
+    if done_at < T:
+        ax_act.axvline(done_at, color='red', linestyle='--', linewidth=1.2)
+    ax_act.set_xlabel('timestep'); ax_act.set_ylabel('action u')
+    ax_act.set_title('Control input')
 
-        ax_lat = fig.add_subplot(gs[3, :])   # full-width row
-        t_ax2 = np.arange(len(actual_dist))
-        ax_lat.plot(t_ax2, actual_dist, color="steelblue", linewidth=1.5,
-                    label="actual  ‖z − z*‖")
-        if sim_dist is not None:
-            ax_lat.plot(t_ax2, sim_dist[:len(t_ax2)], color="tomato",
-                        linestyle="--", linewidth=1.5, label="model sim  ‖z − z*‖")
-        ax_lat.axhline(0, color="k", linestyle="--", linewidth=0.5)
-        if done_at < T:
-            ax_lat.axvline(done_at, color="red", linestyle="--", linewidth=1.2,
-                           label=f"done t={done_at}")
-        ax_lat.set_xlabel("timestep", fontsize=10)
-        ax_lat.set_ylabel("‖z − z*‖", fontsize=10)
-        ax_lat.set_title("Latent distance to equilibrium z*  "
-                         "(converging = latent system stable; "
-                         "gap actual vs sim = model mismatch)", fontsize=9)
-        ax_lat.legend(fontsize=9)
-        ax_lat.tick_params(labelsize=9)
-
-    stabilized = result.get("stabilized", False)
-    final_err = result.get("final_state_error", float("nan"))
-    settling = result.get("settling_time", "?")
-    sup = (
-        f"{title}  |  stabilized={'yes' if stabilized else 'no'}"
-        f"  final_err={final_err:.3f}  settling_t={settling}"
+    stab = result.get('stabilized', False)
+    fe   = result.get('final_state_error', float('nan'))
+    fig.suptitle(
+        f"{title}  |  stabilized={'yes' if stab else 'no'}  final_err={fe:.3f}",
+        fontsize=10,
     )
-    fig.suptitle(sup.strip("  |  "), fontsize=10)
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=110, bbox_inches="tight")
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=100, bbox_inches='tight')
     plt.close(fig)
-    print(f"[vis] Saved MPC visualization → {out_path}")
+    print(f'[vis] Saved frames -> {out_path}')
 
 
-def create_mpc_video(
-    result: Dict,
-    out_path: str | Path,
-    fps: int = 10,
-    title: str = "",
-    state_labels: Optional[List[str]] = None,
-) -> None:
-    """Save an mp4/gif video of the MPC rollout (one frame per timestep).
-
-    Requires either ffmpeg (for .mp4) or pillow (for .gif) to be installed.
-    """
+def save_rollout_video(result: Dict, out_path, fps: int = 15, title: str = '') -> None:
+    """Save GIF using pillow (no ffmpeg needed)."""
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        import matplotlib; matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
         import matplotlib.gridspec as gridspec
+        from PIL import Image
+        import io
     except ImportError:
-        warnings.warn("matplotlib unavailable; skipping video")
-        return
+        warnings.warn('matplotlib or pillow unavailable; skipping video'); return
 
-    all_obs: List = result.get("all_obs", [])
-    if not all_obs:
-        warnings.warn("No per-step observations in result — rollout must be run "
-                      "with save_all_obs=True")
-        return
-
-    if state_labels is None:
-        state_labels = ["x", "x_dot", "θ", "θ_dot"]
-
-    states  = np.asarray(result.get("states",  [[0, 0, 0, 0]]))
-    actions = np.asarray(result.get("actions", [[0]]))
-    done_at = result.get("done_at", len(states))
+    all_obs = result.get('all_obs', [])
+    states  = np.asarray(result.get('states', [[0, 0, 0, 0]]))
+    actions = np.asarray(result.get('actions', [[0]]))
+    done_at = result.get('done_at', len(states))
     T_vid   = min(done_at, len(all_obs))
-    T_total = len(states)
-    colors  = ["tab:blue", "tab:cyan", "tab:red", "tab:orange"]
 
-    fig = plt.figure(figsize=(11, 4))
-    gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.35)
+    if T_vid == 0:
+        warnings.warn('No observations; skipping video'); return
 
-    ax_obs = fig.add_subplot(gs[0, 0])
-    ax_s   = fig.add_subplot(gs[0, 1])
-    ax_a   = fig.add_subplot(gs[0, 2])
+    frames_pil = []
+    for t in range(T_vid):
+        fig = plt.figure(figsize=(9, 3.5))
+        gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.4)
 
-    # Observation panel
-    im      = ax_obs.imshow(all_obs[0])
-    t_title = ax_obs.set_title("t=0", fontsize=9)
-    ax_obs.axis("off")
+        ax_obs = fig.add_subplot(gs[0, 0])
+        ax_obs.imshow(all_obs[t])
+        ax_obs.set_title(f't={t}', fontsize=9); ax_obs.axis('off')
 
-    # State trajectory panel
-    s_lines = []
-    for i, (lbl, col) in enumerate(zip(state_labels, colors)):
-        ln, = ax_s.plot([], [], color=col, label=lbl, linewidth=1.2)
-        s_lines.append(ln)
-    s_cursor = ax_s.axvline(0, color="k", linewidth=1.2)
-    s_ylim   = (np.min(states) - 0.1, np.max(states) + 0.1)
-    ax_s.set_xlim(0, T_total); ax_s.set_ylim(*s_ylim)
-    ax_s.axhline(0, color="k", linestyle="--", linewidth=0.5)
-    ax_s.legend(fontsize=7, loc="upper right", ncol=2)
-    ax_s.set_xlabel("timestep"); ax_s.set_title("State trajectory")
-    if done_at < T_total:
-        ax_s.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
+        ax_s = fig.add_subplot(gs[0, 1])
+        ax_s.plot(range(t + 1), states[:t + 1, 2], color='tab:red',  label='θ')
+        ax_s.plot(range(t + 1), states[:t + 1, 0], color='tab:blue', label='x', linestyle='--')
+        ax_s.set_xlim(0, len(states)); ax_s.axhline(0, color='k', linewidth=0.5)
+        ax_s.legend(fontsize=7); ax_s.set_title('θ, x')
 
-    # Action panel
-    a_line, = ax_a.plot([], [], color="darkorange", linewidth=1.2, label="u")
-    a_cursor = ax_a.axvline(0, color="k", linewidth=1.2)
-    a_ylim   = (float(actions.min()) - 0.5, float(actions.max()) + 0.5)
-    ax_a.set_xlim(0, T_total); ax_a.set_ylim(*a_ylim)
-    ax_a.axhline(0, color="k", linestyle="--", linewidth=0.5)
-    ax_a.set_xlabel("timestep"); ax_a.set_title("Control input u")
-    if done_at < T_total:
-        ax_a.axvline(done_at, color="red", linestyle="--", linewidth=1.0)
+        ax_a = fig.add_subplot(gs[0, 2])
+        ax_a.plot(range(t + 1), actions[:t + 1, 0], color='darkorange')
+        ax_a.set_xlim(0, len(actions)); ax_a.axhline(0, color='k', linewidth=0.5)
+        ax_a.set_title('action u')
 
-    fig.suptitle(title, fontsize=9)
+        fig.suptitle(title, fontsize=9)
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=80, bbox_inches='tight')
+        plt.close(fig)
+        buf.seek(0)
+        frames_pil.append(Image.open(buf).copy())
+        buf.close()
 
-    def _update(t: int):
-        im.set_data(all_obs[t])
-        t_title.set_text(f"t={t}")
-        for i, ln in enumerate(s_lines):
-            ln.set_data(range(t + 1), states[:t + 1, i])
-        s_cursor.set_xdata([t, t])
-        a_line.set_data(range(t + 1), actions[:t + 1, 0])
-        a_cursor.set_xdata([t, t])
-        return [im, t_title] + s_lines + [s_cursor, a_line, a_cursor]
-
-    anim = animation.FuncAnimation(
-        fig, _update, frames=T_vid, interval=1000 // fps, blit=True
-    )
-
-    out_path = Path(out_path)
+    out_path = Path(out_path).with_suffix('.gif')
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    suffix = out_path.suffix.lower()
-    try:
-        if suffix == ".gif":
-            anim.save(out_path, writer="pillow", fps=fps)
-        else:
-            anim.save(out_path, writer="ffmpeg", fps=fps,
-                      extra_args=["-vcodec", "libx264", "-pix_fmt", "yuv420p"])
-        print(f"[vis] Saved MPC video → {out_path}")
-    except Exception as exc:
-        warnings.warn(f"Video save failed ({exc}); trying .gif fallback")
-        gif_path = out_path.with_suffix(".gif")
-        anim.save(gif_path, writer="pillow", fps=fps)
-        print(f"[vis] Saved MPC video → {gif_path}")
-    plt.close(fig)
+    frames_pil[0].save(
+        out_path, save_all=True, append_images=frames_pil[1:],
+        duration=int(1000 / fps), loop=0,
+    )
+    print(f'[vis] Saved video -> {out_path}')

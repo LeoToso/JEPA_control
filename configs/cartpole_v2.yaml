@@ -1,0 +1,64 @@
+environment:
+  name: cartpole
+  frame_skip: 1
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 32
+  action_latent_dim: 32
+  patch_size: 8
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_hidden_dim: 256
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 128
+  epochs: 100
+  horizon: 20
+  lambda_pred: 1.0
+  lambda_state: 1.0
+  lambda_spec: 1.0
+  lambda_PBH: 1.0
+  jacobian_every: 50
+  use_vicreg: true
+  vicreg_lambda: 25.0
+  vicreg_mu: 25.0
+  vicreg_nu: 1.0
+  checkpoint_every: 50
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 100
+  n_trials_grad_mpc: 50
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+mpc:
+  horizon: 20
+  chunk_size: 1
+  Q_f_multiplier: 10.0
+  grad_lr: 0.05
+  grad_n_iter: 40
+
+data:
+  n_random: 50000
+  train_frac: 0.8
+  val_frac: 0.1
+  random_init_range: 0.15
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.1

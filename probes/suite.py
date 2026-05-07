@@ -1,91 +1,127 @@
-"""Master probe suite."""
+"""Simplified probe suite: spectral match + PBH stabilisability + linearization residual."""
 from __future__ import annotations
-import time,warnings
-from typing import Dict,Any,Optional
+import warnings
+from typing import Dict, Any
 import numpy as np
 
-def run_all_probes(model,encoder_variant,dataset,gt,rollout_data,paired_data,env=None,device=None,config=None):
-    from probes.spectral import P1_1_eigenvalue_recovery,P1_2_jordan_block,P1_3_marginal_mode_frequency
-    from probes.pbh import P2_1_pbh_stabilizability,P2_2_pbh_detectability,P2_3_separation_principle
-    from probes.kalman import P3_1_kalman_decomposition,P3_2_controllable_subspace_alignment,P3_3_manifold_geometry,P3_4_phantom_instability
-    from probes.zeros import P4_1_transmission_zeros,P4_2_step_response_undershoot,P4_3_markov_parameters,P4_4_zero_direction_alignment
-    from probes.decoder import D1_action_decoder_fidelity
-    if config is None:
-        config={}
-    delta_tol=config.get('delta_tol',0.05)
-    epsilon_lambda=config.get('epsilon_lambda',0.05)
-    epsilon_rank=config.get('epsilon_rank',1e-3)
-    A_hat=rollout_data.get('A_hat')
-    B_hat=rollout_data.get('B_hat')
-    C_hat=rollout_data.get('C_hat')
-    A_star=gt.A_star
-    B_star=gt.B_star
-    C_star=gt.C_star
-    results={'encoder_variant':encoder_variant,'timestamp':time.time()}
-    def run_probe(name,fn,*args,**kwargs):
-        try:
-            t0=time.time()
-            out=fn(*args,**kwargs)
-            results[name]=out
-            results[name]['_runtime_s']=time.time()-t0
-        except Exception as exc:
-            warnings.warn(f'Probe {name} failed: {exc}')
-            results[name]={'error':str(exc)}
-    if A_hat is not None:
-        run_probe('P1_1',P1_1_eigenvalue_recovery,A_hat,A_star,epsilon_lambda)
-        run_probe('P1_2',P1_2_jordan_block,A_hat,rollout_data)
-        run_probe('P1_3',P1_3_marginal_mode_frequency,rollout_data,A_hat,A_star)
-    else:
-        warnings.warn('A_hat not in rollout_data; skipping P1 probes.')
-    if A_hat is not None and B_hat is not None:
-        run_probe('P2_1',P2_1_pbh_stabilizability,A_hat,B_hat,delta_tol)
-        if C_hat is not None:
-            run_probe('P2_2',P2_2_pbh_detectability,A_hat,C_hat,encoder=model.encoder if model is not None else None,gt=gt,delta_tol=delta_tol,device=device)
-            if env is not None and model is not None:
-                run_probe('P2_3',P2_3_separation_principle,A_hat,B_hat,C_hat,model.encoder,env)
-    if A_hat is not None and B_hat is not None and C_hat is not None:
-        run_probe('P3_1',P3_1_kalman_decomposition,A_hat,B_hat,C_hat,epsilon_rank)
-        run_probe('P3_2',P3_2_controllable_subspace_alignment,A_hat,B_hat,A_star,B_star,paired_data)
-        run_probe('P3_3',P3_3_manifold_geometry,A_hat,rollout_data,A_star)
-        if env is not None and model is not None:
-            run_probe('P3_4',P3_4_phantom_instability,A_hat,B_hat,C_hat,model.encoder,env)
-    if A_hat is not None and B_hat is not None and C_hat is not None:
-        run_probe('P4_1',P4_1_transmission_zeros,A_hat,B_hat,C_hat,A_star,B_star,C_star)
-        if env is not None and model is not None:
-            run_probe('P4_2',P4_2_step_response_undershoot,A_hat,B_hat,C_hat,model.encoder,env)
-            run_probe('P4_3',P4_3_markov_parameters,A_hat,B_hat,C_hat,A_star,B_star,C_star,model.encoder,env)
-        run_probe('P4_4',P4_4_zero_direction_alignment,A_hat,B_hat,C_hat,A_star,B_star,C_star,paired_data)
-    if model is not None:
-        run_probe('D1',D1_action_decoder_fidelity,model.action_encoder,device=device)
-    _print_summary(results)
+
+def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
+                   env, z_star: np.ndarray, device, config: dict = {}) -> Dict:
+    results = {}
+    eps_lambda = float(config.get('epsilon_lambda', 0.05))
+    delta_tol  = float(config.get('delta_tol',      0.05))
+
+    # ── P1: Spectral match ────────────────────────────────────────────────────
+    try:
+        eigvals = np.linalg.eigvals(A_jac)
+        rho_jac = float(np.max(np.abs(eigvals)))
+        rho_err = abs(rho_jac - gt.spectral_radius)
+        # For each GT unstable eigenvalue, find nearest Jacobian eigenvalue
+        min_dists = []
+        for lam_star in gt.unstable_eigenvalues:
+            dists = np.abs(eigvals - lam_star)
+            min_dists.append(float(dists.min()))
+        umr = float(np.mean([d < eps_lambda for d in min_dists])) if min_dists else float('nan')
+        results['spectral'] = {
+            'rho_jac':              rho_jac,
+            'rho_gt':               gt.spectral_radius,
+            'spectral_radius_error':rho_err,
+            'min_dist_to_unstable': float(np.mean(min_dists)) if min_dists else float('nan'),
+            'unstable_mode_recall': umr,
+            'recovered':            bool(umr == 1.0),
+        }
+    except Exception as exc:
+        warnings.warn(f'Spectral probe failed: {exc}')
+        results['spectral'] = {'error': str(exc)}
+
+    # ── P2: PBH stabilisability ───────────────────────────────────────────────
+    try:
+        d, d_u = A_jac.shape[0], B_jac.shape[1]
+        sigma_mins = []
+        for lam_star in gt.unstable_eigenvalues:
+            lam_r = float(np.real(lam_star))
+            M = np.hstack([lam_r * np.eye(d) - A_jac, B_jac])
+            sv = np.linalg.svd(M, compute_uv=False)
+            sigma_mins.append(float(sv[-1]))
+        mu_S = float(np.min(sigma_mins)) if sigma_mins else float('nan')
+        results['pbh'] = {
+            'mu_S':           mu_S,
+            'is_stabilizable':bool(mu_S > delta_tol),
+            'sigma_mins':     sigma_mins,
+        }
+    except Exception as exc:
+        warnings.warn(f'PBH probe failed: {exc}')
+        results['pbh'] = {'error': str(exc)}
+
+    # ── P3: Linearization residual in neighbourhood of z* ────────────────────
+    try:
+        import torch
+        model.eval()
+        rng = np.random.RandomState(7)
+        thetas = [0.0, 0.05, -0.05, 0.10, -0.10]
+        residuals = {}
+        for theta in thetas:
+            obs, _, _ = env.reset_to_state(
+                np.array([0., 0., theta, 0.], dtype=np.float32))
+            obs_t = (torch.from_numpy(obs).float()
+                     .permute(2, 0, 1)[None].to(device) / 255.0)
+            with torch.no_grad():
+                z0 = model.encoder(obs_t).cpu().numpy()[0]
+
+            errs = []
+            for _ in range(10):
+                u = float(rng.uniform(-1.0, 1.0))
+                obs_next, _, _, _, _ = env.step(u)
+                obs_next_t = (torch.from_numpy(obs_next).float()
+                              .permute(2, 0, 1)[None].to(device) / 255.0)
+                with torch.no_grad():
+                    z1 = model.encoder(obs_next_t).cpu().numpy()[0]
+                    obs, _, _ = env.reset_to_state(  # reset for next sample
+                        np.array([0., 0., theta, 0.], dtype=np.float32))
+                # linear prediction
+                z1_lin = A_jac @ (z0 - z_star) + B_jac[:, 0] * u + z_star
+                denom  = np.linalg.norm(z1 - z_star) + 1e-12
+                errs.append(float(np.linalg.norm(z1_lin - z1) / denom))
+            residuals[f'theta={theta:+.2f}'] = float(np.mean(errs))
+
+        results['linearization'] = {
+            'residuals':      residuals,
+            'mean_residual':  float(np.mean(list(residuals.values()))),
+        }
+    except Exception as exc:
+        warnings.warn(f'Linearization probe failed: {exc}')
+        results['linearization'] = {'error': str(exc)}
+
+    _print_summary(results, gt)
     return results
 
-def _print_summary(results):
-    print('\n'+'='*60)
-    print(f"PROBE SUITE RESULTS  -  variant: {results.get('encoder_variant','?')}")
-    print('='*60)
-    key_metrics=[('P1_1','delta_lambda','Eigenvalue matching distance'),('P1_1','UMR','Unstable mode recall'),('P1_1','spectral_radius_error','Spectral radius error'),('P2_1','mu_S','PBH stabilisability mu_S'),('P2_1','is_stabilizable','Is stabilisable'),('P2_2','mu_D','PBH detectability mu_D'),('P2_3','stabilization_success_rate','Control success rate'),('P3_1','efficiency_ratio','Kalman efficiency ratio'),('P3_1','has_phantom_instability','Has phantom instability'),('P4_1','latent_NMP_count','Latent NMP zeros'),('P4_1','NMP_count_match','NMP count match'),('P4_2','UR_latent','Undershoot ratio (latent)'),('P4_2','NMP_detected_latent','NMP detected (latent)'),('P4_3','relative_degree_match','Relative degree match'),('D1','reconstruction_error','Action recon error')]
-    for probe_key,metric,label in key_metrics:
-        probe_res=results.get(probe_key,{})
-        if 'error' in probe_res:
-            val='ERROR'
-        else:
-            val=probe_res.get(metric,'N/A')
-            if isinstance(val,float):
-                val=f'{val:.4f}'
-            elif isinstance(val,bool):
-                val=str(val)
-        print(f'  {label:<40s}: {val}')
-    print('='*60+'\n')
 
-def flatten_results(results,prefix=''):
-    flat={}
-    for k,v in results.items():
-        key=f'{prefix}{k}' if prefix else k
-        if isinstance(v,dict):
-            flat.update(flatten_results(v,prefix=f'{key}/'))
-        elif isinstance(v,(int,float,bool)):
-            flat[key]=float(v)
-        elif isinstance(v,(list,np.ndarray)) and len(v)==1:
-            flat[key]=float(v[0])
-    return flat
+def _print_summary(results: Dict, gt):
+    print('\n' + '=' * 55)
+    print('PROBE RESULTS')
+    print('=' * 55)
+    sp = results.get('spectral', {})
+    if 'error' not in sp:
+        print(f"  Spectral radius (Jacobian): {sp.get('rho_jac', float('nan')):.4f}"
+              f"  (GT: {sp.get('rho_gt', float('nan')):.4f})")
+        print(f"  Spectral radius error:      {sp.get('spectral_radius_error', float('nan')):.4f}")
+        print(f"  Min dist to unstable mode:  {sp.get('min_dist_to_unstable', float('nan')):.4f}")
+        print(f"  Unstable mode recall:       {sp.get('unstable_mode_recall', float('nan')):.4f}")
+    else:
+        print(f"  Spectral probe ERROR: {sp['error']}")
+
+    pb = results.get('pbh', {})
+    if 'error' not in pb:
+        print(f"  PBH mu_S:                   {pb.get('mu_S', float('nan')):.4f}")
+        print(f"  Is stabilisable:            {pb.get('is_stabilizable', '?')}")
+    else:
+        print(f"  PBH probe ERROR: {pb['error']}")
+
+    lin = results.get('linearization', {})
+    if 'error' not in lin:
+        print(f"  Mean linearization residual:{lin.get('mean_residual', float('nan')):.4f}")
+        for k, v in lin.get('residuals', {}).items():
+            print(f"    {k}: {v:.4f}")
+    else:
+        print(f"  Linearization probe ERROR: {lin['error']}")
+    print('=' * 55 + '\n')
