@@ -49,9 +49,10 @@ def save_rollout_frames(result: Dict, out_path, n_frames: int = 8, title: str = 
     ax_theta.set_title('State trajectory (θ, x)')
 
     ax_act = fig.add_subplot(gs[2, :])
-    ax_act.plot(t_ax, actions[:, 0], color='darkorange', label='u')
+    t_ax_act = np.arange(len(actions))
+    ax_act.plot(t_ax_act, actions[:, 0], color='darkorange', label='u')
     ax_act.axhline(0, color='k', linestyle=':', linewidth=0.8)
-    if done_at < T:
+    if done_at < len(actions):
         ax_act.axvline(done_at, color='red', linestyle='--', linewidth=1.2)
     ax_act.set_xlabel('timestep'); ax_act.set_ylabel('action u')
     ax_act.set_title('Control input')

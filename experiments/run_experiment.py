@@ -268,6 +268,70 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         print(f'[control] Enc-Obs LQR failed: {exc}')
         ctrl_results['enc_obs_lqr'] = {'error': str(exc)}
 
+    # ── Encoder-observer LQR (theta-only) ────────────────────────────────────
+    # Zero out x and ẋ estimates — only trust visual theta/θ̇ from state_head.
+    # Diagnoses whether inaccurate cart-position estimation causes the failure.
+    print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
+    try:
+        if K_gt is None:
+            raise RuntimeError('K_gt not available')
+        if not (_state_head_trained and trainer.state_head is not None):
+            raise RuntimeError('state_head not trained')
+        state_head = trainer.state_head
+        state_head.eval(); model.eval()
+        rng_enc_th = np.random.RandomState(seed)
+        succs_th, ep_lens_th, fracs_th = [], [], []
+        vis_enc_th = None
+        for trial in range(n_trials):
+            x0 = rng_enc_th.uniform(-init_scale, init_scale, 4).astype(np.float32)
+            obs, state, _ = env.reset_to_state(x0)
+            done = False
+            states_th, actions_th, all_obs_th = [state.copy()], [], []
+            for _ in range(T_rollout):
+                all_obs_th.append(obs.copy())
+                obs_t = (torch.from_numpy(obs).float()
+                         .permute(2, 0, 1)[None].to(device) / 255.0)
+                with torch.no_grad():
+                    x_hat_full = state_head(model.encoder(obs_t)).cpu().numpy()[0]
+                # Only use visual angle/angular-velocity estimates; zero cart x and ẋ
+                x_hat = np.array([0.0, 0.0, x_hat_full[2], x_hat_full[3]], dtype=np.float32)
+                u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
+                actions_th.append([u])
+                obs, state, _, done, _ = env.step(u)
+                states_th.append(state.copy())
+                if done:
+                    break
+            ep_len = len(states_th) - 1
+            success = int(not done)
+            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_th]))
+            succs_th.append(success); ep_lens_th.append(ep_len); fracs_th.append(frac)
+            if trial == 0:
+                vis_enc_th = {
+                    'all_obs':           all_obs_th,
+                    'states':            np.array(states_th),
+                    'actions':           np.array(actions_th) if actions_th else np.zeros((1, 1)),
+                    'done_at':           ep_len,
+                    'stabilized':        bool(success),
+                    'final_state_error': float(abs(states_th[-1][2])),
+                }
+        print(f'[control] Enc-Obs LQR (theta-only): success={np.mean(succs_th):.3f}'
+              f'  ep_len={np.mean(ep_lens_th):.1f}'
+              f'  frac_stable={np.mean(fracs_th):.3f}')
+        ctrl_results['enc_obs_lqr_theta_only'] = {
+            'success_rate':         float(np.mean(succs_th)),
+            'mean_episode_length':  float(np.mean(ep_lens_th)),
+            'mean_fraction_stable': float(np.mean(fracs_th)),
+        }
+        if vis_enc_th:
+            save_rollout_frames(vis_enc_th, out_dir / 'enc_obs_lqr_theta_frames.png',
+                                n_frames=8, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
+            save_rollout_video(vis_enc_th, out_dir / 'enc_obs_lqr_theta.gif',
+                               fps=15, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        print(f'[control] Enc-Obs LQR (theta-only) failed: {exc}')
+        ctrl_results['enc_obs_lqr_theta_only'] = {'error': str(exc)}
+
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
     print('\n[control] --- Linear MPC (Jacobian) ---')
     try:
