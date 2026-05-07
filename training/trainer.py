@@ -67,6 +67,7 @@ class Trainer:
         self.lambda_state = float(self.cfg.get('lambda_state', 1.0))
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
+        self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
         self.use_vicreg   = bool(self.cfg.get('use_vicreg', True))
         self.vicreg_lambda= float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_mu    = float(self.cfg.get('vicreg_mu',     25.0))
@@ -107,7 +108,7 @@ class Trainer:
         with open(self.log_path, 'w', newline='') as f:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
-                 'vicreg', 'state_loss', 'spec_loss', 'pbh_loss'])
+                 'vicreg', 'state_loss', 'fp_loss', 'spec_loss', 'pbh_loss'])
 
     def _log_csv(self, epoch, split, step, info):
         with open(self.log_path, 'a', newline='') as f:
@@ -115,7 +116,7 @@ class Trainer:
                 epoch, split, step,
                 info.get('total_loss', ''), info.get('pred_loss', ''),
                 info.get('vicreg_total', ''), info.get('state_loss', ''),
-                info.get('spec_loss', ''), info.get('pbh_loss', ''),
+                info.get('fp_loss', ''), info.get('spec_loss', ''), info.get('pbh_loss', ''),
             ])
 
     # ── Loss computation ──────────────────────────────────────────────────────
@@ -169,20 +170,28 @@ class Trainer:
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
 
-        # State reconstruction: supervise z_0 on state_0 and z_hat on state_1.
-        # Detach encoder outputs so state_head trains as a pure linear readout
-        # without pulling the encoder away from prediction-friendly representations.
+        # State reconstruction: supervise z_0 on state_0 and z_hat on state_1
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
             w = torch.tensor([10., 1., 10., 1.], device=self.device)
-            z0_sg = z_all[:, 0].detach()
-            z1_sg = z_all[:, 1].detach()
-            state_loss = (w * (self.state_head(z0_sg) - states[:, 0]).pow(2)).mean()
+            state_loss = (w * (self.state_head(z_all[:, 0]) - states[:, 0]).pow(2)).mean()
             state_loss = state_loss + (
-                w * (self.state_head(z1_sg) - states[:, 1]).pow(2)
+                w * (self.state_head(z_all[:, 1]) - states[:, 1]).pow(2)
             ).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
+
+        # Fixed-point loss: predictor should map z* to itself under zero action.
+        # Directly penalises the phantom drift that corrupts MPC plans.
+        if is_train and self.lambda_fp > 0 and self._z_star_ema is not None:
+            a_zero = self.model.action_encoder(
+                torch.zeros(1, 1, device=self.device))
+            z_star_pred = self.model.predictor(
+                self._z_star_ema.unsqueeze(0), a_zero)
+            fp_loss = F.mse_loss(z_star_pred,
+                                 self._z_star_ema.unsqueeze(0).detach())
+            total_loss = total_loss + self.lambda_fp * fp_loss
+            info['fp_loss'] = fp_loss.item()
 
         # Jacobian regularisation (spectral + PBH) every jacobian_every steps
         if (is_train and self.global_step % self.jacobian_every == 0
@@ -305,12 +314,13 @@ class Trainer:
             self._log_csv(epoch, 'val',   self.global_step, val)
             dt = time.time() - t0
             state_str = f"  state={tr.get('state_loss', 0):.4f}" if 'state_loss' in tr else ''
+            fp_str    = f"  fp={tr.get('fp_loss',    0):.4f}"    if 'fp_loss'    in tr else ''
             spec_str  = f"  spec={tr.get('spec_loss',  0):.4f}"  if 'spec_loss'  in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{spec_str}'
+                  f'{state_str}{fp_str}{spec_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
