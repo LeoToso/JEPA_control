@@ -178,11 +178,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     from control.visualize import save_rollout_frames, save_rollout_video
     ctrl_results = {}
 
-    # ── GT-LQR sanity check ───────────────────────────────────────────────────
+    # Compute GT-LQR gain once — reused for sanity check and encoder-observer LQR
+    from control.lqr import solve_discrete_lqr
+    K_gt = None
     try:
-        from control.lqr import solve_discrete_lqr
         K_gt, _, _ = solve_discrete_lqr(gt.A_star, gt.B_star,
                                          np.diag([10., 0.1, 100., 0.1]), R_lqr)
+    except Exception as e:
+        print(f'[control] solve_discrete_lqr failed: {e}')
+
+    # ── GT-LQR sanity check ───────────────────────────────────────────────────
+    try:
+        if K_gt is None:
+            raise RuntimeError('K_gt not available')
         rng_gt = np.random.RandomState(seed + 999)
         gt_succs = []
         for _ in range(20):
@@ -197,6 +205,68 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         print(f'[control] GT-LQR sanity: {np.mean(gt_succs):.2f}  ({sum(gt_succs)}/20)')
     except Exception as e:
         print(f'[control] GT-LQR failed: {e}')
+
+    # ── Encoder-observer LQR ─────────────────────────────────────────────────
+    # Use encoder+state_head as a visual state observer, apply GT-LQR gain.
+    # No predictor needed — tests whether the encoder alone suffices for control.
+    print('\n[control] --- Encoder-Observer LQR ---')
+    try:
+        if K_gt is None:
+            raise RuntimeError('K_gt not available')
+        if not (_state_head_trained and trainer.state_head is not None):
+            raise RuntimeError('state_head not trained')
+        state_head = trainer.state_head
+        state_head.eval(); model.eval()
+        rng_enc = np.random.RandomState(seed)
+        succs_e, ep_lens_e, fracs_e = [], [], []
+        vis_enc = None
+        for trial in range(n_trials):
+            x0 = rng_enc.uniform(-init_scale, init_scale, 4).astype(np.float32)
+            obs, state, _ = env.reset_to_state(x0)
+            done = False
+            states_e, actions_e, all_obs_e = [state.copy()], [], []
+            for _ in range(T_rollout):
+                all_obs_e.append(obs.copy())
+                obs_t = (torch.from_numpy(obs).float()
+                         .permute(2, 0, 1)[None].to(device) / 255.0)
+                with torch.no_grad():
+                    x_hat = state_head(model.encoder(obs_t)).cpu().numpy()[0]
+                u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
+                actions_e.append([u])
+                obs, state, _, done, _ = env.step(u)
+                states_e.append(state.copy())
+                if done:
+                    break
+            ep_len = len(states_e) - 1
+            success = int(not done)
+            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_e]))
+            succs_e.append(success); ep_lens_e.append(ep_len); fracs_e.append(frac)
+            if trial == 0:
+                vis_enc = {
+                    'all_obs':           all_obs_e,
+                    'states':            np.array(states_e),
+                    'actions':           np.array(actions_e) if actions_e else np.zeros((1, 1)),
+                    'done_at':           ep_len,
+                    'stabilized':        bool(success),
+                    'final_state_error': float(abs(states_e[-1][2])),
+                }
+        print(f'[control] Enc-Obs LQR: success={np.mean(succs_e):.3f}'
+              f'  ep_len={np.mean(ep_lens_e):.1f}'
+              f'  frac_stable={np.mean(fracs_e):.3f}')
+        ctrl_results['enc_obs_lqr'] = {
+            'success_rate':         float(np.mean(succs_e)),
+            'mean_episode_length':  float(np.mean(ep_lens_e)),
+            'mean_fraction_stable': float(np.mean(fracs_e)),
+        }
+        if vis_enc:
+            save_rollout_frames(vis_enc, out_dir / 'enc_obs_lqr_frames.png',
+                                n_frames=8, title=f'{exp_name}  Enc-Obs LQR')
+            save_rollout_video(vis_enc, out_dir / 'enc_obs_lqr.gif',
+                               fps=15, title=f'{exp_name}  Enc-Obs LQR')
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        print(f'[control] Enc-Obs LQR failed: {exc}')
+        ctrl_results['enc_obs_lqr'] = {'error': str(exc)}
 
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
     print('\n[control] --- Linear MPC (Jacobian) ---')
