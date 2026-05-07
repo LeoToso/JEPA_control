@@ -73,6 +73,13 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # strict=False: W_pinv may be present in old checkpoints (saved after
         # compute_pseudoinverse()); it is ignored here and recomputed below.
         model.load_state_dict(torch.load(saved_model,map_location=device),strict=False)
+        state_head_path=out_dir/'state_head.pt'
+        if state_head_path.exists():
+            import torch.nn as nn
+            if trainer.state_head is None:
+                trainer.state_head=nn.Linear(model.config.latent_dim,4).to(device)
+            trainer.state_head.load_state_dict(torch.load(state_head_path,map_location=device))
+            print(f'[train] --eval-only: loaded state_head from {state_head_path}')
         history={'train':[],'val':[]}
     else:
         print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
@@ -121,24 +128,32 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         z_star=model.encoder(obs_eq_t).cpu().numpy()[0]
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     # Physics-weighted latent Q: Q_z = W^T @ Q_phys @ W.
-    # W (4,d) maps latent deviation dz = z-z* to physical state deviation.
-    # Concentrates cost on the ~4 dims that encode theta/x, suppresses noise dims.
+    # W (4,d) maps latent → physical state. Prefer the trained state_head weight,
+    # which is supervised directly on theta with 10× weight during training and
+    # therefore gives a symmetric, theta-aligned Q. Fall back to passive-rollout
+    # regression when no state_head is available (e.g. lambda_state=0).
     Q_lqr=np.eye(d)  # fallback
-    _Z_flat=rollout_data['latent_states'].reshape(-1,d)
-    _X_flat=rollout_data['states'].reshape(-1,4)
-    _dZ=_Z_flat-z_star[None,:]
-    if len(_dZ)>50:
-        _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
-        W_probe=_W_T[:-1].T  # (4,d)
-        Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
+    Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
+    W_probe=None
+    if hasattr(trainer,'state_head') and trainer.state_head is not None:
+        W_probe=trainer.state_head.weight.detach().cpu().numpy()  # (4,d)
+        print(f'[control] W_probe: state_head  ||W||={np.linalg.norm(W_probe):.3f}')
+    else:
+        _Z_flat=rollout_data['latent_states'].reshape(-1,d)
+        _X_flat=rollout_data['states'].reshape(-1,4)
+        _dZ=_Z_flat-z_star[None,:]
+        if len(_dZ)>50:
+            _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
+            W_probe=_W_T[:-1].T  # (4,d)
+            print(f'[control] W_probe: passive-rollout regression  ||W||={np.linalg.norm(W_probe):.3f}')
+        else:
+            print('[control] Insufficient rollout data; keeping Q=I')
+    if W_probe is not None:
         Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
         Q_z*=d/(np.trace(Q_z)+1e-12)
         Q_lqr=Q_z
-        print(f'[control] Physics-weighted Q: ||W||={np.linalg.norm(W_probe):.3f}  '
-              f'trace(Q)/d={np.trace(Q_lqr)/d:.3f}  '
+        print(f'[control] Physics-weighted Q: trace(Q)/d={np.trace(Q_lqr)/d:.3f}  '
               f'||Q||_F={np.linalg.norm(Q_lqr,"fro"):.3f}')
-    else:
-        print('[control] Insufficient rollout data; keeping Q=I')
     action_lb=float(env_cfg.get('action_range',[-10,10])[0])
     action_ub=float(env_cfg.get('action_range',[-10,10])[1])
     # Ground truth sanity check: LQR on physical state (no encoder).
@@ -202,15 +217,21 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # If K(z-z*) is monotone in θ: encoder is working.
         # If it's roughly constant or has wrong sign: theta-blind encoder.
         print('[control] Theta sweep  K·(z−z*) vs θ:')
+        _sh=trainer.state_head if hasattr(trainer,'state_head') else None
         for _th in [-0.20,-0.15,-0.10,-0.05,0.0,+0.05,+0.10,+0.15,+0.20]:
             _o,_,_=env.reset_to_state(np.array([0.,0.,_th,0.],dtype=np.float32))
             _ot=torch.from_numpy(_o).float().permute(2,0,1)[None].to(device)/255.0
             with torch.no_grad():
                 _zt=model.encoder(_ot).cpu().numpy()[0]
+                _sh_str=''
+                if _sh is not None:
+                    _zt_t=torch.from_numpy(_zt).float().unsqueeze(0).to(device)
+                    _th_hat=float(_sh(_zt_t).cpu().numpy()[0,2])
+                    _sh_str=f'  sh_θ={_th_hat:+.4f}'
             _dz=np.linalg.norm(_zt-z_star)
             _ut=float(-K_sign@(_zt-z_star))
             _corr=(_th==0.0) or ((_ut>0)==(_th>0))
-            print(f'  θ={_th:+.3f}  ‖z−z*‖={_dz:.3f}  K·Δz={_ut:+.4f}  {"✓" if _corr else "✗"}')
+            print(f'  θ={_th:+.3f}  ‖z−z*‖={_dz:.3f}  K·Δz={_ut:+.4f}  {"✓" if _corr else "✗"}{_sh_str}')
         # ── Augmented state MPC: s_t = [z_t, z_{t-1}], s* = [z*, z*] ────────
         # Dynamics: s_{t+1} = [[A1, A2]; [I, 0]] s_t + [[B]; [0]] u_t
         # Riccati gives K = [K1, K2] with K2 ≠ 0 (velocity feedback).
@@ -427,6 +448,8 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     np.save(out_dir/'B_hat.npy',B_hat)
     np.save(out_dir/'C_hat.npy',C_hat)
     torch.save(model.state_dict(),out_dir/'model_final.pt')
+    if hasattr(trainer,'state_head') and trainer.state_head is not None:
+        torch.save(trainer.state_head.state_dict(),out_dir/'state_head.pt')
     elapsed=time.time()-t_start
     print(f'\n[done] {exp_name} completed in {elapsed:.1f}s')
     return results

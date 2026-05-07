@@ -127,12 +127,21 @@ class Trainer:
         # State reconstruction loss: forces encoder to carry physical state info
         # (especially theta) in z.  Uses theta-weighted MSE so the encoder cannot
         # ignore theta in favour of the easier-to-encode x position.
+        # Three terms:
+        #   (1) state_head(z_t)    ≈ state_t        → encoder encodes current theta
+        #   (2) state_head(z_next) ≈ next_state_t   → encoder encodes next theta (predictor target)
+        #   (3) state_head(z_hat)  ≈ next_state_t   → predictor output encodes next theta
         if self.lambda_state > 0 and self.state_head is not None and 'state' in batch:
             state_true = batch['state'].to(self.device).float()   # (B, 4)
-            state_pred = self.state_head(z_t)                      # (B, 4)
-            # [x, x_dot, theta, theta_dot] — theta weight 10× stronger.
             w = torch.tensor([1., 0.1, 10., 0.1], device=self.device)
-            state_loss = (w * (state_pred - state_true).pow(2)).mean()
+            state_loss = (w * (self.state_head(z_t) - state_true).pow(2)).mean()
+            if 'next_state' in batch:
+                next_state_true = batch['next_state'].to(self.device).float()
+                # Supervise the online encoder applied to next_obs.
+                state_loss = state_loss + (w * (self.state_head(outputs['z_next']) - next_state_true).pow(2)).mean()
+                # Supervise the nonlinear predictor output directly.
+                if 'z_hat' in outputs:
+                    state_loss = state_loss + (w * (self.state_head(outputs['z_hat']) - next_state_true).pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
         info['total_loss']=total_loss.item()
