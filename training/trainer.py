@@ -172,7 +172,7 @@ class Trainer:
         # State reconstruction: supervise z_0 on state_0 and z_hat on state_1
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
-            w = torch.tensor([1., 0.1, 10., 0.1], device=self.device)
+            w = torch.tensor([10., 1., 10., 1.], device=self.device)
             # z_0 -> state_0
             state_loss = (w * (self.state_head(z_all[:, 0]) - states[:, 0]).pow(2)).mean()
             # z_all[:, 1] (encoder of obs_1) -> state_1

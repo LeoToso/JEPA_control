@@ -36,6 +36,8 @@ class GradientLatentMPC:
         lr: float = 0.05,
         n_iter: int = 40,
         device=None,
+        state_head=None,        # optional nn.Linear(d, 4); uses physical-state cost when set
+        Q_phys: np.ndarray = None,  # (4,4) physical-state cost; only used when state_head set
     ):
         if device is None:
             device = next(predictor.parameters()).device
@@ -54,6 +56,14 @@ class GradientLatentMPC:
         self.R_t = torch.tensor(R, dtype=torch.float32, device=device)
         self.Qf_t = torch.tensor(Q_f, dtype=torch.float32, device=device)
 
+        self.state_head = state_head  # optional physical-state observer
+        if state_head is not None and Q_phys is not None:
+            self.Q_phys_t  = torch.tensor(Q_phys, dtype=torch.float32, device=device)
+            self.Qf_phys_t = 10.0 * self.Q_phys_t
+        else:
+            self.Q_phys_t  = None
+            self.Qf_phys_t = None
+
         self._u_warm: Optional[torch.Tensor] = None  # warm-start from last plan
 
     # ------------------------------------------------------------------
@@ -63,6 +73,8 @@ class GradientLatentMPC:
         self.predictor.eval()
         self.action_encoder.eval()
 
+        use_phys = (self.state_head is not None and self.Q_phys_t is not None)
+
         z = z_init  # (1, d)
         cost = torch.zeros(1, device=self.device)
         traj = [z.detach().cpu().numpy()[0]]
@@ -70,14 +82,22 @@ class GradientLatentMPC:
         for k in range(self.horizon):
             u_k = torch.clamp(u_seq[k], self.action_lb, self.action_ub).unsqueeze(0)  # (1, m)
             a_k = self.action_encoder(u_k)       # (1, d_a)
-            dz = z - z_star                       # (1, d)
-            cost = cost + (dz @ self.Q_t @ dz.T).squeeze()
+            if use_phys:
+                x_hat = self.state_head(z)        # (1, 4) physical state estimate
+                cost = cost + (x_hat @ self.Q_phys_t @ x_hat.T).squeeze()
+            else:
+                dz = z - z_star                   # (1, d)
+                cost = cost + (dz @ self.Q_t @ dz.T).squeeze()
             cost = cost + (u_k @ self.R_t @ u_k.T).squeeze()
             z = self.predictor(z, a_k)            # (1, d)
             traj.append(z.detach().cpu().numpy()[0])
 
-        dz_f = z - z_star
-        cost = cost + (dz_f @ self.Qf_t @ dz_f.T).squeeze()
+        if use_phys:
+            x_hat_f = self.state_head(z)
+            cost = cost + (x_hat_f @ self.Qf_phys_t @ x_hat_f.T).squeeze()
+        else:
+            dz_f = z - z_star
+            cost = cost + (dz_f @ self.Qf_t @ dz_f.T).squeeze()
         return cost, traj
 
     # ------------------------------------------------------------------

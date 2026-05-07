@@ -143,6 +143,14 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] rho(A_jac)={rho_jac:.4f}')
 
+    # Fixed-point diagnostic: does f(z*, 0) ≈ z*?
+    with torch.no_grad():
+        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
+        a_zero    = model.action_encoder(torch.zeros(1, 1, device=device))
+        z_pred_eq = model.predictor(z_star_t, a_zero)
+        fp_err = float(torch.norm(z_pred_eq - z_star_t).item())
+    print(f'[control] Predictor fixed-point error ||f(z*,0)-z*|| = {fp_err:.4f}')
+
     # Probes
     print('\n[probes] Running probes ...')
     from probes.suite import run_all_probes
@@ -411,6 +419,53 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         print(f'[control] Grad MPC failed: {exc}')
         ctrl_results['grad_mpc'] = {'error': str(exc)}
 
+    # ── Gradient MPC with state_head physical-state cost ─────────────────────
+    # Cost = Q_phys * ||state_head(z_t)||^2 instead of Q * ||z_t - z*||^2.
+    # Optimizes physical state error directly; bypasses latent-space cost mis-alignment.
+    print('\n[control] --- Gradient MPC (state_head cost) ---')
+    try:
+        from control.grad_mpc import GradientLatentMPC
+        if not (_state_head_trained and trainer.state_head is not None):
+            raise RuntimeError('state_head not trained')
+        # Theta-focused physical cost: theta and theta_dot weighted heavily,
+        # x/xdot included but lower weight since state_head may not estimate them well yet.
+        Q_phys_sh = np.diag([1.0, 0.1, 100.0, 1.0])
+        grad_mpc_sh = GradientLatentMPC(
+            predictor=model.predictor,
+            action_encoder=model.action_encoder,
+            Q=Q_lqr, R=R_lqr, Q_f=Q_f,
+            horizon=mpc_horizon, chunk_size=mpc_chunk,
+            action_lb=action_lb, action_ub=action_ub,
+            lr=float(mpc_cfg.get('grad_lr', 0.05)),
+            n_iter=int(mpc_cfg.get('grad_n_iter', 50)),
+            device=device,
+            state_head=trainer.state_head,
+            Q_phys=Q_phys_sh,
+        )
+        print(f'[control] {grad_mpc_sh.summary()} [state_head cost]')
+        n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
+        cr_grad_sh = evaluate_stabilization_mpc(
+            encoder=model.encoder, mpc=grad_mpc_sh, env=env,
+            n_trials=n_grad, T=T_rollout, init_scale=init_scale,
+            seed=seed, device=device, z_star=z_star, vis_trial=0,
+        )
+        print(f'[control] Grad MPC (SH): success={cr_grad_sh["success_rate"]:.3f}'
+              f'  ep_len={cr_grad_sh["mean_episode_length"]:.1f}'
+              f'  frac_stable={cr_grad_sh["mean_fraction_stable"]:.3f}'
+              f'  (n={n_grad})')
+        ctrl_results['grad_mpc_statehead'] = {k: v for k, v in cr_grad_sh.items()
+                                               if k != 'vis_result'}
+        vis_gsh = cr_grad_sh.get('vis_result')
+        if vis_gsh:
+            save_rollout_frames(vis_gsh, out_dir / 'grad_mpc_sh_frames.png',
+                                n_frames=8, title=f'{exp_name}  Grad MPC (SH)')
+            save_rollout_video(vis_gsh, out_dir / 'grad_mpc_sh.gif',
+                               fps=15, title=f'{exp_name}  Grad MPC (SH)')
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        print(f'[control] Grad MPC (state_head) failed: {exc}')
+        ctrl_results['grad_mpc_statehead'] = {'error': str(exc)}
+
     env.close()
 
     # Save
@@ -427,7 +482,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         'model':   {'n_params': n_params},
         'probes':  probe_results,
         'control': ctrl_results,
-        'jacobian':{'rho': rho_jac},
+        'jacobian':{'rho': rho_jac, 'fixed_point_error': fp_err},
         'elapsed_s': time.time() - t_start,
     }
 
