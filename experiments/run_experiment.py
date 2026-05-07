@@ -118,11 +118,6 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
         )
         _state_head_trained = True
-        # Switch to final-epoch model for Jacobian — spectral reg converges late in training,
-        # often well after the best-val epoch. Using final weights captures rho_jac >= 1.0827.
-        if hasattr(trainer, 'final_state') and trainer.final_state is not None:
-            model.load_state_dict({k: v.to(device) for k, v in trainer.final_state.items()})
-            print('[control] Using final-epoch model for Jacobian & control evaluation')
 
     # Compute z*
     from envs.cartpole_visual import ContinuousCartpoleVisual

@@ -276,7 +276,11 @@ class Trainer:
         if epochs is None:
             epochs = int(self.cfg.get('epochs', 100))
         history = {'train': [], 'val': []}
-        best_state = None
+        best_state      = None
+        _best_val_epoch = 0
+        _spec_conv_epoch = None   # first epoch where spec_loss < 0.01
+        spec_thresh     = float(self.cfg.get('spec_converge_thresh', 0.01))
+
         for epoch in range(epochs):
             self.epoch = epoch
             t0 = time.time()
@@ -288,8 +292,13 @@ class Trainer:
             val_loss = val.get('total_loss', float('inf'))
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                best_state = {k: v.cpu().clone()
-                               for k, v in self.model.state_dict().items()}
+                best_state      = {k: v.cpu().clone()
+                                   for k, v in self.model.state_dict().items()}
+                _best_val_epoch = epoch
+            # Track first epoch where spectral reg has converged
+            if (_spec_conv_epoch is None
+                    and tr.get('spec_loss', float('inf')) < spec_thresh):
+                _spec_conv_epoch = epoch
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
             dt = time.time() - t0
@@ -302,13 +311,32 @@ class Trainer:
                   f'{state_str}{spec_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
-        # Store final-epoch weights before restoring best-val model
+
+        # Store final-epoch weights before any restoration
         self.final_state = {k: v.cpu().clone()
                             for k, v in self.model.state_dict().items()}
-        if best_state is not None:
+        self._spec_converged_epoch = _spec_conv_epoch
+        self._best_val_epoch       = _best_val_epoch
+
+        if best_state is None:
+            return history
+
+        # Choose model for Jacobian / control evaluation:
+        #   • If spectral reg converged at or before best-val epoch → best-val model
+        #     has both low val loss AND correct spectral properties.
+        #   • Otherwise spectral convergence lags best-val → keep final-epoch weights.
+        if (_spec_conv_epoch is not None
+                and _spec_conv_epoch <= _best_val_epoch):
             self.model.load_state_dict({k: v.to(self.device)
                                          for k, v in best_state.items()})
-            print(f'[train] Restored best model (val_loss={self.best_val_loss:.4f})')
+            print(f'[train] Using best-val model  '
+                  f'epoch={_best_val_epoch+1}  val={self.best_val_loss:.4f}  '
+                  f'(spec converged epoch {_spec_conv_epoch+1})')
+        else:
+            print(f'[train] Using final-epoch model  '
+                  f'(spec converged epoch '
+                  f'{_spec_conv_epoch+1 if _spec_conv_epoch is not None else "never"}'
+                  f' > best-val epoch {_best_val_epoch+1})')
         return history
 
     def get_jacobian(self, z_star: np.ndarray):
