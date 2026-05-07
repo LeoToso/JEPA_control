@@ -68,10 +68,15 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
-        self.use_vicreg    = bool(self.cfg.get('use_vicreg', True))
+        self.use_vicreg   = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
+        # Fraction of state_loss gradient allowed to flow into the encoder.
+        # 1.0 = full gradient (can destabilise pred); 0.0 = stop-gradient.
+        # ~0.05 balances state organisation with predictor stability.
+        self.state_encoder_grad_scale = float(
+            self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
 
         lr           = float(self.cfg.get('lr', 1e-4))
@@ -131,12 +136,7 @@ class Trainer:
         obs_flat = obs_seq.view(B * H1, C, h, w)
         z_flat   = self.model.encoder(obs_flat)        # (B*(H+1), d)
         d        = z_flat.shape[-1]
-        z_all    = z_flat.view(B, H1, d)               # (B, H+1, d) online
-
-        # Target encoder: slowly-moving EMA copy — provides stable pred targets
-        with torch.no_grad():
-            z_tgt_flat = self.model.target_encoder(obs_flat)
-            z_tgt_all  = z_tgt_flat.view(B, H1, d)    # (B, H+1, d) target
+        z_all    = z_flat.view(B, H1, d)               # (B, H+1, d)
 
         # EMA of z* from online encoder (used for Jacobian regularisation)
         if is_train:
@@ -146,10 +146,10 @@ class Trainer:
             else:
                 self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
-        # Prediction targets: from target encoder (no gradient, stable)
-        z_targets = z_tgt_all[:, 1:]                   # (B, H, d)
+        # Stop-gradient targets from online encoder
+        z_targets = z_all[:, 1:].detach()             # (B, H, d)
 
-        # Multi-step unrolled prediction: online z_t → target z_{t+1}
+        # Multi-step unrolled prediction loss
         z_curr = z_all[:, 0]
         pred_loss = torch.zeros(1, device=self.device)
         for k in range(H):
@@ -163,9 +163,7 @@ class Trainer:
         total_loss = self.lambda_pred * pred_loss
         info = {'pred_loss': pred_loss.item()}
 
-        # VICReg collapse prevention: variance + covariance on online z_0.
-        # No invariance term — invariance between online frames caused collapse
-        # when pred targets were also changing.
+        # VICReg collapse prevention on online encoder outputs
         if self.use_vicreg:
             from losses.prediction import vicreg_collapse_loss
             vic_loss, vic_info = vicreg_collapse_loss(
@@ -177,13 +175,19 @@ class Trainer:
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
 
-        # State reconstruction: supervise z_0 on state_0 and z_hat on state_1
+        # State reconstruction with gradient mixing.
+        # state_head receives full gradient (learns x, ẋ, θ, θ̇ well).
+        # Encoder receives only alpha fraction of state gradient so pred_loss
+        # remains the dominant encoder training signal and avoids pred spikes.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
-            w = torch.tensor([10., 1., 10., 1.], device=self.device)
-            state_loss = (w * (self.state_head(z_all[:, 0]) - states[:, 0]).pow(2)).mean()
+            w      = torch.tensor([10., 1., 10., 1.], device=self.device)
+            alpha  = self.state_encoder_grad_scale
+            z0_mix = alpha * z_all[:, 0] + (1 - alpha) * z_all[:, 0].detach()
+            z1_mix = alpha * z_all[:, 1] + (1 - alpha) * z_all[:, 1].detach()
+            state_loss = (w * (self.state_head(z0_mix) - states[:, 0]).pow(2)).mean()
             state_loss = state_loss + (
-                w * (self.state_head(z_all[:, 1]) - states[:, 1]).pow(2)
+                w * (self.state_head(z1_mix) - states[:, 1]).pow(2)
             ).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
@@ -272,7 +276,6 @@ class Trainer:
                 params += list(self.state_head.parameters())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             self.optimizer.step()
-            self.model.update_target_encoder(self.ema_momentum)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)
