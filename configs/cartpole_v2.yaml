@@ -29,7 +29,7 @@ training:
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
-  use_vicreg: true
+  use_vicreg: false
   vicreg_lambda: 5.0
   vicreg_mu: 5.0
   vicreg_nu: 1.0
