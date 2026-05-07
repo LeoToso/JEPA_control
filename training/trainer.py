@@ -169,15 +169,17 @@ class Trainer:
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
 
-        # State reconstruction: supervise z_0 on state_0 and z_hat on state_1
+        # State reconstruction: supervise z_0 on state_0 and z_hat on state_1.
+        # Detach encoder outputs so state_head trains as a pure linear readout
+        # without pulling the encoder away from prediction-friendly representations.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
             w = torch.tensor([10., 1., 10., 1.], device=self.device)
-            # z_0 -> state_0
-            state_loss = (w * (self.state_head(z_all[:, 0]) - states[:, 0]).pow(2)).mean()
-            # z_all[:, 1] (encoder of obs_1) -> state_1
+            z0_sg = z_all[:, 0].detach()
+            z1_sg = z_all[:, 1].detach()
+            state_loss = (w * (self.state_head(z0_sg) - states[:, 0]).pow(2)).mean()
             state_loss = state_loss + (
-                w * (self.state_head(z_all[:, 1]) - states[:, 1]).pow(2)
+                w * (self.state_head(z1_sg) - states[:, 1]).pow(2)
             ).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
