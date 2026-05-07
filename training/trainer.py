@@ -132,6 +132,14 @@ class Trainer:
         d        = z_flat.shape[-1]
         z_all    = z_flat.view(B, H1, d)              # (B, H+1, d)
 
+        # Maintain EMA of equilibrium encoding across batches (training only)
+        if is_train:
+            z0_mean = z_all[:, 0].mean(dim=0).detach()
+            if self._z_star_ema is None:
+                self._z_star_ema = z0_mean.clone()
+            else:
+                self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
+
         # Stop-gradient targets for multi-step prediction
         z_targets = z_all[:, 1:].detach()             # (B, H, d)
 
@@ -181,8 +189,9 @@ class Trainer:
                 and (self.lambda_spec > 0 or self.lambda_PBH > 0)):
             try:
                 from control.jacobian import compute_jacobian_torch
-                # Use mean of z_0 across batch as current z* estimate
-                z_star_t = z_all[:, 0].mean(dim=0).detach()
+                # Use EMA-tracked z* (more stable than per-batch mean)
+                z_star_t = (self._z_star_ema if self._z_star_ema is not None
+                            else z_all[:, 0].mean(dim=0).detach())
                 A_jac, B_jac = compute_jacobian_torch(
                     self.model.predictor, self.model.action_encoder,
                     z_star_t, self.device,
@@ -199,6 +208,12 @@ class Trainer:
                         dist_sq = diff.real ** 2 + diff.imag ** 2
                         spec_terms.append(dist_sq.min())
                     spec_loss = torch.stack(spec_terms).sum()
+                    # Penalise when spectral radius is below the GT unstable value
+                    target_rho = float(max(np.abs(self.true_unstable_eigs)))
+                    rho_jac_t  = torch.max(torch.abs(eigvals))
+                    spec_loss  = spec_loss + 2.0 * torch.relu(
+                        torch.tensor(target_rho, dtype=rho_jac_t.dtype,
+                                     device=rho_jac_t.device) - rho_jac_t)
                     total_loss = total_loss + self.lambda_spec * spec_loss
                     info['spec_loss'] = spec_loss.item()
                 if self.lambda_PBH > 0:

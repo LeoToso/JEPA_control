@@ -80,7 +80,8 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
                         np.array([0., 0., theta, 0.], dtype=np.float32))
                 # linear prediction
                 z1_lin = A_jac @ (z0 - z_star) + B_jac[:, 0] * u + z_star
-                denom  = np.linalg.norm(z1 - z_star) + 1e-12
+                # floor denom to avoid near-zero division at equilibrium (theta=0)
+                denom  = max(np.linalg.norm(z1 - z_star), 0.01 * np.sqrt(len(z_star)))
                 errs.append(float(np.linalg.norm(z1_lin - z1) / denom))
             residuals[f'theta={theta:+.2f}'] = float(np.mean(errs))
 
