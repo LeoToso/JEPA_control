@@ -81,8 +81,13 @@ class Trainer:
 
         lr           = float(self.cfg.get('lr', 1e-4))
         weight_decay = float(self.cfg.get('weight_decay', 1e-4))
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=lr,
-                                          weight_decay=weight_decay)
+        predictor_lr_mult = float(self.cfg.get('predictor_lr_mult', 1.0))
+        self.optimizer = torch.optim.Adam([
+            {'params': model.encoder.parameters()},
+            {'params': model.action_encoder.parameters()},
+            {'params': model.predictor.parameters(),
+             'lr': lr * predictor_lr_mult},
+        ], lr=lr, weight_decay=weight_decay)
 
         # Auxiliary state head (theta-weighted supervision)
         if self.lambda_state > 0:
