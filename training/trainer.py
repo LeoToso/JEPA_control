@@ -151,14 +151,11 @@ class Trainer:
             else:
                 self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
-        # EMA target encoder provides stable prediction targets.
-        # Online encoder z_t is reshaped by state_loss; if targets also came
-        # from the online encoder they would shift in uncorrelated directions
-        # causing pred_loss to explode.  Slow EMA targets (momentum≈0.996)
-        # decouple target stability from online encoder dynamics.
-        with torch.no_grad():
-            z_tgt_flat = self.model.target_encoder(obs_flat)
-            z_targets  = z_tgt_flat.view(B, H1, d)[:, 1:]   # (B, H, d)
+        # Stop-gradient targets from the online encoder.
+        # Using the same encoder for inputs (z_t) and targets (z_{t+1}) keeps
+        # predictor(z*, 0) ≈ z* at equilibrium, minimising fp_error and thus
+        # the constant offset that inflates linearisation residual near z*.
+        z_targets = z_all[:, 1:].detach()              # (B, H, d)
 
         # Multi-step unrolled prediction loss
         z_curr = z_all[:, 0]
@@ -287,7 +284,6 @@ class Trainer:
                 params += list(self.state_head.parameters())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             self.optimizer.step()
-            self.model.update_target_encoder(self.ema_momentum)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)
