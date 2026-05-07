@@ -67,6 +67,9 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
     trainer=Trainer(model=model,config_dict=train_cfg_exp,gt=gt,save_dir=str(out_dir/'checkpoints'),device=device,seed=seed)
     # --eval-only: load saved model weights and skip training.
     # Useful when re-running just DMDc/probes/control after a hyperparameter change.
+    # _state_head_trained tracks whether the state_head weights are meaningful
+    # (trained or loaded from checkpoint) vs randomly initialised.
+    _state_head_trained=False
     saved_model=out_dir/'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
@@ -79,11 +82,15 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
             if trainer.state_head is None:
                 trainer.state_head=nn.Linear(model.config.latent_dim,4).to(device)
             trainer.state_head.load_state_dict(torch.load(state_head_path,map_location=device))
+            _state_head_trained=True
             print(f'[train] --eval-only: loaded state_head from {state_head_path}')
+        else:
+            print('[train] --eval-only: no state_head.pt; will use training-data regression for W_probe')
         history={'train':[],'val':[]}
     else:
         print(f'\n[train] Starting training for {train_cfg_exp["epochs"]} epochs...')
         history=trainer.fit(loaders['train'],loaders['val'],epochs=train_cfg_exp['epochs'],checkpoint_every=train_cfg_exp.get('checkpoint_every',10))
+        _state_head_trained=True
     from models.action_encoder import LinearActionEncoder
     if isinstance(model.action_encoder,LinearActionEncoder):
         model.action_encoder.compute_pseudoinverse()
@@ -128,26 +135,30 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         z_star=model.encoder(obs_eq_t).cpu().numpy()[0]
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
     # Physics-weighted latent Q: Q_z = W^T @ Q_phys @ W.
-    # W (4,d) maps latent → physical state. Prefer the trained state_head weight,
-    # which is supervised directly on theta with 10× weight during training and
-    # therefore gives a symmetric, theta-aligned Q. Fall back to passive-rollout
-    # regression when no state_head is available (e.g. lambda_state=0).
+    # W (4,d) maps latent → physical state. Source priority:
+    #  1. Trained state_head.weight  — supervised directly on theta with 10× weight
+    #  2. Training-data regression   — 50k balanced samples; better than passive rollouts
+    # Using an untrained (random) state_head would give a garbage Q, so we gate on
+    # _state_head_trained to ensure the weights are meaningful.
     Q_lqr=np.eye(d)  # fallback
     Q_phys_ctrl=np.diag([10.0,0.1,100.0,0.1])
     W_probe=None
-    if hasattr(trainer,'state_head') and trainer.state_head is not None:
+    if _state_head_trained and trainer.state_head is not None:
         W_probe=trainer.state_head.weight.detach().cpu().numpy()  # (4,d)
         print(f'[control] W_probe: state_head  ||W||={np.linalg.norm(W_probe):.3f}')
     else:
-        _Z_flat=rollout_data['latent_states'].reshape(-1,d)
-        _X_flat=rollout_data['states'].reshape(-1,4)
-        _dZ=_Z_flat-z_star[None,:]
-        if len(_dZ)>50:
-            _W_T,_,_,_=np.linalg.lstsq(np.hstack([_dZ,np.ones((len(_dZ),1))]),_X_flat,rcond=1e-5)
-            W_probe=_W_T[:-1].T  # (4,d)
-            print(f'[control] W_probe: passive-rollout regression  ||W||={np.linalg.norm(W_probe):.3f}')
-        else:
-            print('[control] Insufficient rollout data; keeping Q=I')
+        # Fit from training data: broader, more symmetric theta coverage than passive rollouts.
+        print('[control] Fitting W_probe from training data (no trained state_head)...')
+        _Z_tr,_S_tr=[],[]
+        model.eval()
+        with torch.no_grad():
+            for _b in loaders['train']:
+                _Z_tr.append(model.encoder(_b['obs'].to(device)).cpu().numpy())
+                _S_tr.append(_b['state'].numpy())
+        _Z_tr=np.vstack(_Z_tr); _S_tr=np.vstack(_S_tr)
+        _W_T,_,_,_=np.linalg.lstsq(np.hstack([_Z_tr,np.ones((len(_Z_tr),1))]),_S_tr,rcond=1e-5)
+        W_probe=_W_T[:-1].T  # (4,d)
+        print(f'[control] W_probe: training-data regression  ||W||={np.linalg.norm(W_probe):.3f}')
     if W_probe is not None:
         Q_z=W_probe.T@Q_phys_ctrl@W_probe+0.01*np.eye(d)
         Q_z*=d/(np.trace(Q_z)+1e-12)
@@ -217,7 +228,7 @@ def run_single_experiment(encoder_variant,dataset_name,frame_skip=1,seed=42,conf
         # If K(z-z*) is monotone in θ: encoder is working.
         # If it's roughly constant or has wrong sign: theta-blind encoder.
         print('[control] Theta sweep  K·(z−z*) vs θ:')
-        _sh=trainer.state_head if hasattr(trainer,'state_head') else None
+        _sh=trainer.state_head if (_state_head_trained and hasattr(trainer,'state_head')) else None
         for _th in [-0.20,-0.15,-0.10,-0.05,0.0,+0.05,+0.10,+0.15,+0.20]:
             _o,_,_=env.reset_to_state(np.array([0.,0.,_th,0.],dtype=np.float32))
             _ot=torch.from_numpy(_o).float().permute(2,0,1)[None].to(device)/255.0
