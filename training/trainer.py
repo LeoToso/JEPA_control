@@ -302,6 +302,9 @@ class Trainer:
                   f'{state_str}{spec_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
+        # Store final-epoch weights before restoring best-val model
+        self.final_state = {k: v.cpu().clone()
+                            for k, v in self.model.state_dict().items()}
         if best_state is not None:
             self.model.load_state_dict({k: v.to(self.device)
                                          for k, v in best_state.items()})
