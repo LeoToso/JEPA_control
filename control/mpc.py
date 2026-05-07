@@ -38,6 +38,7 @@ class LatentMPC:
         chunk_size: int = 1,
         Q_f: Optional[np.ndarray] = None,
         u_offset: float = 0.0,
+        c_offset: Optional[np.ndarray] = None,
     ):
         self.A = A
         self.B = B
@@ -48,7 +49,11 @@ class LatentMPC:
         self.action_lb = action_lb
         self.action_ub = action_ub
         self.chunk_size = min(chunk_size, horizon)
-        self.u_offset = u_offset   # constant feedforward: cancels (A-I)z* bias
+        self.u_offset = u_offset   # scalar feedforward: cancels (A-I)z* bias
+        # Constant affine offset in dynamics: z_{t+1} = A·z_t + B·u + c_offset.
+        # Set to f(z*,0)-z* to compensate predictor fixed-point drift so the
+        # linear rollout matches reality at and near the equilibrium.
+        self.c_offset = c_offset if c_offset is not None else np.zeros(A.shape[0])
         self._precompute_gains()
 
     def _precompute_gains(self):
@@ -100,7 +105,7 @@ class LatentMPC:
             )
             if k < self.chunk_size:
                 actions.append(u)
-            z = self.A @ z + self.B @ u
+            z = self.A @ z + self.B @ u + self.c_offset
             pred_zs.append(z.copy())
         return actions, np.array(pred_zs)   # (chunk_size,), (H+1, d)
 

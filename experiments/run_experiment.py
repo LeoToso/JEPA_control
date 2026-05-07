@@ -70,6 +70,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             init_range=float(cfg['data'].get('random_init_range', 0.15)),
             lqr_init_range=float(cfg['data'].get('lqr_init_range', 0.10)),
             lqr_noise_std=float(cfg['data'].get('lqr_noise_std', 0.1)),
+            n_equilibrium=int(cfg['data'].get('n_equilibrium', 0)),
+            eq_init_range=float(cfg['data'].get('eq_init_range', 0.002)),
+            eq_noise_std=float(cfg['data'].get('eq_noise_std', 0.001)),
         )
     loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
                                horizon=horizon)
@@ -153,6 +156,36 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         z_pred_eq = model.predictor(z_star_t, a_zero)
         fp_err = float(torch.norm(z_pred_eq - z_star_t).item())
     print(f'[control] Predictor fixed-point error ||f(z*,0)-z*|| = {fp_err:.4f}')
+
+    # ── Diagnostics: equilibrium drift and state estimation ───────────────────
+    c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]  # (d,) constant bias
+    # Feedforward action that best cancels drift along B_jac direction:
+    #   u_ff = -B^+ @ c  (least-squares; cancels the B-aligned component)
+    BtB = B_jac.T @ B_jac + 1e-4 * np.eye(B_jac.shape[1])
+    u_ff_lin = float(-np.linalg.solve(BtB, B_jac.T @ c_drift)[0])
+    b_norm = float(np.linalg.norm(B_jac))
+    cancelled = float(np.linalg.norm(B_jac * u_ff_lin))
+    print(f'[control] B_jac norm: {b_norm:.4f}')
+    print(f'[control] u_ff={u_ff_lin:.4f}  cancels {cancelled:.4f}/{fp_err:.4f} of drift')
+
+    with torch.no_grad():
+        # How does the predictor drift from z* over H steps with zero action?
+        print('[control] Predictor drift from z* (u=0, 5 steps):')
+        z_cur = z_star_t.clone()
+        a_zero = model.action_encoder(torch.zeros(1, 1, device=device))
+        for k in range(5):
+            z_cur = model.predictor(z_cur, a_zero)
+            dist = float(torch.norm(z_cur - z_star_t).item())
+            state_str = ''
+            if trainer.state_head is not None:
+                x_k = trainer.state_head(z_cur).cpu().numpy()[0]
+                state_str = f'  [x={x_k[0]:.3f} ẋ={x_k[1]:.3f} θ={x_k[2]:.3f} θ̇={x_k[3]:.3f}]'
+            print(f'  step {k+1}: ||z-z*||={dist:.4f}{state_str}')
+        # State_head estimate at z* (should be ~[0,0,0,0])
+        if trainer.state_head is not None:
+            x_eq = trainer.state_head(z_star_t).cpu().numpy()[0]
+            print(f'[control] state_head(z*) = [{x_eq[0]:.3f}, {x_eq[1]:.3f},'
+                  f' {x_eq[2]:.3f}, {x_eq[3]:.3f}]  (ideal: [0,0,0,0])')
 
     # Probes
     print('\n[probes] Running probes ...')
@@ -354,7 +387,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
         mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_lqr, R=R_lqr,
                              horizon=mpc_horizon, chunk_size=mpc_chunk,
-                             Q_f=Q_f, action_lb=action_lb, action_ub=action_ub)
+                             Q_f=Q_f, action_lb=action_lb, action_ub=action_ub,
+                             u_offset=u_ff_lin, c_offset=c_drift)
         K_lin   = mpc_lin.K_list[0]
         A_cl    = A_jac - B_jac @ K_lin
         rho_cl  = float(np.max(np.abs(np.linalg.eigvals(A_cl))))

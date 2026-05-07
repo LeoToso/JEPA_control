@@ -71,7 +71,8 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
 def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                      save_path=None, seed=42, train_frac=0.8, val_frac=0.1,
                      action_range=(-5.0, 5.0), init_range=0.1,
-                     lqr_init_range=None, lqr_noise_std=0.1, image_size=64):
+                     lqr_init_range=None, lqr_noise_std=0.1, image_size=64,
+                     n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001):
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng = np.random.RandomState(seed)
     lqr_gain = _compute_lqr_gain() if dataset_type in ('lqr', 'mixed') else None
@@ -95,6 +96,18 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
         data_lqr['episode_ids'] += data_rand['episode_ids'].max() + 1
         data = {key: np.concatenate([data_rand[key], data_lqr[key]], axis=0)
                 for key in data_rand}
+        # Optional near-equilibrium sequences: teach predictor f(z*,0)≈z*.
+        # The predictor never sees "stay at rest" otherwise (random init_range > 0).
+        if n_equilibrium > 0:
+            data_eq = _collect_transitions(env, n_equilibrium, 'lqr', lqr_gain,
+                                           action_low, action_high,
+                                           init_range=eq_init_range,
+                                           lqr_noise_std=eq_noise_std, rng=rng)
+            data_eq['episode_ids'] += data['episode_ids'].max() + 1
+            data = {key: np.concatenate([data[key], data_eq[key]], axis=0)
+                    for key in data}
+            print(f'[data] Added {n_equilibrium} equilibrium transitions '
+                  f'(init_range={eq_init_range}, noise_std={eq_noise_std})')
     else:
         init_r = 0.05 if dataset_type == 'lqr' else init_range
         data = _collect_transitions(env, n_transitions, dataset_type, lqr_gain,
