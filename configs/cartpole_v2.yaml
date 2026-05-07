@@ -23,12 +23,12 @@ training:
   weight_decay: 1.0e-4
   batch_size: 128
   epochs: 100
-  horizon: 20
+  horizon: 5
   lambda_pred: 1.0
   lambda_state: 1.0
   lambda_spec: 5.0
   lambda_PBH: 1.0
-  jacobian_every: 50
+  jacobian_every: 20
   use_vicreg: true
   vicreg_lambda: 5.0
   vicreg_mu: 5.0
@@ -49,11 +49,11 @@ control:
   settling_threshold: 0.05
 
 mpc:
-  horizon: 20
+  horizon: 10
   chunk_size: 1
   Q_f_multiplier: 10.0
   grad_lr: 0.05
-  grad_n_iter: 40
+  grad_n_iter: 50
 
 data:
   n_random: 50000
