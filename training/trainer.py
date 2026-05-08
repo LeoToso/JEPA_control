@@ -143,13 +143,25 @@ class Trainer:
         d        = z_flat.shape[-1]
         z_all    = z_flat.view(B, H1, d)               # (B, H+1, d)
 
-        # EMA of z* from online encoder (used for Jacobian regularisation)
+        # EMA of z* from online encoder (used for Jacobian regularisation and fp_loss).
+        # Only update from near-equilibrium samples so fp_loss trains at the TRUE
+        # equilibrium z* = encoder(obs_eq), not the batch mean (96% non-eq states).
         if is_train:
-            z0_mean = z_all[:, 0].mean(dim=0).detach()
-            if self._z_star_ema is None:
-                self._z_star_ema = z0_mean.clone()
+            if 'states' in batch:
+                states_b = batch['states'][:, 0].to(self.device).float()  # (B, 4)
+                eq_mask = states_b.abs().max(dim=1).values < 0.05
+                if eq_mask.sum() > 0:
+                    z0_eq = z_all[:, 0][eq_mask].mean(dim=0).detach()
+                    if self._z_star_ema is None:
+                        self._z_star_ema = z0_eq.clone()
+                    else:
+                        self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_eq
             else:
-                self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
+                z0_mean = z_all[:, 0].mean(dim=0).detach()
+                if self._z_star_ema is None:
+                    self._z_star_ema = z0_mean.clone()
+                else:
+                    self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
         # Stop-gradient targets from the online encoder.
         # Using the same encoder for inputs (z_t) and targets (z_{t+1}) keeps
