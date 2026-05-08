@@ -313,8 +313,35 @@ class Trainer:
         _spec_conv_epoch = None   # first epoch where spec_loss < 0.01
         spec_thresh     = float(self.cfg.get('spec_converge_thresh', 0.01))
 
+        # Warm-up: pure state-supervision phase to seed encoder with theta encoding
+        # before pred_loss locks the encoder into a theta-blind representation.
+        warmup_epochs = int(self.cfg.get('warmup_epochs', 0))
+        _saved_lambdas = (
+            self.lambda_pred, self.lambda_state, self.lambda_spec,
+            self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
+        )
+
         for epoch in range(epochs):
             self.epoch = epoch
+
+            # Switch lambdas based on warm-up phase
+            if warmup_epochs > 0:
+                if epoch < warmup_epochs:
+                    if epoch == 0:
+                        print(f'[train] Warm-up phase: {warmup_epochs} epochs of '
+                              f'pure state supervision (pred disabled)')
+                    self.lambda_pred  = 0.0
+                    self.lambda_state = float(self.cfg.get('warmup_lambda_state', 1.0))
+                    self.lambda_spec  = 0.0
+                    self.lambda_PBH   = 0.0
+                    self.lambda_fp    = 0.0
+                    self.state_encoder_grad_scale = 1.0
+                elif epoch == warmup_epochs:
+                    (self.lambda_pred, self.lambda_state, self.lambda_spec,
+                     self.lambda_PBH, self.lambda_fp,
+                     self.state_encoder_grad_scale) = _saved_lambdas
+                    print(f'[train] Warm-up complete — switching to full loss at epoch {epoch+1}')
+
             t0 = time.time()
             tr  = self.train_epoch(train_loader)
             val = self.val_epoch(val_loader)

@@ -37,6 +37,8 @@ training:
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   checkpoint_every: 50
+  warmup_epochs: 10
+  warmup_lambda_state: 1.0
 
 probes:
   epsilon_lambda: 0.05
