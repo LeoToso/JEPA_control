@@ -1,7 +1,7 @@
 environment:
   name: cartpole
   frame_skip: 1
-  image_size: 64
+  image_size: 128
   mass_cart: 1.0
   mass_pole: 0.1
   pole_length: 0.5
