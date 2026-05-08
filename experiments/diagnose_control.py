@@ -128,6 +128,16 @@ def main():
             print(f'  step {k+1:2d}: ||z-z*||={dist:.4f}{state_str}')
 
     print('\n' + '='*60)
+    print('ENCODER SENSITIVITY: does z change meaningfully with θ?')
+    print('(if ||z(θ) - z(0)|| is tiny, the encoder ignores θ)')
+    print('='*60)
+    z0 = z_at.get(0.0, None)
+    if z0 is not None:
+        for th in thetas:
+            dz = np.linalg.norm(z_at[th] - z0)
+            print(f'  θ={th:+.2f}  ||z(θ)-z(0)||={dz:.4f}')
+
+    print('\n' + '='*60)
     print('Q_LQR ALIGNMENT: does the cost gradient point the right way?')
     print('(apply +ε in the θ direction of latent space → cost should increase)')
     print('='*60)

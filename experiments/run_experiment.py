@@ -376,6 +376,74 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         print(f'[control] Enc-Obs LQR (theta-only) failed: {exc}')
         ctrl_results['enc_obs_lqr_theta_only'] = {'error': str(exc)}
 
+    # ── Pure-latent LQR (Q=I, bypasses state_head) ───────────────────────────
+    # When state_head hasn't converged, Q_lqr=W^T@Q_phys@W is degenerate.
+    # This controller drives z → z* directly with Q=I in latent space,
+    # using only the Jacobian linearization — no state estimation needed.
+    print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
+    try:
+        from control.lqr import solve_discrete_lqr
+        Q_lat_I = np.eye(d)
+        K_lat, _, cl_eigs_lat = solve_discrete_lqr(A_jac, B_jac, Q_lat_I, R_lqr,
+                                                    true_unstable_eigs=gt.unstable_eigenvalues,
+                                                    pre_stabilize=True)
+        rho_lat_cl = float(np.max(np.abs(cl_eigs_lat)))
+        print(f'[control] Pure-Latent LQR: rho(A_cl)={rho_lat_cl:.4f}  '
+              f'{"STABLE" if rho_lat_cl < 1 else "UNSTABLE"}')
+        model.eval()
+        rng_lat = np.random.RandomState(seed)
+        succs_lat, ep_lens_lat, fracs_lat = [], [], []
+        vis_lat = None
+        for trial in range(n_trials):
+            x0 = rng_lat.uniform(-init_scale, init_scale, 4).astype(np.float32)
+            obs, state, _ = env.reset_to_state(x0)
+            done = False
+            states_lat, actions_lat, all_obs_lat = [state.copy()], [], []
+            for _ in range(T_rollout):
+                all_obs_lat.append(obs.copy())
+                obs_t = (torch.from_numpy(obs).float()
+                         .permute(2, 0, 1)[None].to(device) / 255.0)
+                with torch.no_grad():
+                    z_t_lat = model.encoder(obs_t).cpu().numpy()[0]
+                u = float(np.clip(
+                    (-K_lat @ (z_t_lat - z_star) + u_ff_lin)[0],
+                    action_lb, action_ub))
+                actions_lat.append([u])
+                obs, state, _, done, _ = env.step(u)
+                states_lat.append(state.copy())
+                if done:
+                    break
+            ep_len = len(states_lat) - 1
+            success = int(not done)
+            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_lat]))
+            succs_lat.append(success); ep_lens_lat.append(ep_len); fracs_lat.append(frac)
+            if trial == 0:
+                vis_lat = {
+                    'all_obs': all_obs_lat,
+                    'states': np.array(states_lat),
+                    'actions': np.array(actions_lat) if actions_lat else np.zeros((1,1)),
+                    'done_at': ep_len,
+                    'stabilized': bool(success),
+                    'final_state_error': float(abs(states_lat[-1][2])),
+                }
+        print(f'[control] Pure-Latent LQR: success={np.mean(succs_lat):.3f}'
+              f'  ep_len={np.mean(ep_lens_lat):.1f}'
+              f'  frac_stable={np.mean(fracs_lat):.3f}')
+        ctrl_results['pure_latent_lqr'] = {
+            'success_rate':         float(np.mean(succs_lat)),
+            'mean_episode_length':  float(np.mean(ep_lens_lat)),
+            'mean_fraction_stable': float(np.mean(fracs_lat)),
+        }
+        if vis_lat:
+            save_rollout_frames(vis_lat, out_dir / 'pure_latent_lqr_frames.png',
+                                n_frames=8, title=f'{exp_name}  Pure-Latent LQR')
+            save_rollout_video(vis_lat, out_dir / 'pure_latent_lqr.gif',
+                               fps=15, title=f'{exp_name}  Pure-Latent LQR')
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        print(f'[control] Pure-Latent LQR failed: {exc}')
+        ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
+
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
     print('\n[control] --- Linear MPC (Jacobian) ---')
     try:
