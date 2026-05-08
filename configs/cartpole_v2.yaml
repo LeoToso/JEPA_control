@@ -39,7 +39,8 @@ training:
   checkpoint_every: 50
   warmup_epochs: 10
   warmup_lambda_state: 1.0
-  freeze_encoder_epochs: 30
+  freeze_encoder_epochs: 50
+  encoder_lr_unfreeze_mult: 0.1
 
 probes:
   epsilon_lambda: 0.05

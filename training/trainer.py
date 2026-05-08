@@ -355,7 +355,13 @@ class Trainer:
                     for p in self.model.encoder.parameters():
                         p.requires_grad_(True)
                     _encoder_frozen = False
-                    print(f'[train] Encoder unfrozen at epoch {epoch+1}')
+                    # Optionally scale encoder LR down at unfreeze to prevent
+                    # the encoder from overshooting and causing pred oscillation.
+                    enc_lr_mult = float(self.cfg.get('encoder_lr_unfreeze_mult', 1.0))
+                    if enc_lr_mult != 1.0:
+                        self.optimizer.param_groups[0]['lr'] *= enc_lr_mult
+                    print(f'[train] Encoder unfrozen at epoch {epoch+1}'
+                          f'  (lr_mult={enc_lr_mult})')
 
             t0 = time.time()
             tr  = self.train_epoch(train_loader)
