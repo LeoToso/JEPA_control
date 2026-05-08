@@ -184,19 +184,21 @@ class Trainer:
             info['vicreg_total'] = vic_loss.item()
 
         # State reconstruction with gradient mixing.
-        # state_head receives full gradient (learns x, ẋ, θ, θ̇ well).
-        # Encoder receives only alpha fraction of state gradient so pred_loss
-        # remains the dominant encoder training signal and avoids pred spikes.
+        # Theta is the key visual cue (pole angle) — weight it 100x vs x/xdot.
+        # Cart x is hard to estimate from image; xdot/thetadot less reliable.
+        # Encoder receives alpha fraction of state gradient; state_head gets full gradient.
+        # All H+1 trajectory frames contribute state loss for denser supervision.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
-            w      = torch.tensor([10., 1., 10., 1.], device=self.device)
+            w      = torch.tensor([1., 0.1, 100., 1.], device=self.device)
             alpha  = self.state_encoder_grad_scale
-            z0_mix = alpha * z_all[:, 0] + (1 - alpha) * z_all[:, 0].detach()
-            z1_mix = alpha * z_all[:, 1] + (1 - alpha) * z_all[:, 1].detach()
-            state_loss = (w * (self.state_head(z0_mix) - states[:, 0]).pow(2)).mean()
-            state_loss = state_loss + (
-                w * (self.state_head(z1_mix) - states[:, 1]).pow(2)
-            ).mean()
+            state_loss = torch.zeros(1, device=self.device)
+            for k in range(H + 1):
+                z_mix = alpha * z_all[:, k] + (1 - alpha) * z_all[:, k].detach()
+                state_loss = state_loss + (
+                    w * (self.state_head(z_mix) - states[:, k]).pow(2)
+                ).mean()
+            state_loss = state_loss / (H + 1)
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
 

@@ -25,8 +25,8 @@ training:
   epochs: 100
   horizon: 5
   lambda_pred: 1.0
-  lambda_state: 0.1
-  lambda_fp: 0.0
+  lambda_state: 0.2
+  lambda_fp: 0.02
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
@@ -34,7 +34,7 @@ training:
   vicreg_lambda: 5.0
   vicreg_nu: 1.0
   ema_momentum: 0.996
-  state_encoder_grad_scale: 0.20
+  state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   checkpoint_every: 50
 
