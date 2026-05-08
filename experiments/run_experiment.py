@@ -208,14 +208,26 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(B_jac.shape[1])
     d            = len(z_star)
 
-    # Q from state_head if available, else identity
+    # Q from state_head if available, else identity.
+    # Quality check: if the theta row of W is too weak, Q_lqr loses sensitivity
+    # to the key control variable. Fall back to Q=I in that case.
+    Q_lqr = np.eye(d)
+    Q_lqr_source = 'identity'
     if _state_head_trained and trainer.state_head is not None:
         W = trainer.state_head.weight.detach().cpu().numpy()  # (4, d)
+        theta_row_norm = float(np.linalg.norm(W[2]))
         Q_phys_ctrl = np.diag([10.0, 0.1, 100.0, 0.1])
-        Q_lqr = W.T @ Q_phys_ctrl @ W + 0.01 * np.eye(d)
-        Q_lqr *= d / (np.trace(Q_lqr) + 1e-12)
-    else:
-        Q_lqr = np.eye(d)
+        Q_cand = W.T @ Q_phys_ctrl @ W + 0.01 * np.eye(d)
+        Q_cand *= d / (np.trace(Q_cand) + 1e-12)
+        ev = np.linalg.eigvalsh(Q_cand)
+        cond = float(ev.max() / (ev.min() + 1e-12))
+        print(f'[control] Q_lqr candidate: theta_row_norm={theta_row_norm:.4f}'
+              f'  cond={cond:.1f}')
+        # Use state_head Q only if theta row is substantial (not collapsed)
+        if theta_row_norm > 0.1 and cond < 1e6:
+            Q_lqr = Q_cand
+            Q_lqr_source = 'state_head'
+    print(f'[control] Using Q_lqr from: {Q_lqr_source}')
     Q_f = mpc_Qf_mult * Q_lqr
 
     from control.rollout import evaluate_stabilization_mpc
@@ -448,38 +460,42 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     print('\n[control] --- Linear MPC (Jacobian) ---')
     try:
         from control.mpc import LatentMPC
-        # Pre-stabilise if needed
         from control.lqr import pre_stabilize_A
         A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
                                           tol=0.05, target=0.9)
         print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
-        mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_lqr, R=R_lqr,
-                             horizon=mpc_horizon, chunk_size=mpc_chunk,
-                             Q_f=Q_f, action_lb=action_lb, action_ub=action_ub,
-                             u_offset=u_ff_lin, c_offset=c_drift)
-        K_lin   = mpc_lin.K_list[0]
-        A_cl    = A_jac - B_jac @ K_lin
-        rho_cl  = float(np.max(np.abs(np.linalg.eigvals(A_cl))))
-        print(f'[control] {mpc_lin.summary()}')
-        print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
 
-        cr_lin = evaluate_stabilization_mpc(
-            encoder=model.encoder, mpc=mpc_lin, env=env,
-            n_trials=n_trials, T=T_rollout, init_scale=init_scale,
-            seed=seed, device=device, z_star=z_star, vis_trial=0,
-        )
-        print(f'[control] Linear MPC: success={cr_lin["success_rate"]:.3f}'
-              f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
-              f'  frac_stable={cr_lin["mean_fraction_stable"]:.3f}')
-        ctrl_results['linear_mpc'] = {k: v for k, v in cr_lin.items()
-                                       if k != 'vis_result'}
+        for q_label, Q_use, Qf_use in [
+            (Q_lqr_source, Q_lqr, mpc_Qf_mult * Q_lqr),
+            ('identity',   np.eye(d), mpc_Qf_mult * np.eye(d)),
+        ]:
+            tag = 'linear_mpc' if q_label == Q_lqr_source else 'linear_mpc_qI'
+            if tag == 'linear_mpc_qI' and Q_lqr_source == 'identity':
+                continue  # already ran Q=I above; skip duplicate
+            mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_use, R=R_lqr,
+                                 horizon=mpc_horizon, chunk_size=mpc_chunk,
+                                 Q_f=Qf_use, action_lb=action_lb, action_ub=action_ub,
+                                 u_offset=u_ff_lin, c_offset=c_drift)
+            K_lin  = mpc_lin.K_list[0]
+            rho_cl = float(np.max(np.abs(np.linalg.eigvals(A_jac - B_jac @ K_lin))))
+            print(f'[control] {mpc_lin.summary()}  Q={q_label}')
+            print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
 
-        vis = cr_lin.get('vis_result')
-        if vis:
-            save_rollout_frames(vis, out_dir / 'linear_mpc_frames.png',
-                                n_frames=8, title=f'{exp_name}  Linear MPC')
-            save_rollout_video(vis, out_dir / 'linear_mpc.gif',
-                               fps=15, title=f'{exp_name}  Linear MPC')
+            cr_lin = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=mpc_lin, env=env,
+                n_trials=n_trials, T=T_rollout, init_scale=init_scale,
+                seed=seed, device=device, z_star=z_star, vis_trial=0,
+            )
+            print(f'[control] Linear MPC (Q={q_label}): success={cr_lin["success_rate"]:.3f}'
+                  f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
+                  f'  frac_stable={cr_lin["mean_fraction_stable"]:.3f}')
+            ctrl_results[tag] = {k: v for k, v in cr_lin.items() if k != 'vis_result'}
+            vis = cr_lin.get('vis_result')
+            if vis:
+                save_rollout_frames(vis, out_dir / f'{tag}_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Linear MPC (Q={q_label})')
+                save_rollout_video(vis, out_dir / f'{tag}.gif',
+                                   fps=15, title=f'{exp_name}  Linear MPC (Q={q_label})')
     except Exception as exc:
         import traceback; traceback.print_exc()
         print(f'[control] Linear MPC failed: {exc}')
