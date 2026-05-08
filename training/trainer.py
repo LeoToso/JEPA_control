@@ -315,7 +315,11 @@ class Trainer:
 
         # Warm-up: pure state-supervision phase to seed encoder with theta encoding
         # before pred_loss locks the encoder into a theta-blind representation.
-        warmup_epochs = int(self.cfg.get('warmup_epochs', 0))
+        warmup_epochs       = int(self.cfg.get('warmup_epochs', 0))
+        # After warmup, optionally freeze the encoder for N epochs so the predictor
+        # learns dynamics on the theta-encoding latent space without disturbing it.
+        freeze_enc_epochs   = int(self.cfg.get('freeze_encoder_epochs', 0))
+        _encoder_frozen     = False
         _saved_lambdas = (
             self.lambda_pred, self.lambda_state, self.lambda_spec,
             self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
@@ -324,7 +328,7 @@ class Trainer:
         for epoch in range(epochs):
             self.epoch = epoch
 
-            # Switch lambdas based on warm-up phase
+            # Switch lambdas / encoder freeze based on training phase
             if warmup_epochs > 0:
                 if epoch < warmup_epochs:
                     if epoch == 0:
@@ -341,6 +345,17 @@ class Trainer:
                      self.lambda_PBH, self.lambda_fp,
                      self.state_encoder_grad_scale) = _saved_lambdas
                     print(f'[train] Warm-up complete — switching to full loss at epoch {epoch+1}')
+                    if freeze_enc_epochs > 0:
+                        for p in self.model.encoder.parameters():
+                            p.requires_grad_(False)
+                        _encoder_frozen = True
+                        print(f'[train] Encoder frozen for {freeze_enc_epochs} epochs '
+                              f'(epochs {epoch+1}–{epoch+freeze_enc_epochs})')
+                elif _encoder_frozen and epoch == warmup_epochs + freeze_enc_epochs:
+                    for p in self.model.encoder.parameters():
+                        p.requires_grad_(True)
+                    _encoder_frozen = False
+                    print(f'[train] Encoder unfrozen at epoch {epoch+1}')
 
             t0 = time.time()
             tr  = self.train_epoch(train_loader)
