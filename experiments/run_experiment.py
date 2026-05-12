@@ -12,7 +12,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    seed=42, config_path='configs/cartpole_v2.yaml',
                    data_dir='data', results_dir='results',
                    device=None, skip_if_exists=True, eval_only=False,
-                   epochs_override=None):
+                   epochs_override=None, cem_only=False):
 
     exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
     out_dir    = Path(results_dir) / exp_name
@@ -262,10 +262,14 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     except Exception as e:
         print(f'[control] GT-LQR failed: {e}')
 
+    if cem_only:
+        print('[control] --cem-only: skipping LQR and Linear MPC controllers')
+
     # ── Encoder-observer LQR ─────────────────────────────────────────────────
     # Use encoder+state_head as a visual state observer, apply GT-LQR gain.
     # No predictor needed — tests whether the encoder alone suffices for control.
-    print('\n[control] --- Encoder-Observer LQR ---')
+    if not cem_only:
+        print('\n[control] --- Encoder-Observer LQR ---')
     try:
         if K_gt is None:
             raise RuntimeError('K_gt not available')
