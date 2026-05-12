@@ -62,6 +62,15 @@ mpc:
   grad_lr: 0.05
   grad_n_iter: 100
 
+cem:
+  horizon: 10
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 3.0
+  n_trials: 50
+
 data:
   n_random: 50000
   train_frac: 0.8
