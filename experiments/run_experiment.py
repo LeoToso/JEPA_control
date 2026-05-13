@@ -270,240 +270,244 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # No predictor needed — tests whether the encoder alone suffices for control.
     if not cem_only:
         print('\n[control] --- Encoder-Observer LQR ---')
-    try:
-        if K_gt is None:
-            raise RuntimeError('K_gt not available')
-        if not (_state_head_trained and trainer.state_head is not None):
-            raise RuntimeError('state_head not trained')
-        state_head = trainer.state_head
-        state_head.eval(); model.eval()
-        rng_enc = np.random.RandomState(seed)
-        succs_e, ep_lens_e, fracs_e = [], [], []
-        vis_enc = None
-        for trial in range(n_trials):
-            x0 = rng_enc.uniform(-init_scale, init_scale, 4).astype(np.float32)
-            obs, state, _ = env.reset_to_state(x0)
-            done = False
-            states_e, actions_e, all_obs_e = [state.copy()], [], []
-            for _ in range(T_rollout):
-                all_obs_e.append(obs.copy())
-                obs_t = (torch.from_numpy(obs).float()
-                         .permute(2, 0, 1)[None].to(device) / 255.0)
-                with torch.no_grad():
-                    x_hat = state_head(model.encoder(obs_t)).cpu().numpy()[0]
-                u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
-                actions_e.append([u])
-                obs, state, _, done, _ = env.step(u)
-                states_e.append(state.copy())
-                if done:
-                    break
-            ep_len = len(states_e) - 1
-            success = int(not done)
-            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_e]))
-            succs_e.append(success); ep_lens_e.append(ep_len); fracs_e.append(frac)
-            if trial == 0:
-                vis_enc = {
-                    'all_obs':           all_obs_e,
-                    'states':            np.array(states_e),
-                    'actions':           np.array(actions_e) if actions_e else np.zeros((1, 1)),
-                    'done_at':           ep_len,
-                    'stabilized':        bool(success),
-                    'final_state_error': float(abs(states_e[-1][2])),
-                }
-        print(f'[control] Enc-Obs LQR: success={np.mean(succs_e):.3f}'
-              f'  ep_len={np.mean(ep_lens_e):.1f}'
-              f'  frac_stable={np.mean(fracs_e):.3f}')
-        ctrl_results['enc_obs_lqr'] = {
-            'success_rate':         float(np.mean(succs_e)),
-            'mean_episode_length':  float(np.mean(ep_lens_e)),
-            'mean_fraction_stable': float(np.mean(fracs_e)),
-        }
-        if vis_enc:
-            save_rollout_frames(vis_enc, out_dir / 'enc_obs_lqr_frames.png',
-                                n_frames=8, title=f'{exp_name}  Enc-Obs LQR')
-            save_rollout_video(vis_enc, out_dir / 'enc_obs_lqr.gif',
-                               fps=15, title=f'{exp_name}  Enc-Obs LQR')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Enc-Obs LQR failed: {exc}')
-        ctrl_results['enc_obs_lqr'] = {'error': str(exc)}
+    if not cem_only:
+        try:
+            if K_gt is None:
+                raise RuntimeError('K_gt not available')
+            if not (_state_head_trained and trainer.state_head is not None):
+                raise RuntimeError('state_head not trained')
+            state_head = trainer.state_head
+            state_head.eval(); model.eval()
+            rng_enc = np.random.RandomState(seed)
+            succs_e, ep_lens_e, fracs_e = [], [], []
+            vis_enc = None
+            for trial in range(n_trials):
+                x0 = rng_enc.uniform(-init_scale, init_scale, 4).astype(np.float32)
+                obs, state, _ = env.reset_to_state(x0)
+                done = False
+                states_e, actions_e, all_obs_e = [state.copy()], [], []
+                for _ in range(T_rollout):
+                    all_obs_e.append(obs.copy())
+                    obs_t = (torch.from_numpy(obs).float()
+                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    with torch.no_grad():
+                        x_hat = state_head(model.encoder(obs_t)).cpu().numpy()[0]
+                    u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
+                    actions_e.append([u])
+                    obs, state, _, done, _ = env.step(u)
+                    states_e.append(state.copy())
+                    if done:
+                        break
+                ep_len = len(states_e) - 1
+                success = int(not done)
+                frac = float(np.mean([abs(s[2]) < 0.1 for s in states_e]))
+                succs_e.append(success); ep_lens_e.append(ep_len); fracs_e.append(frac)
+                if trial == 0:
+                    vis_enc = {
+                        'all_obs':           all_obs_e,
+                        'states':            np.array(states_e),
+                        'actions':           np.array(actions_e) if actions_e else np.zeros((1, 1)),
+                        'done_at':           ep_len,
+                        'stabilized':        bool(success),
+                        'final_state_error': float(abs(states_e[-1][2])),
+                    }
+            print(f'[control] Enc-Obs LQR: success={np.mean(succs_e):.3f}'
+                  f'  ep_len={np.mean(ep_lens_e):.1f}'
+                  f'  frac_stable={np.mean(fracs_e):.3f}')
+            ctrl_results['enc_obs_lqr'] = {
+                'success_rate':         float(np.mean(succs_e)),
+                'mean_episode_length':  float(np.mean(ep_lens_e)),
+                'mean_fraction_stable': float(np.mean(fracs_e)),
+            }
+            if vis_enc:
+                save_rollout_frames(vis_enc, out_dir / 'enc_obs_lqr_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Enc-Obs LQR')
+                save_rollout_video(vis_enc, out_dir / 'enc_obs_lqr.gif',
+                                   fps=15, title=f'{exp_name}  Enc-Obs LQR')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Enc-Obs LQR failed: {exc}')
+            ctrl_results['enc_obs_lqr'] = {'error': str(exc)}
 
     # ── Encoder-observer LQR (theta-only) ────────────────────────────────────
     # Zero out x and ẋ estimates — only trust visual theta/θ̇ from state_head.
     # Diagnoses whether inaccurate cart-position estimation causes the failure.
     print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
-    try:
-        if K_gt is None:
-            raise RuntimeError('K_gt not available')
-        if not (_state_head_trained and trainer.state_head is not None):
-            raise RuntimeError('state_head not trained')
-        state_head = trainer.state_head
-        state_head.eval(); model.eval()
-        rng_enc_th = np.random.RandomState(seed)
-        succs_th, ep_lens_th, fracs_th = [], [], []
-        vis_enc_th = None
-        for trial in range(n_trials):
-            x0 = rng_enc_th.uniform(-init_scale, init_scale, 4).astype(np.float32)
-            obs, state, _ = env.reset_to_state(x0)
-            done = False
-            states_th, actions_th, all_obs_th = [state.copy()], [], []
-            for _ in range(T_rollout):
-                all_obs_th.append(obs.copy())
-                obs_t = (torch.from_numpy(obs).float()
-                         .permute(2, 0, 1)[None].to(device) / 255.0)
-                with torch.no_grad():
-                    x_hat_full = state_head(model.encoder(obs_t)).cpu().numpy()[0]
-                # Only use visual angle/angular-velocity estimates; zero cart x and ẋ
-                x_hat = np.array([0.0, 0.0, x_hat_full[2], x_hat_full[3]], dtype=np.float32)
-                u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
-                actions_th.append([u])
-                obs, state, _, done, _ = env.step(u)
-                states_th.append(state.copy())
-                if done:
-                    break
-            ep_len = len(states_th) - 1
-            success = int(not done)
-            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_th]))
-            succs_th.append(success); ep_lens_th.append(ep_len); fracs_th.append(frac)
-            if trial == 0:
-                vis_enc_th = {
-                    'all_obs':           all_obs_th,
-                    'states':            np.array(states_th),
-                    'actions':           np.array(actions_th) if actions_th else np.zeros((1, 1)),
-                    'done_at':           ep_len,
-                    'stabilized':        bool(success),
-                    'final_state_error': float(abs(states_th[-1][2])),
-                }
-        print(f'[control] Enc-Obs LQR (theta-only): success={np.mean(succs_th):.3f}'
-              f'  ep_len={np.mean(ep_lens_th):.1f}'
-              f'  frac_stable={np.mean(fracs_th):.3f}')
-        ctrl_results['enc_obs_lqr_theta_only'] = {
-            'success_rate':         float(np.mean(succs_th)),
-            'mean_episode_length':  float(np.mean(ep_lens_th)),
-            'mean_fraction_stable': float(np.mean(fracs_th)),
-        }
-        if vis_enc_th:
-            save_rollout_frames(vis_enc_th, out_dir / 'enc_obs_lqr_theta_frames.png',
-                                n_frames=8, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
-            save_rollout_video(vis_enc_th, out_dir / 'enc_obs_lqr_theta.gif',
-                               fps=15, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Enc-Obs LQR (theta-only) failed: {exc}')
-        ctrl_results['enc_obs_lqr_theta_only'] = {'error': str(exc)}
+    if not cem_only:
+        try:
+            if K_gt is None:
+                raise RuntimeError('K_gt not available')
+            if not (_state_head_trained and trainer.state_head is not None):
+                raise RuntimeError('state_head not trained')
+            state_head = trainer.state_head
+            state_head.eval(); model.eval()
+            rng_enc_th = np.random.RandomState(seed)
+            succs_th, ep_lens_th, fracs_th = [], [], []
+            vis_enc_th = None
+            for trial in range(n_trials):
+                x0 = rng_enc_th.uniform(-init_scale, init_scale, 4).astype(np.float32)
+                obs, state, _ = env.reset_to_state(x0)
+                done = False
+                states_th, actions_th, all_obs_th = [state.copy()], [], []
+                for _ in range(T_rollout):
+                    all_obs_th.append(obs.copy())
+                    obs_t = (torch.from_numpy(obs).float()
+                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    with torch.no_grad():
+                        x_hat_full = state_head(model.encoder(obs_t)).cpu().numpy()[0]
+                    # Only use visual angle/angular-velocity estimates; zero cart x and ẋ
+                    x_hat = np.array([0.0, 0.0, x_hat_full[2], x_hat_full[3]], dtype=np.float32)
+                    u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
+                    actions_th.append([u])
+                    obs, state, _, done, _ = env.step(u)
+                    states_th.append(state.copy())
+                    if done:
+                        break
+                ep_len = len(states_th) - 1
+                success = int(not done)
+                frac = float(np.mean([abs(s[2]) < 0.1 for s in states_th]))
+                succs_th.append(success); ep_lens_th.append(ep_len); fracs_th.append(frac)
+                if trial == 0:
+                    vis_enc_th = {
+                        'all_obs':           all_obs_th,
+                        'states':            np.array(states_th),
+                        'actions':           np.array(actions_th) if actions_th else np.zeros((1, 1)),
+                        'done_at':           ep_len,
+                        'stabilized':        bool(success),
+                        'final_state_error': float(abs(states_th[-1][2])),
+                    }
+            print(f'[control] Enc-Obs LQR (theta-only): success={np.mean(succs_th):.3f}'
+                  f'  ep_len={np.mean(ep_lens_th):.1f}'
+                  f'  frac_stable={np.mean(fracs_th):.3f}')
+            ctrl_results['enc_obs_lqr_theta_only'] = {
+                'success_rate':         float(np.mean(succs_th)),
+                'mean_episode_length':  float(np.mean(ep_lens_th)),
+                'mean_fraction_stable': float(np.mean(fracs_th)),
+            }
+            if vis_enc_th:
+                save_rollout_frames(vis_enc_th, out_dir / 'enc_obs_lqr_theta_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
+                save_rollout_video(vis_enc_th, out_dir / 'enc_obs_lqr_theta.gif',
+                                   fps=15, title=f'{exp_name}  Enc-Obs LQR (θ-only)')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Enc-Obs LQR (theta-only) failed: {exc}')
+            ctrl_results['enc_obs_lqr_theta_only'] = {'error': str(exc)}
 
     # ── Pure-latent LQR (Q=I, bypasses state_head) ───────────────────────────
     # When state_head hasn't converged, Q_lqr=W^T@Q_phys@W is degenerate.
     # This controller drives z → z* directly with Q=I in latent space,
     # using only the Jacobian linearization — no state estimation needed.
     print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
-    try:
-        from control.lqr import solve_discrete_lqr
-        Q_lat_I = np.eye(d)
-        K_lat, _, cl_eigs_lat = solve_discrete_lqr(A_jac, B_jac, Q_lat_I, R_lqr,
-                                                    true_unstable_eigs=gt.unstable_eigenvalues,
-                                                    pre_stabilize=True)
-        rho_lat_cl = float(np.max(np.abs(cl_eigs_lat)))
-        print(f'[control] Pure-Latent LQR: rho(A_cl)={rho_lat_cl:.4f}  '
-              f'{"STABLE" if rho_lat_cl < 1 else "UNSTABLE"}')
-        model.eval()
-        rng_lat = np.random.RandomState(seed)
-        succs_lat, ep_lens_lat, fracs_lat = [], [], []
-        vis_lat = None
-        for trial in range(n_trials):
-            x0 = rng_lat.uniform(-init_scale, init_scale, 4).astype(np.float32)
-            obs, state, _ = env.reset_to_state(x0)
-            done = False
-            states_lat, actions_lat, all_obs_lat = [state.copy()], [], []
-            for _ in range(T_rollout):
-                all_obs_lat.append(obs.copy())
-                obs_t = (torch.from_numpy(obs).float()
-                         .permute(2, 0, 1)[None].to(device) / 255.0)
-                with torch.no_grad():
-                    z_t_lat = model.encoder(obs_t).cpu().numpy()[0]
-                u = float(np.clip(
-                    (-K_lat @ (z_t_lat - z_star) + u_ff_lin)[0],
-                    action_lb, action_ub))
-                actions_lat.append([u])
-                obs, state, _, done, _ = env.step(u)
-                states_lat.append(state.copy())
-                if done:
-                    break
-            ep_len = len(states_lat) - 1
-            success = int(not done)
-            frac = float(np.mean([abs(s[2]) < 0.1 for s in states_lat]))
-            succs_lat.append(success); ep_lens_lat.append(ep_len); fracs_lat.append(frac)
-            if trial == 0:
-                vis_lat = {
-                    'all_obs': all_obs_lat,
-                    'states': np.array(states_lat),
-                    'actions': np.array(actions_lat) if actions_lat else np.zeros((1,1)),
-                    'done_at': ep_len,
-                    'stabilized': bool(success),
-                    'final_state_error': float(abs(states_lat[-1][2])),
-                }
-        print(f'[control] Pure-Latent LQR: success={np.mean(succs_lat):.3f}'
-              f'  ep_len={np.mean(ep_lens_lat):.1f}'
-              f'  frac_stable={np.mean(fracs_lat):.3f}')
-        ctrl_results['pure_latent_lqr'] = {
-            'success_rate':         float(np.mean(succs_lat)),
-            'mean_episode_length':  float(np.mean(ep_lens_lat)),
-            'mean_fraction_stable': float(np.mean(fracs_lat)),
-        }
-        if vis_lat:
-            save_rollout_frames(vis_lat, out_dir / 'pure_latent_lqr_frames.png',
-                                n_frames=8, title=f'{exp_name}  Pure-Latent LQR')
-            save_rollout_video(vis_lat, out_dir / 'pure_latent_lqr.gif',
-                               fps=15, title=f'{exp_name}  Pure-Latent LQR')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Pure-Latent LQR failed: {exc}')
-        ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
+    if not cem_only:
+        try:
+            from control.lqr import solve_discrete_lqr
+            Q_lat_I = np.eye(d)
+            K_lat, _, cl_eigs_lat = solve_discrete_lqr(A_jac, B_jac, Q_lat_I, R_lqr,
+                                                        true_unstable_eigs=gt.unstable_eigenvalues,
+                                                        pre_stabilize=True)
+            rho_lat_cl = float(np.max(np.abs(cl_eigs_lat)))
+            print(f'[control] Pure-Latent LQR: rho(A_cl)={rho_lat_cl:.4f}  '
+                  f'{"STABLE" if rho_lat_cl < 1 else "UNSTABLE"}')
+            model.eval()
+            rng_lat = np.random.RandomState(seed)
+            succs_lat, ep_lens_lat, fracs_lat = [], [], []
+            vis_lat = None
+            for trial in range(n_trials):
+                x0 = rng_lat.uniform(-init_scale, init_scale, 4).astype(np.float32)
+                obs, state, _ = env.reset_to_state(x0)
+                done = False
+                states_lat, actions_lat, all_obs_lat = [state.copy()], [], []
+                for _ in range(T_rollout):
+                    all_obs_lat.append(obs.copy())
+                    obs_t = (torch.from_numpy(obs).float()
+                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    with torch.no_grad():
+                        z_t_lat = model.encoder(obs_t).cpu().numpy()[0]
+                    u = float(np.clip(
+                        (-K_lat @ (z_t_lat - z_star) + u_ff_lin)[0],
+                        action_lb, action_ub))
+                    actions_lat.append([u])
+                    obs, state, _, done, _ = env.step(u)
+                    states_lat.append(state.copy())
+                    if done:
+                        break
+                ep_len = len(states_lat) - 1
+                success = int(not done)
+                frac = float(np.mean([abs(s[2]) < 0.1 for s in states_lat]))
+                succs_lat.append(success); ep_lens_lat.append(ep_len); fracs_lat.append(frac)
+                if trial == 0:
+                    vis_lat = {
+                        'all_obs': all_obs_lat,
+                        'states': np.array(states_lat),
+                        'actions': np.array(actions_lat) if actions_lat else np.zeros((1,1)),
+                        'done_at': ep_len,
+                        'stabilized': bool(success),
+                        'final_state_error': float(abs(states_lat[-1][2])),
+                    }
+            print(f'[control] Pure-Latent LQR: success={np.mean(succs_lat):.3f}'
+                  f'  ep_len={np.mean(ep_lens_lat):.1f}'
+                  f'  frac_stable={np.mean(fracs_lat):.3f}')
+            ctrl_results['pure_latent_lqr'] = {
+                'success_rate':         float(np.mean(succs_lat)),
+                'mean_episode_length':  float(np.mean(ep_lens_lat)),
+                'mean_fraction_stable': float(np.mean(fracs_lat)),
+            }
+            if vis_lat:
+                save_rollout_frames(vis_lat, out_dir / 'pure_latent_lqr_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Pure-Latent LQR')
+                save_rollout_video(vis_lat, out_dir / 'pure_latent_lqr.gif',
+                                   fps=15, title=f'{exp_name}  Pure-Latent LQR')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Pure-Latent LQR failed: {exc}')
+            ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
 
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
     print('\n[control] --- Linear MPC (Jacobian) ---')
-    try:
-        from control.mpc import LatentMPC
-        from control.lqr import pre_stabilize_A
-        A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
-                                          tol=0.05, target=0.9)
-        print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
+    if not cem_only:
+        try:
+            from control.mpc import LatentMPC
+            from control.lqr import pre_stabilize_A
+            A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
+                                              tol=0.05, target=0.9)
+            print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
 
-        for q_label, Q_use, Qf_use in [
-            (Q_lqr_source, Q_lqr, mpc_Qf_mult * Q_lqr),
-            ('identity',   np.eye(d), mpc_Qf_mult * np.eye(d)),
-        ]:
-            tag = 'linear_mpc' if q_label == Q_lqr_source else 'linear_mpc_qI'
-            if tag == 'linear_mpc_qI' and Q_lqr_source == 'identity':
-                continue  # already ran Q=I above; skip duplicate
-            mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_use, R=R_lqr,
-                                 horizon=mpc_horizon, chunk_size=mpc_chunk,
-                                 Q_f=Qf_use, action_lb=action_lb, action_ub=action_ub,
-                                 u_offset=u_ff_lin, c_offset=c_drift)
-            K_lin  = mpc_lin.K_list[0]
-            rho_cl = float(np.max(np.abs(np.linalg.eigvals(A_jac - B_jac @ K_lin))))
-            print(f'[control] {mpc_lin.summary()}  Q={q_label}')
-            print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
+            for q_label, Q_use, Qf_use in [
+                (Q_lqr_source, Q_lqr, mpc_Qf_mult * Q_lqr),
+                ('identity',   np.eye(d), mpc_Qf_mult * np.eye(d)),
+            ]:
+                tag = 'linear_mpc' if q_label == Q_lqr_source else 'linear_mpc_qI'
+                if tag == 'linear_mpc_qI' and Q_lqr_source == 'identity':
+                    continue  # already ran Q=I above; skip duplicate
+                mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_use, R=R_lqr,
+                                     horizon=mpc_horizon, chunk_size=mpc_chunk,
+                                     Q_f=Qf_use, action_lb=action_lb, action_ub=action_ub,
+                                     u_offset=u_ff_lin, c_offset=c_drift)
+                K_lin  = mpc_lin.K_list[0]
+                rho_cl = float(np.max(np.abs(np.linalg.eigvals(A_jac - B_jac @ K_lin))))
+                print(f'[control] {mpc_lin.summary()}  Q={q_label}')
+                print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
 
-            cr_lin = evaluate_stabilization_mpc(
-                encoder=model.encoder, mpc=mpc_lin, env=env,
-                n_trials=n_trials, T=T_rollout, init_scale=init_scale,
-                seed=seed, device=device, z_star=z_star, vis_trial=0,
-            )
-            print(f'[control] Linear MPC (Q={q_label}): success={cr_lin["success_rate"]:.3f}'
-                  f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
-                  f'  frac_stable={cr_lin["mean_fraction_stable"]:.3f}')
-            ctrl_results[tag] = {k: v for k, v in cr_lin.items() if k != 'vis_result'}
-            vis = cr_lin.get('vis_result')
-            if vis:
-                save_rollout_frames(vis, out_dir / f'{tag}_frames.png',
-                                    n_frames=8, title=f'{exp_name}  Linear MPC (Q={q_label})')
-                save_rollout_video(vis, out_dir / f'{tag}.gif',
-                                   fps=15, title=f'{exp_name}  Linear MPC (Q={q_label})')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Linear MPC failed: {exc}')
-        ctrl_results['linear_mpc'] = {'error': str(exc)}
+                cr_lin = evaluate_stabilization_mpc(
+                    encoder=model.encoder, mpc=mpc_lin, env=env,
+                    n_trials=n_trials, T=T_rollout, init_scale=init_scale,
+                    seed=seed, device=device, z_star=z_star, vis_trial=0,
+                )
+                print(f'[control] Linear MPC (Q={q_label}): success={cr_lin["success_rate"]:.3f}'
+                      f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
+                      f'  frac_stable={cr_lin["mean_fraction_stable"]:.3f}')
+                ctrl_results[tag] = {k: v for k, v in cr_lin.items() if k != 'vis_result'}
+                vis = cr_lin.get('vis_result')
+                if vis:
+                    save_rollout_frames(vis, out_dir / f'{tag}_frames.png',
+                                        n_frames=8, title=f'{exp_name}  Linear MPC (Q={q_label})')
+                    save_rollout_video(vis, out_dir / f'{tag}.gif',
+                                       fps=15, title=f'{exp_name}  Linear MPC (Q={q_label})')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Linear MPC failed: {exc}')
+            ctrl_results['linear_mpc'] = {'error': str(exc)}
 
     # ── CEM setup ─────────────────────────────────────────────────────────────
     cem_cfg      = cfg.get('cem', {})
@@ -587,89 +591,91 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
     print('\n[control] --- Nonlinear Gradient MPC ---')
-    try:
-        from control.grad_mpc import GradientLatentMPC
-        grad_mpc = GradientLatentMPC(
-            predictor=model.predictor,
-            action_encoder=model.action_encoder,
-            Q=Q_lqr, R=R_lqr, Q_f=Q_f,
-            horizon=mpc_horizon, chunk_size=mpc_chunk,
-            action_lb=action_lb, action_ub=action_ub,
-            lr=float(mpc_cfg.get('grad_lr', 0.05)),
-            n_iter=int(mpc_cfg.get('grad_n_iter', 40)),
-            device=device,
-        )
-        print(f'[control] {grad_mpc.summary()}')
-        n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
-        cr_grad = evaluate_stabilization_mpc(
-            encoder=model.encoder, mpc=grad_mpc, env=env,
-            n_trials=n_grad, T=T_rollout, init_scale=init_scale,
-            seed=seed, device=device, z_star=z_star, vis_trial=0,
-        )
-        print(f'[control] Grad MPC:   success={cr_grad["success_rate"]:.3f}'
-              f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
-              f'  frac_stable={cr_grad["mean_fraction_stable"]:.3f}'
-              f'  (n={n_grad})')
-        ctrl_results['grad_mpc'] = {k: v for k, v in cr_grad.items()
-                                     if k != 'vis_result'}
+    if not cem_only:
+        try:
+            from control.grad_mpc import GradientLatentMPC
+            grad_mpc = GradientLatentMPC(
+                predictor=model.predictor,
+                action_encoder=model.action_encoder,
+                Q=Q_lqr, R=R_lqr, Q_f=Q_f,
+                horizon=mpc_horizon, chunk_size=mpc_chunk,
+                action_lb=action_lb, action_ub=action_ub,
+                lr=float(mpc_cfg.get('grad_lr', 0.05)),
+                n_iter=int(mpc_cfg.get('grad_n_iter', 40)),
+                device=device,
+            )
+            print(f'[control] {grad_mpc.summary()}')
+            n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
+            cr_grad = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=grad_mpc, env=env,
+                n_trials=n_grad, T=T_rollout, init_scale=init_scale,
+                seed=seed, device=device, z_star=z_star, vis_trial=0,
+            )
+            print(f'[control] Grad MPC:   success={cr_grad["success_rate"]:.3f}'
+                  f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
+                  f'  frac_stable={cr_grad["mean_fraction_stable"]:.3f}'
+                  f'  (n={n_grad})')
+            ctrl_results['grad_mpc'] = {k: v for k, v in cr_grad.items()
+                                         if k != 'vis_result'}
 
-        vis_g = cr_grad.get('vis_result')
-        if vis_g:
-            save_rollout_frames(vis_g, out_dir / 'grad_mpc_frames.png',
-                                n_frames=8, title=f'{exp_name}  Grad MPC')
-            save_rollout_video(vis_g, out_dir / 'grad_mpc.gif',
-                               fps=15, title=f'{exp_name}  Grad MPC')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Grad MPC failed: {exc}')
-        ctrl_results['grad_mpc'] = {'error': str(exc)}
+            vis_g = cr_grad.get('vis_result')
+            if vis_g:
+                save_rollout_frames(vis_g, out_dir / 'grad_mpc_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Grad MPC')
+                save_rollout_video(vis_g, out_dir / 'grad_mpc.gif',
+                                   fps=15, title=f'{exp_name}  Grad MPC')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Grad MPC failed: {exc}')
+            ctrl_results['grad_mpc'] = {'error': str(exc)}
 
     # ── Gradient MPC with state_head physical-state cost ─────────────────────
     # Cost = Q_phys * ||state_head(z_t)||^2 instead of Q * ||z_t - z*||^2.
     # Optimizes physical state error directly; bypasses latent-space cost mis-alignment.
     print('\n[control] --- Gradient MPC (state_head cost) ---')
-    try:
-        from control.grad_mpc import GradientLatentMPC
-        if not (_state_head_trained and trainer.state_head is not None):
-            raise RuntimeError('state_head not trained')
-        # Theta-focused physical cost: theta and theta_dot weighted heavily,
-        # x/xdot included but lower weight since state_head may not estimate them well yet.
-        Q_phys_sh = np.diag([1.0, 0.1, 100.0, 1.0])
-        grad_mpc_sh = GradientLatentMPC(
-            predictor=model.predictor,
-            action_encoder=model.action_encoder,
-            Q=Q_lqr, R=R_lqr, Q_f=Q_f,
-            horizon=mpc_horizon, chunk_size=mpc_chunk,
-            action_lb=action_lb, action_ub=action_ub,
-            lr=float(mpc_cfg.get('grad_lr', 0.05)),
-            n_iter=int(mpc_cfg.get('grad_n_iter', 50)),
-            device=device,
-            state_head=trainer.state_head,
-            Q_phys=Q_phys_sh,
-        )
-        print(f'[control] {grad_mpc_sh.summary()} [state_head cost]')
-        n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
-        cr_grad_sh = evaluate_stabilization_mpc(
-            encoder=model.encoder, mpc=grad_mpc_sh, env=env,
-            n_trials=n_grad, T=T_rollout, init_scale=init_scale,
-            seed=seed, device=device, z_star=z_star, vis_trial=0,
-        )
-        print(f'[control] Grad MPC (SH): success={cr_grad_sh["success_rate"]:.3f}'
-              f'  ep_len={cr_grad_sh["mean_episode_length"]:.1f}'
-              f'  frac_stable={cr_grad_sh["mean_fraction_stable"]:.3f}'
-              f'  (n={n_grad})')
-        ctrl_results['grad_mpc_statehead'] = {k: v for k, v in cr_grad_sh.items()
-                                               if k != 'vis_result'}
-        vis_gsh = cr_grad_sh.get('vis_result')
-        if vis_gsh:
-            save_rollout_frames(vis_gsh, out_dir / 'grad_mpc_sh_frames.png',
-                                n_frames=8, title=f'{exp_name}  Grad MPC (SH)')
-            save_rollout_video(vis_gsh, out_dir / 'grad_mpc_sh.gif',
-                               fps=15, title=f'{exp_name}  Grad MPC (SH)')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] Grad MPC (state_head) failed: {exc}')
-        ctrl_results['grad_mpc_statehead'] = {'error': str(exc)}
+    if not cem_only:
+        try:
+            from control.grad_mpc import GradientLatentMPC
+            if not (_state_head_trained and trainer.state_head is not None):
+                raise RuntimeError('state_head not trained')
+            # Theta-focused physical cost: theta and theta_dot weighted heavily,
+            # x/xdot included but lower weight since state_head may not estimate them well yet.
+            Q_phys_sh = np.diag([1.0, 0.1, 100.0, 1.0])
+            grad_mpc_sh = GradientLatentMPC(
+                predictor=model.predictor,
+                action_encoder=model.action_encoder,
+                Q=Q_lqr, R=R_lqr, Q_f=Q_f,
+                horizon=mpc_horizon, chunk_size=mpc_chunk,
+                action_lb=action_lb, action_ub=action_ub,
+                lr=float(mpc_cfg.get('grad_lr', 0.05)),
+                n_iter=int(mpc_cfg.get('grad_n_iter', 50)),
+                device=device,
+                state_head=trainer.state_head,
+                Q_phys=Q_phys_sh,
+            )
+            print(f'[control] {grad_mpc_sh.summary()} [state_head cost]')
+            n_grad = min(int(probe_cfg.get('n_trials_grad_mpc', 50)), n_trials)
+            cr_grad_sh = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=grad_mpc_sh, env=env,
+                n_trials=n_grad, T=T_rollout, init_scale=init_scale,
+                seed=seed, device=device, z_star=z_star, vis_trial=0,
+            )
+            print(f'[control] Grad MPC (SH): success={cr_grad_sh["success_rate"]:.3f}'
+                  f'  ep_len={cr_grad_sh["mean_episode_length"]:.1f}'
+                  f'  frac_stable={cr_grad_sh["mean_fraction_stable"]:.3f}'
+                  f'  (n={n_grad})')
+            ctrl_results['grad_mpc_statehead'] = {k: v for k, v in cr_grad_sh.items()
+                                                   if k != 'vis_result'}
+            vis_gsh = cr_grad_sh.get('vis_result')
+            if vis_gsh:
+                save_rollout_frames(vis_gsh, out_dir / 'grad_mpc_sh_frames.png',
+                                    n_frames=8, title=f'{exp_name}  Grad MPC (SH)')
+                save_rollout_video(vis_gsh, out_dir / 'grad_mpc_sh.gif',
+                                   fps=15, title=f'{exp_name}  Grad MPC (SH)')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] Grad MPC (state_head) failed: {exc}')
+            ctrl_results['grad_mpc_statehead'] = {'error': str(exc)}
 
     env.close()
 
@@ -719,6 +725,8 @@ if __name__ == '__main__':
     p.add_argument('--results_dir', default='results')
     p.add_argument('--eval-only', action='store_true')
     p.add_argument('--force',     action='store_true')
+    p.add_argument('--cem-only',  action='store_true',
+                   help='Skip all non-CEM controllers during evaluation')
     p.add_argument('--epochs',    type=int, default=None,
                    help='Override training epochs from config')
     args = p.parse_args()
@@ -730,4 +738,5 @@ if __name__ == '__main__':
         skip_if_exists=not args.force,
         eval_only=args.eval_only,
         epochs_override=args.epochs,
+        cem_only=args.cem_only,
     )
