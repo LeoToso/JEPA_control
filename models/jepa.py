@@ -16,6 +16,7 @@ class JEPAConfig:
     latent_dim: int = 32
     action_dim: int = 1
     action_latent_dim: int = 32
+    action_encoder: str = 'none'   # 'none' | 'linear' | 'mlp'
     # ViT hyperparameters
     image_size: int = 64
     patch_size: int = 8
@@ -36,7 +37,7 @@ class JEPAConfig:
 
     @property
     def action_encoder_type(self):
-        return 'linear' if self.variant == 'E-full' else 'none'
+        return self.action_encoder
 
 
 class JEPAModel(nn.Module):
