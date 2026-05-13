@@ -202,7 +202,8 @@ class Trainer:
         # All H+1 trajectory frames contribute state loss for denser supervision.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
-            w      = torch.tensor([1., 0.1, 100., 1.], device=self.device)
+            # x gets 50x weight so encoder must encode cart position, not just theta
+            w      = torch.tensor([50., 0.1, 100., 1.], device=self.device)
             alpha  = self.state_encoder_grad_scale
             state_loss = torch.zeros(1, device=self.device)
             for k in range(H + 1):
@@ -211,6 +212,12 @@ class Trainer:
                     w * (self.state_head(z_mix) - states[:, k]).pow(2)
                 ).mean()
             state_loss = state_loss / (H + 1)
+            # Anchor: state_head(z*) must decode to zero — equilibrium latent = zero state.
+            # Prevents the drifted fixed-point issue where state_head(z*) shows theta != 0.
+            if self._z_star_ema is not None:
+                z_eq_mix = alpha * self._z_star_ema + (1 - alpha) * self._z_star_ema.detach()
+                sh_eq = self.state_head(z_eq_mix.unsqueeze(0))  # (1, 4)
+                state_loss = state_loss + (w * sh_eq.pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
 

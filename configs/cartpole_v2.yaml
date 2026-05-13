@@ -12,6 +12,7 @@ environment:
 model:
   latent_dim: 32
   action_latent_dim: 32
+  action_encoder: none
   patch_size: 8
   vit_embed_dim: 128
   vit_depth: 4
@@ -26,7 +27,7 @@ training:
   horizon: 5
   lambda_pred: 1.0
   lambda_state: 0.2
-  lambda_fp: 0.02
+  lambda_fp: 0.1
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
@@ -62,6 +63,15 @@ mpc:
   grad_lr: 0.05
   grad_n_iter: 100
 
+cem:
+  horizon: 10
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 3.0
+  n_trials: 50
+
 data:
   n_random: 50000
   train_frac: 0.8
@@ -69,6 +79,6 @@ data:
   random_init_range: 0.15
   lqr_init_range: 0.10
   lqr_noise_std: 0.1
-  n_equilibrium: 2000
+  n_equilibrium: 5000
   eq_init_range: 0.002
   eq_noise_std: 0.001
