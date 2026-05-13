@@ -38,7 +38,7 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
         if mode == 'random':
             u = float(rng.uniform(action_low, action_high))
         elif mode == 'lqr':
-            u_lqr = float(np.clip(float(lqr_gain @ state), action_low, action_high))
+            u_lqr = float(np.clip((lqr_gain @ state).item(), action_low, action_high))
             u = float(np.clip(u_lqr + float(rng.normal(0.0, lqr_noise_std)),
                               action_low, action_high))
         else:
