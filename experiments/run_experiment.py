@@ -332,7 +332,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # ── Encoder-observer LQR (theta-only) ────────────────────────────────────
     # Zero out x and ẋ estimates — only trust visual theta/θ̇ from state_head.
     # Diagnoses whether inaccurate cart-position estimation causes the failure.
-    print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
+    if not cem_only: print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
     if not cem_only:
         try:
             if K_gt is None:
@@ -398,7 +398,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # When state_head hasn't converged, Q_lqr=W^T@Q_phys@W is degenerate.
     # This controller drives z → z* directly with Q=I in latent space,
     # using only the Jacobian linearization — no state estimation needed.
-    print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
+    if not cem_only: print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
     if not cem_only:
         try:
             from control.lqr import solve_discrete_lqr
@@ -464,14 +464,11 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
 
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
-    print('\n[control] --- Linear MPC (Jacobian) ---')
+    if not cem_only: print('\n[control] --- Linear MPC (Jacobian) ---')
     if not cem_only:
         try:
             from control.mpc import LatentMPC
-            from control.lqr import pre_stabilize_A
-            A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
-                                              tol=0.05, target=0.9)
-            print(f'[control] A_jac pre-stab: deflated={n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
+            print(f'[control] A_jac pre-stab: deflated={_n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
 
             for q_label, Q_use, Qf_use in [
                 (Q_lqr_source, Q_lqr, mpc_Qf_mult * Q_lqr),
@@ -518,6 +515,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_n_iter   = int(cem_cfg.get('n_iter',       5))
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
+
+    # Pre-stabilise A_jac once — used by both Linear MPC and CEM-linear
+    from control.lqr import pre_stabilize_A
+    A_stab, _n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
 
     # ── CEM with linear (Jacobian) dynamics ───────────────────────────────────
     print('\n[control] --- CEM (Linear dynamics) ---')
@@ -590,7 +591,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         ctrl_results['cem_nonlinear'] = {'error': str(exc)}
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
-    print('\n[control] --- Nonlinear Gradient MPC ---')
+    if not cem_only: print('\n[control] --- Nonlinear Gradient MPC ---')
     if not cem_only:
         try:
             from control.grad_mpc import GradientLatentMPC
@@ -632,7 +633,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # ── Gradient MPC with state_head physical-state cost ─────────────────────
     # Cost = Q_phys * ||state_head(z_t)||^2 instead of Q * ||z_t - z*||^2.
     # Optimizes physical state error directly; bypasses latent-space cost mis-alignment.
-    print('\n[control] --- Gradient MPC (state_head cost) ---')
+    if not cem_only: print('\n[control] --- Gradient MPC (state_head cost) ---')
     if not cem_only:
         try:
             from control.grad_mpc import GradientLatentMPC
