@@ -104,14 +104,28 @@ class Trainer:
         )
 
         self.true_unstable_eigs = gt.unstable_eigenvalues if gt is not None else None
-        # Running estimate of z*: updated each time we see an equilibrium encoding
+        # z* anchor: set by set_obs_eq() to encoder(obs_eq); falls back to batch EMA
         self._z_star_ema: Optional[torch.Tensor] = None
+        self._obs_eq: Optional[torch.Tensor] = None  # (1,3,h,w) equilibrium image
 
         self.log_path = self.save_dir / 'training_log.csv'
         self._init_csv_log()
         self.best_val_loss = float('inf')
         self.global_step   = 0
         self.epoch         = 0
+
+    def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
+        """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*."""
+        import numpy as np
+        obs = torch.from_numpy(obs_eq_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        self._obs_eq = obs.to(self.device)
+
+    def _get_z_star_exact(self) -> Optional[torch.Tensor]:
+        """Return encoder(obs_eq).detach() if obs_eq is available, else None."""
+        if self._obs_eq is None:
+            return None
+        with torch.no_grad():
+            return self.model.encoder(self._obs_eq).squeeze(0)
 
     # ── CSV logging ──────────────────────────────────────────────────────────
     def _init_csv_log(self):
@@ -143,10 +157,12 @@ class Trainer:
         d        = z_flat.shape[-1]
         z_all    = z_flat.view(B, H1, d)               # (B, H+1, d)
 
-        # EMA of z* from online encoder (used for Jacobian regularisation and fp_loss).
-        # Only update from near-equilibrium samples so fp_loss trains at the TRUE
-        # equilibrium z* = encoder(obs_eq), not the batch mean (96% non-eq states).
-        if is_train:
+        # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
+        # Using the exact equilibrium image eliminates the train/eval z* mismatch that
+        # caused high fp_err at eval despite low fp_loss during training.
+        if self._obs_eq is not None:
+            self._z_star_ema = self._get_z_star_exact()
+        elif is_train:
             if 'states' in batch:
                 states_b = batch['states'][:, 0].to(self.device).float()  # (B, 4)
                 eq_mask = states_b.abs().max(dim=1).values < 0.05

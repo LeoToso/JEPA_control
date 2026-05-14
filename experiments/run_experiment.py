@@ -105,6 +105,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
                       save_dir=str(out_dir / 'checkpoints'), device=device, seed=seed)
 
+    # Give trainer the exact equilibrium image so fp loss trains at encoder(obs_eq),
+    # not at an EMA over near-eq batch samples. Eliminates train/eval z* mismatch.
+    from envs.cartpole_visual import ContinuousCartpoleVisual as _CVEnv
+    _eq_env = _CVEnv(frame_skip=frame_skip, image_size=env_cfg['image_size'],
+                     mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
+                     pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
+                     action_range=tuple(env_cfg['action_range']))
+    _obs_eq, _, _ = _eq_env.reset_to_state(np.zeros(4, dtype=np.float32))
+    _eq_env.close()
+    trainer.set_obs_eq(_obs_eq)
+    print('[train] z* anchor: using exact equilibrium observation for fp loss')
+
     _state_head_trained = False
     saved_model = out_dir / 'model_final.pt'
     if eval_only and saved_model.exists():
