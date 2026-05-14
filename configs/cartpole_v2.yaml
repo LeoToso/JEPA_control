@@ -26,8 +26,10 @@ training:
   epochs: 100
   horizon: 5
   lambda_pred: 1.0
-  lambda_state: 0.0        # 0.0 = no state supervision after warmup (pure JEPA predictor phase)
-  lambda_anchor: 1.0       # equilibrium anchor: ||w * state_head(z*)||^2 — no trajectory labels needed
+  lambda_state: 0.0        # no state supervision at any phase (no state labels used)
+  lambda_anchor: 1.0       # equilibrium anchor: ||w * state_head(z*)||^2 — single-point, no labels
+  lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
+  inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
   lambda_fp: 2.0
   lambda_spec: 5.0
   lambda_PBH: 1.0
@@ -40,7 +42,7 @@ training:
   predictor_lr_mult: 1.0
   checkpoint_every: 50
   warmup_epochs: 10
-  warmup_lambda_state: 1.0
+  warmup_lambda_state: 0.0  # warmup uses inv_loss instead of state reconstruction
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
 

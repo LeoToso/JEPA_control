@@ -69,13 +69,14 @@ class Trainer:
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
         self.lambda_anchor = float(self.cfg.get('lambda_anchor', 0.0))
+        self.lambda_inv   = float(self.cfg.get('lambda_inv',   0.0))
+        # Scale raw actions to ~[-1,1] before computing inv loss so the loss
+        # magnitude is independent of the environment's action range.
+        self.inv_action_scale = float(self.cfg.get('inv_action_scale', 1.0))
         self.use_vicreg   = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
-        # Fraction of state_loss gradient allowed to flow into the encoder.
-        # 1.0 = full gradient (can destabilise pred); 0.0 = stop-gradient.
-        # ~0.05 balances state organisation with predictor stability.
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
@@ -90,12 +91,11 @@ class Trainer:
              'lr': lr * predictor_lr_mult},
         ], lr=lr, weight_decay=weight_decay)
 
-        # Auxiliary state head (theta-weighted supervision).
-        # Create whenever lambda_state > 0 OR warmup uses state supervision,
-        # so the hybrid warmup-only approach doesn't silently skip state loss.
+        # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
             self.lambda_state > 0
             or float(self.cfg.get('warmup_lambda_state', 0.0)) > 0
+            or self.lambda_anchor > 0
         )
         if _needs_state_head:
             d_lat = model.config.latent_dim
@@ -103,6 +103,17 @@ class Trainer:
             self.optimizer.add_param_group({'params': self.state_head.parameters()})
         else:
             self.state_head = None
+
+        # Inverse dynamics head: ψ(z_t, z_{t+1}) → u_t.
+        # Trains encoder (when unfrozen) to capture action-relevant features
+        # without requiring state labels — only actions, which are always available.
+        # After encoder freeze, keeps ψ calibrated as a persistent diagnostic.
+        if self.lambda_inv > 0:
+            d_lat = model.config.latent_dim
+            self.inv_head = nn.Linear(2 * d_lat, 1).to(self.device)
+            self.optimizer.add_param_group({'params': self.inv_head.parameters()})
+        else:
+            self.inv_head = None
 
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -217,6 +228,23 @@ class Trainer:
             total_loss = total_loss + vic_loss
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
+
+        # Inverse dynamics (action reconstruction): ψ(z_t, z_{t+1}) → u_t.
+        # RichID insight: under sufficient excitation, u_t is conditionally independent
+        # of history given x_t, so a decoder that predicts u_t from (z_t, z_{t+1})
+        # must be extracting the latent state. Uses only action labels (always available).
+        # During warmup (encoder trainable): trains encoder to capture action-relevant features.
+        # After freeze: only ψ (inv_head) updates — keeps it calibrated as a diagnostic.
+        if self.lambda_inv > 0 and self.inv_head is not None:
+            inv_loss = torch.zeros(1, device=self.device)
+            scale = self.inv_action_scale
+            for k in range(H):
+                z_pair = torch.cat([z_all[:, k], z_all[:, k + 1]], dim=-1)  # (B, 2d)
+                u_hat  = self.inv_head(z_pair)                               # (B, 1)
+                inv_loss = inv_loss + F.mse_loss(u_hat, actions[:, k] / scale)
+            inv_loss = inv_loss / H
+            total_loss = total_loss + self.lambda_inv * inv_loss
+            info['inv_loss'] = inv_loss.item()
 
         # State reconstruction with gradient mixing.
         # Theta is the key visual cue (pole angle) — weight it 100x vs x/xdot.
@@ -436,6 +464,7 @@ class Trainer:
             self._log_csv(epoch, 'val',   self.global_step, val)
             dt = time.time() - t0
             state_str  = f"  state={tr.get('state_loss',  0):.4f}" if 'state_loss'  in tr else ''
+            inv_str    = f"  inv={tr.get('inv_loss',    0):.4f}"  if 'inv_loss'    in tr else ''
             fp_str     = f"  fp={tr.get('fp_loss',      0):.4f}"  if 'fp_loss'     in tr else ''
             spec_str   = f"  spec={tr.get('spec_loss',  0):.4f}"  if 'spec_loss'   in tr else ''
             anchor_str = f"  anc={tr.get('anchor_loss', 0):.4f}"  if 'anchor_loss' in tr else ''
@@ -443,7 +472,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{fp_str}{spec_str}{anchor_str}'
+                  f'{state_str}{inv_str}{fp_str}{spec_str}{anchor_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
