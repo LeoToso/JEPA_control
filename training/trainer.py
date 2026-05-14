@@ -230,20 +230,17 @@ class Trainer:
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
 
-        # Inverse dynamics (action reconstruction): ψ(z_t, z_{t+1}) → u_t.
-        # RichID insight: under sufficient excitation, u_t is conditionally independent
-        # of history given x_t, so a decoder that predicts u_t from (z_t, z_{t+1})
-        # must be extracting the latent state. Uses only action labels (always available).
-        # During warmup (encoder trainable): trains encoder to capture action-relevant features.
-        # After freeze: only ψ (inv_head) updates — keeps it calibrated as a diagnostic.
+        # Multi-step inverse dynamics: ψ(z_0, z_H) → mean(u_0…u_{H-1}).
+        # Using the full-horizon gap (H steps apart) instead of consecutive pairs
+        # makes the "copy" shortcut impossible: z_0 and z_H differ substantially
+        # even when individual steps are small, satisfying the persistent-excitation
+        # condition that RichID requires for collapse prevention.
         if self.lambda_inv > 0 and self.inv_head is not None:
-            inv_loss = torch.zeros(1, device=self.device)
-            scale = self.inv_action_scale
-            for k in range(H):
-                z_pair = torch.cat([z_all[:, k], z_all[:, k + 1]], dim=-1)  # (B, 2d)
-                u_hat  = self.inv_head(z_pair)                               # (B, 1)
-                inv_loss = inv_loss + F.mse_loss(u_hat, actions[:, k] / scale)
-            inv_loss = inv_loss / H
+            scale  = self.inv_action_scale
+            z_pair = torch.cat([z_all[:, 0], z_all[:, H]], dim=-1)  # (B, 2d)
+            u_mean = actions.mean(dim=1) / scale                      # (B, 1)
+            u_hat  = self.inv_head(z_pair)                            # (B, 1)
+            inv_loss = F.mse_loss(u_hat, u_mean)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
 
