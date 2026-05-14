@@ -68,6 +68,7 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
+        self.lambda_anchor = float(self.cfg.get('lambda_anchor', 0.0))
         self.use_vicreg   = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
@@ -242,6 +243,17 @@ class Trainer:
                 state_loss = state_loss + (w * sh_eq.pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
+
+        # Equilibrium anchor: state_head(z*) must decode to the zero physical state.
+        # Only the single equilibrium point is supervised — no trajectory labels needed.
+        # During the predictor phase (encoder frozen) this is the only gradient signal
+        # for state_head, ensuring the observer stays calibrated at the fixed point.
+        if self.lambda_anchor > 0 and self.state_head is not None and self._z_star_ema is not None:
+            w_anchor = torch.tensor([50., 0.1, 100., 1.], device=self.device)
+            sh_at_zstar = self.state_head(self._z_star_ema.unsqueeze(0))  # (1, 4)
+            anchor_loss = (w_anchor * sh_at_zstar.pow(2)).mean()
+            total_loss = total_loss + self.lambda_anchor * anchor_loss
+            info['anchor_loss'] = anchor_loss.item()
 
         # Fixed-point loss: predictor should map z* to itself under zero action.
         # Directly penalises the phantom drift that corrupts MPC plans.
@@ -423,14 +435,15 @@ class Trainer:
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
             dt = time.time() - t0
-            state_str = f"  state={tr.get('state_loss', 0):.4f}" if 'state_loss' in tr else ''
-            fp_str    = f"  fp={tr.get('fp_loss',    0):.4f}"    if 'fp_loss'    in tr else ''
-            spec_str  = f"  spec={tr.get('spec_loss',  0):.4f}"  if 'spec_loss'  in tr else ''
+            state_str  = f"  state={tr.get('state_loss',  0):.4f}" if 'state_loss'  in tr else ''
+            fp_str     = f"  fp={tr.get('fp_loss',      0):.4f}"  if 'fp_loss'     in tr else ''
+            spec_str   = f"  spec={tr.get('spec_loss',  0):.4f}"  if 'spec_loss'   in tr else ''
+            anchor_str = f"  anc={tr.get('anchor_loss', 0):.4f}"  if 'anchor_loss' in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{fp_str}{spec_str}'
+                  f'{state_str}{fp_str}{spec_str}{anchor_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
