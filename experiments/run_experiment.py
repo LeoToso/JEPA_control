@@ -125,6 +125,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
         )
         _state_head_trained = True
+        # Save immediately so --eval-only works even if probes are interrupted
+        torch.save(model.state_dict(), out_dir / 'model_final.pt')
+        if trainer.state_head is not None:
+            torch.save(trainer.state_head.state_dict(), out_dir / 'state_head.pt')
 
     # Compute z*
     from envs.cartpole_visual import ContinuousCartpoleVisual
