@@ -46,8 +46,8 @@ training:
 probes:
   epsilon_lambda: 0.05
   delta_tol: 0.05
-  n_trials_control: 100
-  n_trials_grad_mpc: 50
+  n_trials_control: 50
+  n_trials_grad_mpc: 10
   T_rollout: 200
 
 control:
