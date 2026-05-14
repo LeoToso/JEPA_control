@@ -72,9 +72,12 @@ class Trainer:
         self.lambda_enc_anchor = float(self.cfg.get('lambda_enc_anchor', 0.0))
         self.lambda_inv   = float(self.cfg.get('lambda_inv',   0.0))
         self.inv_action_scale = float(self.cfg.get('inv_action_scale', 1.0))
-        self.use_vicreg   = bool(self.cfg.get('use_vicreg', False))
+        self.use_vicreg    = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
+        self.lambda_sigreg      = float(self.cfg.get('lambda_sigreg', 0.0))
+        self.sigreg_num_slices  = int(self.cfg.get('sigreg_num_slices', 128))
+        self.sigreg_num_points  = int(self.cfg.get('sigreg_num_points', 17))
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
@@ -229,6 +232,19 @@ class Trainer:
             total_loss = total_loss + vic_loss
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
+
+        # SIGreg: Sketched Isotropic Gaussian Regularisation (LeJEPA, 2025).
+        # Enforces z ~ N(0,I) via Epps-Pulley test on random 1-D projections.
+        # Prevents collapse without stop-gradient or teacher networks.
+        if self.lambda_sigreg > 0:
+            from losses.sigreg import sigreg_loss
+            sig_loss = sigreg_loss(
+                z_all[:, 0],
+                num_slices=self.sigreg_num_slices,
+                num_points=self.sigreg_num_points,
+            )
+            total_loss = total_loss + self.lambda_sigreg * sig_loss
+            info['sigreg_loss'] = sig_loss.item()
 
         # Multi-step inverse dynamics: ψ(z_0, z_H) → mean(u_0…u_{H-1}).
         # Using the full-horizon gap (H steps apart) instead of consecutive pairs
@@ -485,11 +501,12 @@ class Trainer:
             fp_str     = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
             spec_str   = f"  spec={tr.get('spec_loss',     0):.4f}" if 'spec_loss'       in tr else ''
             anchor_str = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'     in tr else ''
+            sig_str    = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'     in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{spec_str}{anchor_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{spec_str}{anchor_str}{sig_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 

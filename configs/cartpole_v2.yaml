@@ -37,6 +37,9 @@ training:
   jacobian_every: 20
   use_vicreg: false
   vicreg_lambda: 5.0
+  lambda_sigreg: 25.0      # SIGreg: enforces z~N(0,I) via Epps-Pulley test on random projections
+  sigreg_num_slices: 128   # 128 slices sufficient for D=32; paper uses 1024 for large D
+  sigreg_num_points: 17    # frequency evaluation points per slice
   vicreg_nu: 1.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
