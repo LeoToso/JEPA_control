@@ -26,13 +26,13 @@ training:
   epochs: 100
   horizon: 5
   lambda_pred: 1.0
-  lambda_state: 0.2
+  lambda_state: 0.0
   lambda_fp: 2.0
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
-  use_vicreg: false
-  vicreg_lambda: 5.0
+  use_vicreg: true
+  vicreg_lambda: 25.0
   vicreg_nu: 1.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50

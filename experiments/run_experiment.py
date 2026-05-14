@@ -117,17 +117,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     trainer.set_obs_eq(_obs_eq)
     print('[train] z* anchor: using exact equilibrium observation for fp loss')
 
-    _state_head_trained = False
     saved_model = out_dir / 'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
         model.load_state_dict(torch.load(saved_model, map_location=device), strict=False)
-        sh_path = out_dir / 'state_head.pt'
-        if sh_path.exists() and trainer.state_head is not None:
-            trainer.state_head.load_state_dict(
-                torch.load(sh_path, map_location=device))
-            _state_head_trained = True
-            print(f'[train] loaded state_head from {sh_path}')
         history = {'train': [], 'val': []}
     else:
         print(f'[train] training for {train_cfg_exp["epochs"]} epochs ...')
@@ -136,11 +129,40 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             epochs=train_cfg_exp['epochs'],
             checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
         )
-        _state_head_trained = True
         # Save immediately so --eval-only works even if probes are interrupted
         torch.save(model.state_dict(), out_dir / 'model_final.pt')
-        if trainer.state_head is not None:
-            torch.save(trainer.state_head.state_dict(), out_dir / 'state_head.pt')
+
+    # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
+    # Train a frozen-encoder linear map z -> [x, xdot, theta, thetadot].
+    # Pure JEPA: encoder never sees state gradients during world-model training.
+    sh_path = out_dir / 'state_head.pt'
+    state_head = torch.nn.Linear(model.config.latent_dim, 4).to(device)
+    if eval_only and sh_path.exists():
+        state_head.load_state_dict(torch.load(sh_path, map_location=device))
+        print(f'[probe] loaded state probe from {sh_path}')
+    else:
+        print('[probe] Training post-hoc linear state probe (30 epochs, frozen encoder)...')
+        model.encoder.eval()
+        for p in model.encoder.parameters():
+            p.requires_grad_(False)
+        probe_opt = torch.optim.Adam(state_head.parameters(), lr=1e-3, weight_decay=1e-4)
+        w_pr = torch.tensor([50., 0.1, 100., 1.], device=device)
+        for _ in range(30):
+            for batch in loaders['train']:
+                obs_seq  = batch['obs_seq'].to(device)
+                states_b = batch['states'].to(device).float()
+                Bp, H1p, Cp, hp, wp = obs_seq.shape
+                with torch.no_grad():
+                    z_flat = model.encoder(obs_seq.view(Bp * H1p, Cp, hp, wp))
+                z_view = z_flat.view(Bp, H1p, -1)
+                loss_p = sum(
+                    (w_pr * (state_head(z_view[:, k]) - states_b[:, k]).pow(2)).mean()
+                    for k in range(H1p)
+                ) / H1p
+                probe_opt.zero_grad(); loss_p.backward(); probe_opt.step()
+        torch.save(state_head.state_dict(), sh_path)
+        print(f'[probe] state probe saved to {sh_path}')
+    state_head.eval()
 
     # Compute z*
     from envs.cartpole_visual import ContinuousCartpoleVisual
@@ -194,13 +216,13 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             z_cur = model.predictor(z_cur, a_zero)
             dist = float(torch.norm(z_cur - z_star_t).item())
             state_str = ''
-            if trainer.state_head is not None:
-                x_k = trainer.state_head(z_cur).cpu().numpy()[0]
+            if state_head is not None:
+                x_k = state_head(z_cur).cpu().numpy()[0]
                 state_str = f'  [x={x_k[0]:.3f} ẋ={x_k[1]:.3f} θ={x_k[2]:.3f} θ̇={x_k[3]:.3f}]'
             print(f'  step {k+1}: ||z-z*||={dist:.4f}{state_str}')
         # State_head estimate at z* (should be ~[0,0,0,0])
-        if trainer.state_head is not None:
-            x_eq = trainer.state_head(z_star_t).cpu().numpy()[0]
+        if state_head is not None:
+            x_eq = state_head(z_star_t).cpu().numpy()[0]
             print(f'[control] state_head(z*) = [{x_eq[0]:.3f}, {x_eq[1]:.3f},'
                   f' {x_eq[2]:.3f}, {x_eq[3]:.3f}]  (ideal: [0,0,0,0])')
 
@@ -225,26 +247,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(B_jac.shape[1])
     d            = len(z_star)
 
-    # Q from state_head if available, else identity.
-    # Quality check: if the theta row of W is too weak, Q_lqr loses sensitivity
-    # to the key control variable. Fall back to Q=I in that case.
+    # Pure JEPA: CEM cost is identity in latent space — ||z - z*||^2.
+    # State probe is diagnostic only; encoder was never trained with state gradients.
     Q_lqr = np.eye(d)
-    Q_lqr_source = 'identity'
-    if _state_head_trained and trainer.state_head is not None:
-        W = trainer.state_head.weight.detach().cpu().numpy()  # (4, d)
-        theta_row_norm = float(np.linalg.norm(W[2]))
-        Q_phys_ctrl = np.diag([10.0, 0.1, 100.0, 0.1])
-        Q_cand = W.T @ Q_phys_ctrl @ W + 0.01 * np.eye(d)
-        Q_cand *= d / (np.trace(Q_cand) + 1e-12)
-        ev = np.linalg.eigvalsh(Q_cand)
-        cond = float(ev.max() / (ev.min() + 1e-12))
-        print(f'[control] Q_lqr candidate: theta_row_norm={theta_row_norm:.4f}'
-              f'  cond={cond:.1f}')
-        # Use state_head Q only if theta row is substantial (not collapsed)
-        if theta_row_norm > 0.1 and cond < 1e6:
-            Q_lqr = Q_cand
-            Q_lqr_source = 'state_head'
-    print(f'[control] Using Q_lqr from: {Q_lqr_source}')
+    print('[control] Using Q_lqr: identity (pure latent cost)')
     Q_f = mpc_Qf_mult * Q_lqr
 
     from control.rollout import evaluate_stabilization_mpc
@@ -291,9 +297,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             if K_gt is None:
                 raise RuntimeError('K_gt not available')
-            if not (_state_head_trained and trainer.state_head is not None):
+            if not (state_head is not None):
                 raise RuntimeError('state_head not trained')
-            state_head = trainer.state_head
+            state_head = state_head
             state_head.eval(); model.eval()
             rng_enc = np.random.RandomState(seed)
             succs_e, ep_lens_e, fracs_e = [], [], []
@@ -354,9 +360,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             if K_gt is None:
                 raise RuntimeError('K_gt not available')
-            if not (_state_head_trained and trainer.state_head is not None):
+            if not (state_head is not None):
                 raise RuntimeError('state_head not trained')
-            state_head = trainer.state_head
+            state_head = state_head
             state_head.eval(); model.eval()
             rng_enc_th = np.random.RandomState(seed)
             succs_th, ep_lens_th, fracs_th = [], [], []
@@ -654,7 +660,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     if not cem_only:
         try:
             from control.grad_mpc import GradientLatentMPC
-            if not (_state_head_trained and trainer.state_head is not None):
+            if not (state_head is not None):
                 raise RuntimeError('state_head not trained')
             # Theta-focused physical cost: theta and theta_dot weighted heavily,
             # x/xdot included but lower weight since state_head may not estimate them well yet.
@@ -668,7 +674,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 lr=float(mpc_cfg.get('grad_lr', 0.05)),
                 n_iter=int(mpc_cfg.get('grad_n_iter', 50)),
                 device=device,
-                state_head=trainer.state_head,
+                state_head=state_head,
                 Q_phys=Q_phys_sh,
             )
             print(f'[control] {grad_mpc_sh.summary()} [state_head cost]')
@@ -702,8 +708,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     np.save(out_dir / 'A_jac.npy', A_jac)
     np.save(out_dir / 'B_jac.npy', B_jac)
     np.save(out_dir / 'z_star.npy', z_star)
-    if trainer.state_head is not None and _state_head_trained:
-        torch.save(trainer.state_head.state_dict(), out_dir / 'state_head.pt')
+    if state_head is not None:
+        torch.save(state_head.state_dict(), out_dir / 'state_head.pt')
 
     results = {
         'experiment': {'name': exp_name, 'variant': encoder_variant,
