@@ -80,9 +80,9 @@ data:
   n_random: 50000
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 0.15
+  random_init_range: 0.30   # was 0.15 — more extreme starts for larger obs-to-obs deltas
   lqr_init_range: 0.10
   lqr_noise_std: 0.1
-  n_equilibrium: 5000
+  n_equilibrium: 500        # was 5000 — fewer near-zero-action samples that enable shortcuts
   eq_init_range: 0.002
   eq_noise_std: 0.001
