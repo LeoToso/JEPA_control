@@ -133,36 +133,45 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         torch.save(model.state_dict(), out_dir / 'model_final.pt')
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
-    # Train a frozen-encoder linear map z -> [x, xdot, theta, thetadot].
-    # Pure JEPA: encoder never sees state gradients during world-model training.
+    # Skipped in --cem-only mode since CEM doesn't use state_head.
     sh_path = out_dir / 'state_head.pt'
-    state_head = torch.nn.Linear(model.config.latent_dim, 4).to(device)
-    if eval_only and sh_path.exists():
-        state_head.load_state_dict(torch.load(sh_path, map_location=device))
-        print(f'[probe] loaded state probe from {sh_path}')
+    if cem_only:
+        print('[probe] --cem-only: skipping state probe training')
+        state_head = None
     else:
-        print('[probe] Training post-hoc linear state probe (30 epochs, frozen encoder)...')
-        model.encoder.eval()
-        for p in model.encoder.parameters():
-            p.requires_grad_(False)
-        probe_opt = torch.optim.Adam(state_head.parameters(), lr=1e-3, weight_decay=1e-4)
-        w_pr = torch.tensor([50., 0.1, 100., 1.], device=device)
-        for _ in range(30):
-            for batch in loaders['train']:
-                obs_seq  = batch['obs_seq'].to(device)
-                states_b = batch['states'].to(device).float()
-                Bp, H1p, Cp, hp, wp = obs_seq.shape
-                with torch.no_grad():
-                    z_flat = model.encoder(obs_seq.view(Bp * H1p, Cp, hp, wp))
-                z_view = z_flat.view(Bp, H1p, -1)
-                loss_p = sum(
-                    (w_pr * (state_head(z_view[:, k]) - states_b[:, k]).pow(2)).mean()
-                    for k in range(H1p)
-                ) / H1p
-                probe_opt.zero_grad(); loss_p.backward(); probe_opt.step()
-        torch.save(state_head.state_dict(), sh_path)
-        print(f'[probe] state probe saved to {sh_path}')
-    state_head.eval()
+        state_head = torch.nn.Linear(model.config.latent_dim, 4).to(device)
+        if eval_only and sh_path.exists():
+            state_head.load_state_dict(torch.load(sh_path, map_location=device))
+            print(f'[probe] loaded state probe from {sh_path}')
+        else:
+            print('[probe] Training post-hoc linear state probe (30 epochs, frozen encoder)...')
+            model.encoder.eval()
+            for p in model.encoder.parameters():
+                p.requires_grad_(False)
+            probe_opt = torch.optim.Adam(state_head.parameters(), lr=1e-3, weight_decay=1e-4)
+            w_pr = torch.tensor([50., 0.1, 100., 1.], device=device)
+            # Equilibrium anchor: force state_head(z*) -> 0 during probe training
+            # so the post-hoc probe agrees with the in-training anchor constraint.
+            with torch.no_grad():
+                z_star_probe = model.encoder(obs_eq_t).squeeze(0)
+            for _ in range(30):
+                for batch in loaders['train']:
+                    obs_seq  = batch['obs_seq'].to(device)
+                    states_b = batch['states'].to(device).float()
+                    Bp, H1p, Cp, hp, wp = obs_seq.shape
+                    with torch.no_grad():
+                        z_flat = model.encoder(obs_seq.view(Bp * H1p, Cp, hp, wp))
+                    z_view = z_flat.view(Bp, H1p, -1)
+                    loss_p = sum(
+                        (w_pr * (state_head(z_view[:, k]) - states_b[:, k]).pow(2)).mean()
+                        for k in range(H1p)
+                    ) / H1p
+                    # anchor: state_head(z*) must read as [0,0,0,0]
+                    loss_p = loss_p + (w_pr * state_head(z_star_probe.unsqueeze(0)).pow(2)).mean()
+                    probe_opt.zero_grad(); loss_p.backward(); probe_opt.step()
+            torch.save(state_head.state_dict(), sh_path)
+            print(f'[probe] state probe saved to {sh_path}')
+        state_head.eval()
 
     # Compute z*
     from envs.cartpole_visual import ContinuousCartpoleVisual

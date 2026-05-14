@@ -68,10 +68,9 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
-        self.lambda_anchor = float(self.cfg.get('lambda_anchor', 0.0))
+        self.lambda_anchor     = float(self.cfg.get('lambda_anchor',     0.0))
+        self.lambda_enc_anchor = float(self.cfg.get('lambda_enc_anchor', 0.0))
         self.lambda_inv   = float(self.cfg.get('lambda_inv',   0.0))
-        # Scale raw actions to ~[-1,1] before computing inv loss so the loss
-        # magnitude is independent of the environment's action range.
         self.inv_action_scale = float(self.cfg.get('inv_action_scale', 1.0))
         self.use_vicreg   = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
@@ -110,7 +109,9 @@ class Trainer:
         # After encoder freeze, keeps ψ calibrated as a persistent diagnostic.
         if self.lambda_inv > 0:
             d_lat = model.config.latent_dim
-            self.inv_head = nn.Linear(2 * d_lat, 1).to(self.device)
+            self.inv_head = nn.Sequential(
+                nn.Linear(2 * d_lat, d_lat), nn.ReLU(), nn.Linear(d_lat, 1)
+            ).to(self.device)
             self.optimizer.add_param_group({'params': self.inv_head.parameters()})
         else:
             self.inv_head = None
@@ -245,6 +246,16 @@ class Trainer:
             inv_loss = inv_loss / H
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
+
+        # Encoder anchor: push encoder(obs_eq) toward the origin.
+        # During warmup (encoder trainable) gradients flow into encoder params,
+        # initialising z* near 0 so all downstream controllers have a known
+        # target. After encoder freeze the gradient is zero — completely inert.
+        if is_train and self.lambda_enc_anchor > 0 and self._obs_eq is not None:
+            z_eq_grad = self.model.encoder(self._obs_eq).squeeze(0)  # grad enabled
+            enc_anchor_loss = z_eq_grad.pow(2).mean()
+            total_loss = total_loss + self.lambda_enc_anchor * enc_anchor_loss
+            info['enc_anchor_loss'] = enc_anchor_loss.item()
 
         # State reconstruction with gradient mixing.
         # Theta is the key visual cue (pole angle) — weight it 100x vs x/xdot.
@@ -471,16 +482,17 @@ class Trainer:
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
             dt = time.time() - t0
-            state_str  = f"  state={tr.get('state_loss',  0):.4f}" if 'state_loss'  in tr else ''
-            inv_str    = f"  inv={tr.get('inv_loss',    0):.4f}"  if 'inv_loss'    in tr else ''
-            fp_str     = f"  fp={tr.get('fp_loss',      0):.4f}"  if 'fp_loss'     in tr else ''
-            spec_str   = f"  spec={tr.get('spec_loss',  0):.4f}"  if 'spec_loss'   in tr else ''
-            anchor_str = f"  anc={tr.get('anchor_loss', 0):.4f}"  if 'anchor_loss' in tr else ''
+            state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
+            inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
+            ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
+            fp_str     = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
+            spec_str   = f"  spec={tr.get('spec_loss',     0):.4f}" if 'spec_loss'       in tr else ''
+            anchor_str = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'     in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{fp_str}{spec_str}{anchor_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{spec_str}{anchor_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
