@@ -250,6 +250,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Pure JEPA: CEM cost is identity in latent space — ||z - z*||^2.
     # State probe is diagnostic only; encoder was never trained with state gradients.
     Q_lqr = np.eye(d)
+    Q_lqr_source = 'identity'
     print('[control] Using Q_lqr: identity (pure latent cost)')
     Q_f = mpc_Qf_mult * Q_lqr
 
@@ -486,6 +487,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             print(f'[control] Pure-Latent LQR failed: {exc}')
             ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
 
+    # Pre-stabilise A_jac — used by both Linear MPC and CEM-linear
+    from control.lqr import pre_stabilize_A
+    A_stab, _n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
+
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
     if not cem_only: print('\n[control] --- Linear MPC (Jacobian) ---')
     if not cem_only:
@@ -538,10 +543,6 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_n_iter   = int(cem_cfg.get('n_iter',       5))
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
-
-    # Pre-stabilise A_jac once — used by both Linear MPC and CEM-linear
-    from control.lqr import pre_stabilize_A
-    A_stab, _n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
 
     # ── CEM with linear (Jacobian) dynamics ───────────────────────────────────
     print('\n[control] --- CEM (Linear dynamics) ---')

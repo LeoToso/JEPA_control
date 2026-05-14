@@ -89,8 +89,14 @@ class Trainer:
              'lr': lr * predictor_lr_mult},
         ], lr=lr, weight_decay=weight_decay)
 
-        # Auxiliary state head (theta-weighted supervision)
-        if self.lambda_state > 0:
+        # Auxiliary state head (theta-weighted supervision).
+        # Create whenever lambda_state > 0 OR warmup uses state supervision,
+        # so the hybrid warmup-only approach doesn't silently skip state loss.
+        _needs_state_head = (
+            self.lambda_state > 0
+            or float(self.cfg.get('warmup_lambda_state', 0.0)) > 0
+        )
+        if _needs_state_head:
             d_lat = model.config.latent_dim
             self.state_head = nn.Linear(d_lat, 4).to(self.device)
             self.optimizer.add_param_group({'params': self.state_head.parameters()})

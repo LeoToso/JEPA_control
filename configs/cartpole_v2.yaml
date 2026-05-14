@@ -26,7 +26,7 @@ training:
   epochs: 100
   horizon: 5
   lambda_pred: 1.0
-  lambda_state: 0.0
+  lambda_state: 0.0        # 0.0 = no state supervision after warmup (pure JEPA predictor phase)
   lambda_fp: 2.0
   lambda_spec: 5.0
   lambda_PBH: 1.0
