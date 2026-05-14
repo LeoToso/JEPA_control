@@ -26,6 +26,7 @@ class JEPAConfig:
     vit_mlp_ratio: float = 2.0
     # Predictor
     predictor_hidden_dim: int = 256
+    predictor_n_layers: int = 2
 
     @classmethod
     def from_dict(cls, d: dict) -> 'JEPAConfig':
@@ -62,6 +63,7 @@ class JEPAModel(nn.Module):
             latent_dim=config.latent_dim,
             action_dim=self.action_encoder.latent_action_dim,
             hidden_dim=config.predictor_hidden_dim,
+            n_layers=config.predictor_n_layers,
         )
 
         # EMA target encoder: same architecture as online encoder, not in optimizer.
