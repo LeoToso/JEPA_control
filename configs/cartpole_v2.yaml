@@ -27,24 +27,23 @@ training:
   horizon: 5
   lambda_pred: 1.0
   lambda_state: 0.0        # no state supervision at any phase (no state labels used)
-  lambda_anchor: 1.0       # state_head equilibrium anchor: ||w * state_head(z*)||^2
+  lambda_anchor: 0.0       # state_head equilibrium anchor: disabled (no state supervision)
   lambda_enc_anchor: 1.0   # encoder anchor: ||encoder(obs_eq)||^2 — pushes z* toward origin
-                            # during warmup (encoder trainable); inert after freeze
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
   lambda_fp: 2.0
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
-  use_vicreg: true
+  use_vicreg: false
   vicreg_lambda: 25.0
   vicreg_nu: 1.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   checkpoint_every: 50
-  warmup_epochs: 20
-  warmup_lambda_state: 0.0  # warmup uses inv_loss instead of state reconstruction
+  warmup_epochs: 0          # no warmup: all losses active + encoder trainable from epoch 1
+  warmup_lambda_state: 0.0
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
 
