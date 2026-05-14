@@ -394,8 +394,8 @@ class Trainer:
         _spec_conv_epoch = None   # first epoch where spec_loss < 0.01
         spec_thresh     = float(self.cfg.get('spec_converge_thresh', 0.01))
 
-        # Warm-up: pure state-supervision phase to seed encoder with theta encoding
-        # before pred_loss locks the encoder into a theta-blind representation.
+        # Warm-up: encoder-only phase (pred disabled) to seed encoder representation
+        # before pred_loss locks the encoder into a dynamics-blind latent space.
         warmup_epochs       = int(self.cfg.get('warmup_epochs', 0))
         # After warmup, optionally freeze the encoder for N epochs so the predictor
         # learns dynamics on the theta-encoding latent space without disturbing it.
@@ -413,8 +413,16 @@ class Trainer:
             if warmup_epochs > 0:
                 if epoch < warmup_epochs:
                     if epoch == 0:
+                        active = []
+                        if float(self.cfg.get('warmup_lambda_state', 0.0)) > 0:
+                            active.append('state-supervision')
+                        if self.lambda_inv > 0:
+                            active.append('inv-dynamics')
+                        if self.lambda_anchor > 0:
+                            active.append('anchor')
                         print(f'[train] Warm-up phase: {warmup_epochs} epochs of '
-                              f'pure state supervision (pred disabled)')
+                              f'{" + ".join(active) if active else "encoder-only"} '
+                              f'(pred disabled)')
                     self.lambda_pred  = 0.0
                     self.lambda_state = float(self.cfg.get('warmup_lambda_state', 1.0))
                     self.lambda_spec  = 0.0
