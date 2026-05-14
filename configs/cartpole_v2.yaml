@@ -64,7 +64,7 @@ mpc:
   grad_n_iter: 100
 
 cem:
-  horizon: 10
+  horizon: 25
   chunk_size: 1
   n_samples: 500
   n_elites: 50
