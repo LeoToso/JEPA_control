@@ -242,6 +242,20 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     with open(sd_results_path, 'w') as _f:
         _json.dump(state_decoder_results, _f, indent=2)
 
+    # ── Q_lat: physically-motivated latent cost from decoder weights ──────────
+    # If state ≈ W z + b, then ||state||²_Q_phys = (z-z*)^T W^T Q_phys W (z-z*),
+    # so Q_lat = W^T Q_phys W. Computed once from frozen decoder; never called at runtime.
+    W_dec = state_decoder.weight.detach().cpu().numpy()   # (4, d)
+    _Q_phys_cem = np.diag([50., 0.1, 100., 1.])
+    _Q_lat_raw  = W_dec.T @ _Q_phys_cem @ W_dec           # (d, d)
+    _tr_lat     = float(np.trace(_Q_lat_raw))
+    _d          = W_dec.shape[1]
+    Q_lat       = _Q_lat_raw * (_d / max(_tr_lat, 1e-6))  # normalise: mean eigenvalue = 1
+    np.save(out_dir / 'Q_lat.npy', Q_lat)
+    _eig_lat = np.linalg.eigvalsh(Q_lat)
+    print(f'[control] Q_lat from decoder: raw trace={_tr_lat:.4f}  '
+          f'normed eig range [{_eig_lat.min():.3f}, {_eig_lat.max():.3f}]')
+
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
     sh_path = out_dir / 'state_head.pt'
@@ -669,77 +683,110 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
-    # ── CEM with linear (Jacobian) dynamics ───────────────────────────────────
-    print('\n[control] --- CEM (Linear dynamics) ---')
-    try:
-        from control.cem import CEMLatentPlanner
-        cem_lin = CEMLatentPlanner(
-            A=A_stab, B=B_jac, c_offset=c_drift,
-            Q=Q_lqr, R=R_lqr, Q_f=mpc_Qf_mult * Q_lqr,
-            horizon=cem_horizon, chunk_size=cem_chunk,
-            n_samples=cem_n_samp, n_elites=cem_n_elite,
-            n_iter=cem_n_iter, init_std=cem_std,
-            action_lb=action_lb, action_ub=action_ub,
-            device=device,
-        )
-        print(f'[control] {cem_lin.summary()}')
-        cr_cem_lin = evaluate_stabilization_mpc(
-            encoder=model.encoder, mpc=cem_lin, env=env,
-            n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
-            seed=seed, device=device, z_star=z_star, vis_trial=0,
-            frame_stack=frame_stack,
-        )
-        print(f'[control] CEM-linear:    success={cr_cem_lin["success_rate"]:.3f}'
-              f'  ep_len={cr_cem_lin["mean_episode_length"]:.1f}'
-              f'  frac_stable={cr_cem_lin["mean_fraction_stable"]:.3f}')
-        ctrl_results['cem_linear'] = {k: v for k, v in cr_cem_lin.items()
-                                       if k != 'vis_result'}
-        vis_cl = cr_cem_lin.get('vis_result')
-        if vis_cl:
-            save_rollout_frames(vis_cl, out_dir / 'cem_linear_frames.png',
-                                n_frames=8, title=f'{exp_name}  CEM-linear')
-            save_rollout_video(vis_cl, out_dir / 'cem_linear.gif',
-                               fps=15, title=f'{exp_name}  CEM-linear')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] CEM-linear failed: {exc}')
-        ctrl_results['cem_linear'] = {'error': str(exc)}
+    # ── CEM sweep (linear + nonlinear dynamics) ───────────────────────────────
+    # Four configs: baseline (H=25, Q=I, Qf=10I) + three Q_lat variants
+    # with shorter / full horizons and no terminal amplification.
+    _cem_sweep = [
+        dict(tag='baseline', horizon=cem_horizon, Q=Q_lqr,  Qf=mpc_Qf_mult * Q_lqr,
+             desc=f'H={cem_horizon} Q=I  Qf={mpc_Qf_mult:.0f}I'),
+        dict(tag='H5_Qlat',  horizon=5,           Q=Q_lat,  Qf=Q_lat,
+             desc='H=5  Q=Qlat Qf=Qlat'),
+        dict(tag='H10_Qlat', horizon=10,          Q=Q_lat,  Qf=Q_lat,
+             desc='H=10 Q=Qlat Qf=Qlat'),
+        dict(tag='H25_Qlat', horizon=25,          Q=Q_lat,  Qf=Q_lat,
+             desc='H=25 Q=Qlat Qf=Qlat'),
+    ]
 
-    # ── CEM with nonlinear (predictor) dynamics ───────────────────────────────
-    print('\n[control] --- CEM (Nonlinear dynamics) ---')
-    try:
-        from control.cem import CEMLatentPlanner
-        cem_nl = CEMLatentPlanner(
-            predictor=model.predictor, action_encoder=model.action_encoder,
-            Q=Q_lqr, R=R_lqr, Q_f=mpc_Qf_mult * Q_lqr,
-            horizon=cem_horizon, chunk_size=cem_chunk,
-            n_samples=cem_n_samp, n_elites=cem_n_elite,
-            n_iter=cem_n_iter, init_std=cem_std,
-            action_lb=action_lb, action_ub=action_ub,
-            device=device,
-        )
-        print(f'[control] {cem_nl.summary()}')
-        cr_cem_nl = evaluate_stabilization_mpc(
-            encoder=model.encoder, mpc=cem_nl, env=env,
-            n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
-            seed=seed, device=device, z_star=z_star, vis_trial=0,
-            frame_stack=frame_stack,
-        )
-        print(f'[control] CEM-nonlinear: success={cr_cem_nl["success_rate"]:.3f}'
-              f'  ep_len={cr_cem_nl["mean_episode_length"]:.1f}'
-              f'  frac_stable={cr_cem_nl["mean_fraction_stable"]:.3f}')
-        ctrl_results['cem_nonlinear'] = {k: v for k, v in cr_cem_nl.items()
-                                          if k != 'vis_result'}
-        vis_cn = cr_cem_nl.get('vis_result')
-        if vis_cn:
-            save_rollout_frames(vis_cn, out_dir / 'cem_nonlinear_frames.png',
-                                n_frames=8, title=f'{exp_name}  CEM-nonlinear')
-            save_rollout_video(vis_cn, out_dir / 'cem_nonlinear.gif',
-                               fps=15, title=f'{exp_name}  CEM-nonlinear')
-    except Exception as exc:
-        import traceback; traceback.print_exc()
-        print(f'[control] CEM-nonlinear failed: {exc}')
-        ctrl_results['cem_nonlinear'] = {'error': str(exc)}
+    from control.cem import CEMLatentPlanner
+    for _sc in _cem_sweep:
+        _tag, _H, _Q, _Qf, _desc = (
+            _sc['tag'], _sc['horizon'], _sc['Q'], _sc['Qf'], _sc['desc'])
+
+        # — linear (Jacobian) dynamics —
+        print(f'\n[control] --- CEM linear  {_desc} ---')
+        try:
+            _cem_lin = CEMLatentPlanner(
+                A=A_stab, B=B_jac, c_offset=c_drift,
+                Q=_Q, R=R_lqr, Q_f=_Qf,
+                horizon=_H, chunk_size=cem_chunk,
+                n_samples=cem_n_samp, n_elites=cem_n_elite,
+                n_iter=cem_n_iter, init_std=cem_std,
+                action_lb=action_lb, action_ub=action_ub,
+                device=device,
+            )
+            print(f'[control] {_cem_lin.summary()}')
+            _cr_cl = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=_cem_lin, env=env,
+                n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
+                seed=seed, device=device, z_star=z_star, vis_trial=0,
+                frame_stack=frame_stack,
+            )
+            _rk_cl = f'cem_linear_{_tag}'
+            ctrl_results[_rk_cl] = {k: v for k, v in _cr_cl.items() if k != 'vis_result'}
+            print(f'[control] {_rk_cl}: success={_cr_cl["success_rate"]:.3f}'
+                  f'  ep_len={_cr_cl["mean_episode_length"]:.1f}'
+                  f'  frac_stable={_cr_cl["mean_fraction_stable"]:.3f}')
+            _vis_cl = _cr_cl.get('vis_result')
+            if _vis_cl:
+                save_rollout_frames(_vis_cl, out_dir / f'{_rk_cl}_frames.png',
+                                    n_frames=8, title=f'{exp_name}  CEM-lin {_desc}')
+                save_rollout_video(_vis_cl, out_dir / f'{_rk_cl}.gif',
+                                   fps=15, title=f'{exp_name}  CEM-lin {_desc}')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] CEM-linear {_tag} failed: {exc}')
+            ctrl_results[f'cem_linear_{_tag}'] = {'error': str(exc)}
+
+        # — nonlinear (predictor) dynamics —
+        print(f'\n[control] --- CEM nonlinear  {_desc} ---')
+        try:
+            _cem_nl = CEMLatentPlanner(
+                predictor=model.predictor, action_encoder=model.action_encoder,
+                Q=_Q, R=R_lqr, Q_f=_Qf,
+                horizon=_H, chunk_size=cem_chunk,
+                n_samples=cem_n_samp, n_elites=cem_n_elite,
+                n_iter=cem_n_iter, init_std=cem_std,
+                action_lb=action_lb, action_ub=action_ub,
+                device=device,
+            )
+            print(f'[control] {_cem_nl.summary()}')
+            _cr_cn = evaluate_stabilization_mpc(
+                encoder=model.encoder, mpc=_cem_nl, env=env,
+                n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
+                seed=seed, device=device, z_star=z_star, vis_trial=0,
+                frame_stack=frame_stack,
+            )
+            _rk_cn = f'cem_nonlinear_{_tag}'
+            ctrl_results[_rk_cn] = {k: v for k, v in _cr_cn.items() if k != 'vis_result'}
+            print(f'[control] {_rk_cn}: success={_cr_cn["success_rate"]:.3f}'
+                  f'  ep_len={_cr_cn["mean_episode_length"]:.1f}'
+                  f'  frac_stable={_cr_cn["mean_fraction_stable"]:.3f}')
+            _vis_cn = _cr_cn.get('vis_result')
+            if _vis_cn:
+                save_rollout_frames(_vis_cn, out_dir / f'{_rk_cn}_frames.png',
+                                    n_frames=8, title=f'{exp_name}  CEM-nl {_desc}')
+                save_rollout_video(_vis_cn, out_dir / f'{_rk_cn}.gif',
+                                   fps=15, title=f'{exp_name}  CEM-nl {_desc}')
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            print(f'[control] CEM-nonlinear {_tag} failed: {exc}')
+            ctrl_results[f'cem_nonlinear_{_tag}'] = {'error': str(exc)}
+
+    # ── CEM sweep summary table ───────────────────────────────────────────────
+    print('\n' + '═' * 67)
+    print('CEM SWEEP SUMMARY')
+    print('═' * 67)
+    print(f'  {"Config":<22} {"Lin succ":>9} {"NL succ":>9} {"Lin frac":>9} {"NL frac":>9}')
+    print('  ' + '-' * 63)
+    for _sc in _cem_sweep:
+        _t = _sc['tag']
+        _cl = ctrl_results.get(f'cem_linear_{_t}',    {})
+        _cn = ctrl_results.get(f'cem_nonlinear_{_t}', {})
+        _f  = lambda d, k: f'{d[k]:.3f}' if k in d else '  err'
+        print(f'  {_sc["desc"]:<22} '
+              f'{_f(_cl, "success_rate"):>9} {_f(_cn, "success_rate"):>9} '
+              f'{_f(_cl, "mean_fraction_stable"):>9} {_f(_cn, "mean_fraction_stable"):>9}')
+    print('═' * 67 + '\n')
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
     if not cem_only: print('\n[control] --- Nonlinear Gradient MPC ---')
@@ -838,6 +885,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     np.save(out_dir / 'A_jac.npy', A_jac)
     np.save(out_dir / 'B_jac.npy', B_jac)
     np.save(out_dir / 'z_star.npy', z_star)
+    np.save(out_dir / 'Q_lat.npy',  Q_lat)
     if state_head is not None:
         torch.save(state_head.state_dict(), out_dir / 'state_head.pt')
 
