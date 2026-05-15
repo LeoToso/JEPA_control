@@ -704,32 +704,49 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
     # ── CEM sweep (linear + nonlinear dynamics) ───────────────────────────────
-    # Four configs: baseline (H=25, Q=I, Qf=10I) + three Q_lat variants
-    # with shorter / full horizons and no terminal amplification.
+    # Configs vary: horizon, cost matrix, planning target (z_star vs z_fp),
+    # init_std (default 3.0 vs 0.5 / 1.0), and n_iter (default 5 vs 20).
     _cem_sweep = [
-        # ── z_star target (original) ──────────────────────────────────────
-        dict(tag='baseline',    horizon=cem_horizon, Q=Q_lqr, Qf=mpc_Qf_mult*Q_lqr,
-             zs=z_star, desc=f'H={cem_horizon} Q=I  Qf={mpc_Qf_mult:.0f}I  z*'),
-        dict(tag='H5_Qlat',     horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_star, desc='H=5  Q=Qlat Qf=Qlat z*'),
-        dict(tag='H10_Qlat',    horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_star, desc='H=10 Q=Qlat Qf=Qlat z*'),
-        dict(tag='H25_Qlat',    horizon=25, Q=Q_lat, Qf=Q_lat,
-             zs=z_star, desc='H=25 Q=Qlat Qf=Qlat z*'),
-        # ── z_fp target (true predictor FP) ──────────────────────────────
-        dict(tag='H5_Qlat_fp',  horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   desc='H=5  Q=Qlat Qf=Qlat zfp'),
-        dict(tag='H10_Qlat_fp', horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   desc='H=10 Q=Qlat Qf=Qlat zfp'),
-        dict(tag='H25_Qlat_fp', horizon=25, Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   desc='H=25 Q=Qlat Qf=Qlat zfp'),
+        # ── z_star target, default σ ──────────────────────────────────────
+        dict(tag='baseline',       horizon=cem_horizon, Q=Q_lqr, Qf=mpc_Qf_mult*Q_lqr,
+             zs=z_star, std=cem_std, ni=cem_n_iter,
+             desc=f'H={cem_horizon} Q=I  z* σ={cem_std:.1f}'),
+        dict(tag='H5_Qlat',        horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_star, std=cem_std, ni=cem_n_iter,
+             desc=f'H=5  Qlat z* σ={cem_std:.1f}'),
+        dict(tag='H10_Qlat',       horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_star, std=cem_std, ni=cem_n_iter,
+             desc=f'H=10 Qlat z* σ={cem_std:.1f}'),
+        # ── z_fp target, default σ ────────────────────────────────────────
+        dict(tag='H5_Qlat_fp',     horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=cem_std, ni=cem_n_iter,
+             desc=f'H=5  Qlat zfp σ={cem_std:.1f}'),
+        dict(tag='H10_Qlat_fp',    horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=cem_std, ni=cem_n_iter,
+             desc=f'H=10 Qlat zfp σ={cem_std:.1f}'),
+        # ── z_fp target, σ=0.5, n_iter=20 ────────────────────────────────
+        dict(tag='H5_Qlat_fp_s05', horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=0.5,     ni=20,
+             desc='H=5  Qlat zfp σ=0.5 i20'),
+        dict(tag='H10_Qlat_fp_s05',horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=0.5,     ni=20,
+             desc='H=10 Qlat zfp σ=0.5 i20'),
+        # ── z_fp target, σ=1.0, n_iter=20 ────────────────────────────────
+        dict(tag='H5_Qlat_fp_s1',  horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=1.0,     ni=20,
+             desc='H=5  Qlat zfp σ=1.0 i20'),
+        dict(tag='H10_Qlat_fp_s1', horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   std=1.0,     ni=20,
+             desc='H=10 Qlat zfp σ=1.0 i20'),
     ]
 
     from control.cem import CEMLatentPlanner
     for _sc in _cem_sweep:
-        _tag, _H, _Q, _Qf, _desc, _zs = (
-            _sc['tag'], _sc['horizon'], _sc['Q'], _sc['Qf'], _sc['desc'],
-            _sc.get('zs', z_star))
+        _tag  = _sc['tag'];   _H    = _sc['horizon']
+        _Q    = _sc['Q'];     _Qf   = _sc['Qf']
+        _desc = _sc['desc'];  _zs   = _sc.get('zs', z_star)
+        _std  = _sc.get('std', cem_std)
+        _ni   = _sc.get('ni',  cem_n_iter)
 
         # — linear (Jacobian) dynamics —
         print(f'\n[control] --- CEM linear  {_desc} ---')
@@ -739,7 +756,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 Q=_Q, R=R_lqr, Q_f=_Qf,
                 horizon=_H, chunk_size=cem_chunk,
                 n_samples=cem_n_samp, n_elites=cem_n_elite,
-                n_iter=cem_n_iter, init_std=cem_std,
+                n_iter=_ni, init_std=_std,
                 action_lb=action_lb, action_ub=action_ub,
                 device=device,
             )
@@ -774,7 +791,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 Q=_Q, R=R_lqr, Q_f=_Qf,
                 horizon=_H, chunk_size=cem_chunk,
                 n_samples=cem_n_samp, n_elites=cem_n_elite,
-                n_iter=cem_n_iter, init_std=cem_std,
+                n_iter=_ni, init_std=_std,
                 action_lb=action_lb, action_ub=action_ub,
                 device=device,
             )
@@ -802,20 +819,20 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             ctrl_results[f'cem_nonlinear_{_tag}'] = {'error': str(exc)}
 
     # ── CEM sweep summary table ───────────────────────────────────────────────
-    print('\n' + '═' * 67)
+    print('\n' + '═' * 73)
     print('CEM SWEEP SUMMARY')
-    print('═' * 67)
-    print(f'  {"Config":<22} {"Lin succ":>9} {"NL succ":>9} {"Lin frac":>9} {"NL frac":>9}')
-    print('  ' + '-' * 63)
+    print('═' * 73)
+    print(f'  {"Config":<28} {"Lin succ":>9} {"NL succ":>9} {"Lin frac":>9} {"NL frac":>9}')
+    print('  ' + '-' * 69)
     for _sc in _cem_sweep:
         _t = _sc['tag']
         _cl = ctrl_results.get(f'cem_linear_{_t}',    {})
         _cn = ctrl_results.get(f'cem_nonlinear_{_t}', {})
         _f  = lambda d, k: f'{d[k]:.3f}' if k in d else '  err'
-        print(f'  {_sc["desc"]:<22} '
+        print(f'  {_sc["desc"]:<28} '
               f'{_f(_cl, "success_rate"):>9} {_f(_cn, "success_rate"):>9} '
               f'{_f(_cl, "mean_fraction_stable"):>9} {_f(_cn, "mean_fraction_stable"):>9}')
-    print('═' * 67 + '\n')
+    print('═' * 73 + '\n')
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
     if not cem_only: print('\n[control] --- Nonlinear Gradient MPC ---')
