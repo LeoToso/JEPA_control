@@ -341,6 +341,26 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     print(f'[control] B_jac norm: {b_norm:.4f}')
     print(f'[control] u_ff={u_ff_lin:.4f}  cancels {cancelled:.4f}/{fp_err:.4f} of drift')
 
+    # ── True predictor fixed point z_fp ──────────────────────────────────────
+    # Solve (I - A_jac) @ dz = c_drift + B_jac * u_ff_lin in the linear model.
+    # At z_fp the model predicts f(z_fp, u_ff) ≈ z_fp, giving CEM an achievable target.
+    try:
+        _rhs_fp  = c_drift + B_jac.flatten() * u_ff_lin
+        _dz_fp   = np.linalg.solve(np.eye(d) - A_jac, _rhs_fp)
+        z_fp     = z_star + _dz_fp
+        with torch.no_grad():
+            _z_fp_t  = torch.tensor(z_fp, dtype=torch.float32, device=device).unsqueeze(0)
+            _a_ff_t  = model.action_encoder(
+                torch.tensor([[u_ff_lin]], dtype=torch.float32, device=device))
+            _z_fp_nl = model.predictor(_z_fp_t, _a_ff_t)
+            fp_err_fp = float(torch.norm(_z_fp_nl - _z_fp_t).item())
+        print(f'[control] z_fp: ||z_fp-z_star||={np.linalg.norm(_dz_fp):.4f}  '
+              f'fp_err={fp_err_fp:.4f}  (was {fp_err:.4f} at z_star)')
+        np.save(out_dir / 'z_fp.npy', z_fp)
+    except Exception as _e:
+        print(f'[control] z_fp computation failed: {_e}  (falling back to z_star)')
+        z_fp = z_star
+
     with torch.no_grad():
         # How does the predictor drift from z* over H steps with zero action?
         print('[control] Predictor drift from z* (u=0, 5 steps):')
@@ -687,20 +707,29 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Four configs: baseline (H=25, Q=I, Qf=10I) + three Q_lat variants
     # with shorter / full horizons and no terminal amplification.
     _cem_sweep = [
-        dict(tag='baseline', horizon=cem_horizon, Q=Q_lqr,  Qf=mpc_Qf_mult * Q_lqr,
-             desc=f'H={cem_horizon} Q=I  Qf={mpc_Qf_mult:.0f}I'),
-        dict(tag='H5_Qlat',  horizon=5,           Q=Q_lat,  Qf=Q_lat,
-             desc='H=5  Q=Qlat Qf=Qlat'),
-        dict(tag='H10_Qlat', horizon=10,          Q=Q_lat,  Qf=Q_lat,
-             desc='H=10 Q=Qlat Qf=Qlat'),
-        dict(tag='H25_Qlat', horizon=25,          Q=Q_lat,  Qf=Q_lat,
-             desc='H=25 Q=Qlat Qf=Qlat'),
+        # ── z_star target (original) ──────────────────────────────────────
+        dict(tag='baseline',    horizon=cem_horizon, Q=Q_lqr, Qf=mpc_Qf_mult*Q_lqr,
+             zs=z_star, desc=f'H={cem_horizon} Q=I  Qf={mpc_Qf_mult:.0f}I  z*'),
+        dict(tag='H5_Qlat',     horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_star, desc='H=5  Q=Qlat Qf=Qlat z*'),
+        dict(tag='H10_Qlat',    horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_star, desc='H=10 Q=Qlat Qf=Qlat z*'),
+        dict(tag='H25_Qlat',    horizon=25, Q=Q_lat, Qf=Q_lat,
+             zs=z_star, desc='H=25 Q=Qlat Qf=Qlat z*'),
+        # ── z_fp target (true predictor FP) ──────────────────────────────
+        dict(tag='H5_Qlat_fp',  horizon=5,  Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   desc='H=5  Q=Qlat Qf=Qlat zfp'),
+        dict(tag='H10_Qlat_fp', horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   desc='H=10 Q=Qlat Qf=Qlat zfp'),
+        dict(tag='H25_Qlat_fp', horizon=25, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp,   desc='H=25 Q=Qlat Qf=Qlat zfp'),
     ]
 
     from control.cem import CEMLatentPlanner
     for _sc in _cem_sweep:
-        _tag, _H, _Q, _Qf, _desc = (
-            _sc['tag'], _sc['horizon'], _sc['Q'], _sc['Qf'], _sc['desc'])
+        _tag, _H, _Q, _Qf, _desc, _zs = (
+            _sc['tag'], _sc['horizon'], _sc['Q'], _sc['Qf'], _sc['desc'],
+            _sc.get('zs', z_star))
 
         # — linear (Jacobian) dynamics —
         print(f'\n[control] --- CEM linear  {_desc} ---')
@@ -718,7 +747,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             _cr_cl = evaluate_stabilization_mpc(
                 encoder=model.encoder, mpc=_cem_lin, env=env,
                 n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
-                seed=seed, device=device, z_star=z_star, vis_trial=0,
+                seed=seed, device=device, z_star=_zs, vis_trial=0,
                 frame_stack=frame_stack,
             )
             _rk_cl = f'cem_linear_{_tag}'
@@ -753,7 +782,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             _cr_cn = evaluate_stabilization_mpc(
                 encoder=model.encoder, mpc=_cem_nl, env=env,
                 n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
-                seed=seed, device=device, z_star=z_star, vis_trial=0,
+                seed=seed, device=device, z_star=_zs, vis_trial=0,
                 frame_stack=frame_stack,
             )
             _rk_cn = f'cem_nonlinear_{_tag}'
@@ -882,9 +911,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # Save
     torch.save(model.state_dict(), out_dir / 'model_final.pt')
-    np.save(out_dir / 'A_jac.npy', A_jac)
-    np.save(out_dir / 'B_jac.npy', B_jac)
+    np.save(out_dir / 'A_jac.npy',  A_jac)
+    np.save(out_dir / 'B_jac.npy',  B_jac)
     np.save(out_dir / 'z_star.npy', z_star)
+    np.save(out_dir / 'z_fp.npy',   z_fp)
     np.save(out_dir / 'Q_lat.npy',  Q_lat)
     if state_head is not None:
         torch.save(state_head.state_dict(), out_dir / 'state_head.pt')
