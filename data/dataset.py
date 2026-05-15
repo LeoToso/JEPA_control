@@ -214,12 +214,15 @@ class TrajectoryDataset(Dataset):
     """Returns windows of H+1 consecutive frames from the same episode.
 
     Each item:
-      obs_seq  : (H+1, 3, img_h, img_w) float32 in [0,1]
+      obs_seq  : (H+1, 3*frame_stack, img_h, img_w) float32 in [0,1]
       actions  : (H, 1)  float32
       states   : (H+1, 4) float32
+
+    When frame_stack > 1, each observation is [obs_{t-1}, obs_t] stacked
+    channel-wise. At the start of a window (k=0), prev = curr (duplicate).
     """
 
-    def __init__(self, data, split='train', horizon: int = 20):
+    def __init__(self, data, split='train', horizon: int = 20, frame_stack: int = 1):
         splits = data.get('splits', {})
         idx    = (splits[split] if splits and split in splits
                   else np.arange(len(data['obs'])))
@@ -231,7 +234,8 @@ class TrajectoryDataset(Dataset):
         self.ep_ids     = (data['episode_ids'][idx]
                            if 'episode_ids' in data
                            else np.arange(len(idx), dtype=np.int32))
-        self.horizon    = horizon
+        self.horizon     = horizon
+        self.frame_stack = frame_stack
         self.valid_starts = self._find_valid_starts()
 
     def _find_valid_starts(self):
@@ -252,17 +256,28 @@ class TrajectoryDataset(Dataset):
     def __getitem__(self, idx):
         start = int(self.valid_starts[idx])
         H     = self.horizon
+        FS    = self.frame_stack
+
+        def _to_tensor(arr):
+            return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0  # (3, h, w)
+
+        def _stack_frames(prev_t, curr_t):
+            # prev_t, curr_t: (3, h, w) tensors; returns (3*FS, h, w)
+            return torch.cat([prev_t, curr_t], dim=0) if FS > 1 else curr_t
 
         # Frames: obs[start], obs[start+1], ..., obs[start+H-1], next_obs[start+H-1]
+        # With frame stacking, each position gets [obs_{t-1}, obs_t] channel-wise.
+        # At k=0, prev = curr (duplicate first frame since no prior observation).
         frames = []
         for k in range(H):
-            frames.append(
-                torch.from_numpy(self.obs[start + k]).float().permute(2, 0, 1) / 255.0
-            )
-        frames.append(
-            torch.from_numpy(self.next_obs[start + H - 1]).float().permute(2, 0, 1) / 255.0
-        )
-        obs_seq = torch.stack(frames)                                  # (H+1, 3, h, w)
+            curr_t = _to_tensor(self.obs[start + k])
+            prev_t = _to_tensor(self.obs[start + k - 1]) if k > 0 else curr_t
+            frames.append(_stack_frames(prev_t, curr_t))
+        # Last frame: prev = obs[start+H-1], curr = next_obs[start+H-1]
+        prev_last = _to_tensor(self.obs[start + H - 1])
+        curr_last = _to_tensor(self.next_obs[start + H - 1])
+        frames.append(_stack_frames(prev_last, curr_last))
+        obs_seq = torch.stack(frames)                                  # (H+1, 3*FS, h, w)
 
         actions = torch.from_numpy(self.actions[start:start + H])     # (H, 1)
 
@@ -274,14 +289,15 @@ class TrajectoryDataset(Dataset):
         return {'obs_seq': obs_seq, 'actions': actions, 'states': states}
 
 
-def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1):
+def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack=1):
     """Return dataloaders. horizon=1 -> TransitionDataset; horizon>1 -> TrajectoryDataset."""
     loaders = {}
     for split in ('train', 'val', 'test'):
         if split not in data.get('splits', {}):
             continue
         if horizon > 1:
-            ds = TrajectoryDataset(data, split=split, horizon=horizon)
+            ds = TrajectoryDataset(data, split=split, horizon=horizon,
+                                   frame_stack=frame_stack)
         else:
             ds = TransitionDataset(data, split=split)
         loaders[split] = DataLoader(

@@ -20,6 +20,8 @@ class JEPAConfig:
     # ViT hyperparameters
     image_size: int = 64
     patch_size: int = 8
+    in_chans: int = 3              # 3 * frame_stack (set by JEPAModel.__init__)
+    frame_stack: int = 1           # number of consecutive frames stacked channel-wise
     vit_embed_dim: int = 128
     vit_depth: int = 4
     vit_num_heads: int = 4
@@ -45,9 +47,11 @@ class JEPAModel(nn.Module):
     def __init__(self, config: JEPAConfig):
         super().__init__()
         self.config = config
+        config.in_chans = config.frame_stack * 3
         self.encoder = ViTEncoder(
             image_size=config.image_size,
             patch_size=config.patch_size,
+            in_chans=config.in_chans,
             embed_dim=config.vit_embed_dim,
             depth=config.vit_depth,
             num_heads=config.vit_num_heads,
@@ -99,6 +103,7 @@ class JEPAModel(nn.Module):
             'variant': c.variant, 'latent_dim': c.latent_dim,
             'action_dim': c.action_dim, 'action_latent_dim': c.action_latent_dim,
             'image_size': c.image_size, 'patch_size': c.patch_size,
+            'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,
             'vit_num_heads': c.vit_num_heads,
         }

@@ -14,6 +14,7 @@ model:
   action_latent_dim: 32
   action_encoder: none
   patch_size: 8
+  frame_stack: 2              # stack 2 consecutive frames (6 ch) to encode velocity
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4

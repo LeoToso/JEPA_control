@@ -137,9 +137,16 @@ class Trainer:
         self.epoch         = 0
 
     def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
-        """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*."""
+        """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*.
+
+        With frame_stack > 1, the same frame is duplicated to fill all channels,
+        matching the training-time convention (prev=curr at episode start).
+        """
         import numpy as np
         obs = torch.from_numpy(obs_eq_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        frame_stack = getattr(self.model.config, 'frame_stack', 1)
+        if frame_stack > 1:
+            obs = obs.repeat(1, frame_stack, 1, 1)   # (1, 3*FS, h, w)
         self._obs_eq = obs.to(self.device)
 
     def _get_z_star_exact(self) -> Optional[torch.Tensor]:

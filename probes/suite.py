@@ -6,7 +6,8 @@ import numpy as np
 
 
 def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
-                   env, z_star: np.ndarray, device, config: dict = {}) -> Dict:
+                   env, z_star: np.ndarray, device, config: dict = {},
+                   frame_stack: int = 1) -> Dict:
     results = {}
     eps_lambda = float(config.get('epsilon_lambda', 0.05))
     delta_tol  = float(config.get('delta_tol',      0.05))
@@ -59,23 +60,32 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
         model.eval()
         rng = np.random.RandomState(7)
         thetas = [0.0, 0.05, -0.05, 0.10, -0.10]
+
+        def _encode(obs_np, prev_obs_np=None):
+            """Encode a single obs, optionally stacking with prev for frame_stack > 1."""
+            curr_t = (torch.from_numpy(obs_np).float()
+                      .permute(2, 0, 1)[None].to(device) / 255.0)
+            if frame_stack > 1:
+                prev_t = (curr_t if prev_obs_np is None else
+                          torch.from_numpy(prev_obs_np).float()
+                          .permute(2, 0, 1)[None].to(device) / 255.0)
+                return torch.cat([prev_t, curr_t], dim=1)
+            return curr_t
+
         residuals = {}
         for theta in thetas:
             obs, _, _ = env.reset_to_state(
                 np.array([0., 0., theta, 0.], dtype=np.float32))
-            obs_t = (torch.from_numpy(obs).float()
-                     .permute(2, 0, 1)[None].to(device) / 255.0)
             with torch.no_grad():
-                z0 = model.encoder(obs_t).cpu().numpy()[0]
+                z0 = model.encoder(_encode(obs)).cpu().numpy()[0]
 
             errs = []
             for _ in range(10):
                 u = float(rng.uniform(-1.0, 1.0))
+                prev_obs = obs.copy()
                 obs_next, _, _, _, _ = env.step(u)
-                obs_next_t = (torch.from_numpy(obs_next).float()
-                              .permute(2, 0, 1)[None].to(device) / 255.0)
                 with torch.no_grad():
-                    z1 = model.encoder(obs_next_t).cpu().numpy()[0]
+                    z1 = model.encoder(_encode(obs_next, prev_obs)).cpu().numpy()[0]
                     obs, _, _ = env.reset_to_state(  # reset for next sample
                         np.array([0., 0., theta, 0.], dtype=np.float32))
                 # linear prediction

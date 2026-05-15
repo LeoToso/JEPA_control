@@ -9,7 +9,8 @@ import torch
 def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
                        stabilization_threshold=0.1, settling_threshold=0.05,
                        device=None, z_star=None,
-                       save_frames=False, save_all_obs=False):
+                       save_frames=False, save_all_obs=False,
+                       frame_stack=1):
     if device is None:
         try:    device = next(encoder.parameters()).device
         except: device = torch.device('cpu')
@@ -32,6 +33,7 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
     pending: List    = []
     z_t = np.zeros(d_lat)
     z_prev = None
+    prev_obs_t = None   # for frame stacking: previous step's observation tensor
 
     t = 0
     while t < T:
@@ -39,8 +41,13 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
         if save_all_obs:
             all_obs.append(obs.copy())
         obs_t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
+        if frame_stack > 1:
+            enc_input = torch.cat(
+                [prev_obs_t if prev_obs_t is not None else obs_t, obs_t], dim=1)
+        else:
+            enc_input = obs_t
         with torch.no_grad():
-            z_t = encoder(obs_t).cpu().numpy()[0]
+            z_t = encoder(enc_input).cpu().numpy()[0]
         latent_states.append(z_t.copy())
 
         if t == 0:
@@ -59,6 +66,7 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
                 frames.append({'obs': obs.copy(), 'pred_zs': pred_zs, 't': t})
 
         z_prev = z_t
+        prev_obs_t = obs_t
         u_vec  = pending.pop(0)
         u_s    = float(np.clip(u_vec[0], mpc.action_lb, mpc.action_ub))
         actions.append(np.array([u_s]))
@@ -97,7 +105,8 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
 def evaluate_stabilization_mpc(encoder, mpc, env, n_trials=100, T=200,
                                 init_scale=0.05, stabilization_threshold=0.1,
                                 settling_threshold=0.05, seed=0,
-                                device=None, z_star=None, vis_trial=0):
+                                device=None, z_star=None, vis_trial=0,
+                                frame_stack=1):
     rng = np.random.RandomState(seed)
     successes, ep_lengths, frac_stables, costs = [], [], [], []
     vis_result = None
@@ -114,6 +123,7 @@ def evaluate_stabilization_mpc(encoder, mpc, env, n_trials=100, T=200,
                 settling_threshold=settling_threshold,
                 device=device, z_star=z_star,
                 save_frames=save, save_all_obs=save,
+                frame_stack=frame_stack,
             )
             if save:
                 vis_result = result

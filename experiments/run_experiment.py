@@ -5,6 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 
 
@@ -14,7 +16,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    device=None, skip_if_exists=True, eval_only=False,
                    epochs_override=None, cem_only=False):
 
-    exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}_seed{seed}'
+    fstack_str = f'_fstack{frame_stack}' if frame_stack > 1 else ''
+    exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}{fstack_str}_seed{seed}'
     out_dir    = Path(results_dir) / exp_name
     out_dir.mkdir(parents=True, exist_ok=True)
     results_file = out_dir / 'results.json'
@@ -41,6 +44,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     mpc_cfg   = cfg.get('mpc', {})
     probe_cfg = cfg.get('probes', {})
     env_cfg['frame_skip'] = frame_skip
+    frame_stack = int(model_cfg.get('frame_stack', 1))
 
     # Ground truth
     from ground_truth.cartpole_gt import CartpoleGroundTruth
@@ -75,7 +79,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             eq_noise_std=float(cfg['data'].get('eq_noise_std', 0.001)),
         )
     loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
-                               horizon=horizon)
+                               horizon=horizon, frame_stack=frame_stack)
     print(f'[data] train={len(loaders["train"].dataset)}  '
           f'val={len(loaders["val"].dataset)}  horizon={horizon}')
 
@@ -88,6 +92,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         action_encoder=model_cfg.get('action_encoder', 'none'),
         image_size=env_cfg['image_size'],
         patch_size=model_cfg.get('patch_size', 8),
+        frame_stack=frame_stack,
         vit_embed_dim=model_cfg.get('vit_embed_dim', 128),
         vit_depth=model_cfg.get('vit_depth', 4),
         vit_num_heads=model_cfg.get('vit_num_heads', 4),
@@ -117,6 +122,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     trainer.set_obs_eq(_obs_eq)
     print('[train] z* anchor: using exact equilibrium observation for fp loss')
 
+    # Pre-compute stacked equilibrium tensor — used throughout for z* and encoder calls.
+    # With frame_stack > 1, duplicate the same frame (prev=curr at episode start).
+    def _make_obs_t(obs_np, prev_obs_np=None):
+        """Convert HWC uint8 obs to (1, C, H, W) float tensor; stack with prev if needed."""
+        curr = torch.from_numpy(obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0
+        if frame_stack > 1:
+            prev = (curr if prev_obs_np is None else
+                    torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
+            return torch.cat([prev, curr], dim=1)
+        return curr
+
+    obs_eq_t = _make_obs_t(_obs_eq)   # (1, 3*FS, h, w) — used for z* throughout
+
     saved_model = out_dir / 'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
@@ -131,6 +149,97 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         )
         # Save immediately so --eval-only works even if probes are interrupted
         torch.save(model.state_dict(), out_dir / 'model_final.pt')
+
+    # ── Post-training linear state decoder (evaluation metric for encoder comparison) ──
+    # Train a simple linear z→state decoder on training data, then evaluate:
+    #   • Encoding MSE: how well encoder(obs) captures state (per-component and total)
+    #   • Prediction MSE: how well predictor(encoder(obs_t), u_t) predicts next state
+    # This standardised metric enables apples-to-apples comparison across experiments.
+    sd_path = out_dir / 'state_decoder.pt'
+    sd_results_path = out_dir / 'state_decoder_results.json'
+    state_decoder_results = {}
+    sd_skip = eval_only and sd_path.exists()
+    state_decoder = nn.Linear(model.config.latent_dim, 4).to(device)
+    if sd_skip:
+        state_decoder.load_state_dict(torch.load(sd_path, map_location=device))
+        print(f'[state_decoder] --eval-only: loaded from {sd_path}')
+    else:
+        print('\n[state_decoder] Training linear state decoder (50 epochs, frozen encoder)...')
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad_(False)
+        dec_opt = torch.optim.Adam(state_decoder.parameters(), lr=1e-3, weight_decay=1e-5)
+        for _ep in range(50):
+            state_decoder.train()
+            for batch in loaders['train']:
+                obs_seq  = batch['obs_seq'].to(device)
+                states_b = batch['states'].to(device).float()
+                _B, _H1, _C, _h, _w = obs_seq.shape
+                with torch.no_grad():
+                    _z = model.encoder(obs_seq.view(_B * _H1, _C, _h, _w))
+                _z_v = _z.view(_B, _H1, -1)
+                _loss = sum(
+                    F.mse_loss(state_decoder(_z_v[:, _k]), states_b[:, _k])
+                    for _k in range(_H1)
+                ) / _H1
+                dec_opt.zero_grad(); _loss.backward(); dec_opt.step()
+            if (_ep + 1) % 10 == 0:
+                print(f'  [state_decoder] epoch {_ep+1}/50  loss={_loss.item():.4f}')
+        for p in model.parameters():
+            p.requires_grad_(True)
+        torch.save(state_decoder.state_dict(), sd_path)
+
+    state_decoder.eval()
+    model.eval()
+    _state_names = ['x', 'x_dot', 'theta', 'theta_dot']
+    _enc_comp  = [[] for _ in range(4)]
+    _pred_comp = [[] for _ in range(4)]
+    _enc_tot, _pred_tot = [], []
+    with torch.no_grad():
+        for batch in loaders['val']:
+            _obs  = batch['obs_seq'].to(device)
+            _st   = batch['states'].to(device).float()
+            _acts = batch['actions'].to(device)
+            _B, _H1, _C, _h, _w = _obs.shape
+            _H = _H1 - 1
+            _z_flat = model.encoder(_obs.view(_B * _H1, _C, _h, _w))
+            _z_v = _z_flat.view(_B, _H1, -1)
+            for _k in range(_H1):
+                _s_hat = state_decoder(_z_v[:, _k])
+                _dsq   = (_s_hat - _st[:, _k]).pow(2)
+                for _j in range(4):
+                    _enc_comp[_j].append(_dsq[:, _j].mean().item())
+                _enc_tot.append(_dsq.mean().item())
+            for _k in range(_H):
+                _a_k   = model.action_encoder(_acts[:, _k])
+                _z_hat = model.predictor(_z_v[:, _k], _a_k)
+                _s_hat = state_decoder(_z_hat)
+                _dsq   = (_s_hat - _st[:, _k + 1]).pow(2)
+                for _j in range(4):
+                    _pred_comp[_j].append(_dsq[:, _j].mean().item())
+                _pred_tot.append(_dsq.mean().item())
+
+    _enc_mse  = float(np.mean(_enc_tot))
+    _pred_mse = float(np.mean(_pred_tot))
+    _enc_c    = [float(np.mean(c)) for c in _enc_comp]
+    _pred_c   = [float(np.mean(c)) for c in _pred_comp]
+
+    print(f'\n[state_decoder] ── Evaluation (linear decoder ∘ encoder) ──')
+    print(f'  Encoding MSE  (z→state):                  {_enc_mse:.4f}')
+    print(f'  Prediction MSE (predictor(z,u)→state):    {_pred_mse:.4f}')
+    print(f'  Per-component:')
+    for _j, _n in enumerate(_state_names):
+        print(f'    {_n:12s}  enc={_enc_c[_j]:.4f}  pred={_pred_c[_j]:.4f}')
+
+    state_decoder_results = {
+        'encoding_mse':   _enc_mse,
+        'prediction_mse': _pred_mse,
+        'encoding_mse_per_component':   {n: _enc_c[j]  for j, n in enumerate(_state_names)},
+        'prediction_mse_per_component': {n: _pred_c[j] for j, n in enumerate(_state_names)},
+    }
+    import json as _json
+    with open(sd_results_path, 'w') as _f:
+        _json.dump(state_decoder_results, _f, indent=2)
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
@@ -183,8 +292,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     )
     model.eval()
     obs_eq, _, _ = env.reset_to_state(np.zeros(4))
-    obs_eq_t = (torch.from_numpy(obs_eq).float()
-                .permute(2, 0, 1)[None].to(device) / 255.0)
+    # obs_eq_t already computed from _obs_eq above; recompute here from fresh env obs
+    # to confirm they match (both are the equilibrium image — should be identical).
+    obs_eq_t = _make_obs_t(obs_eq)   # (1, 3*FS, h, w)
     with torch.no_grad():
         z_star = model.encoder(obs_eq_t).cpu().numpy()[0]
     print(f'[control] z_star norm: {np.linalg.norm(z_star):.3f}')
@@ -242,6 +352,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         A_jac=A_jac, B_jac=B_jac, gt=gt,
         model=model, env=env, z_star=z_star,
         device=device, config=probe_cfg,
+        frame_stack=frame_stack,
     )
 
     # MPC setup
@@ -318,15 +429,16 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 x0 = rng_enc.uniform(-init_scale, init_scale, 4).astype(np.float32)
                 obs, state, _ = env.reset_to_state(x0)
                 done = False
+                prev_obs_e = None
                 states_e, actions_e, all_obs_e = [state.copy()], [], []
                 for _ in range(T_rollout):
                     all_obs_e.append(obs.copy())
-                    obs_t = (torch.from_numpy(obs).float()
-                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    obs_t = _make_obs_t(obs, prev_obs_e)
                     with torch.no_grad():
                         x_hat = state_head(model.encoder(obs_t)).cpu().numpy()[0]
                     u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
                     actions_e.append([u])
+                    prev_obs_e = obs.copy()
                     obs, state, _, done, _ = env.step(u)
                     states_e.append(state.copy())
                     if done:
@@ -381,17 +493,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 x0 = rng_enc_th.uniform(-init_scale, init_scale, 4).astype(np.float32)
                 obs, state, _ = env.reset_to_state(x0)
                 done = False
+                prev_obs_th = None
                 states_th, actions_th, all_obs_th = [state.copy()], [], []
                 for _ in range(T_rollout):
                     all_obs_th.append(obs.copy())
-                    obs_t = (torch.from_numpy(obs).float()
-                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    obs_t = _make_obs_t(obs, prev_obs_th)
                     with torch.no_grad():
                         x_hat_full = state_head(model.encoder(obs_t)).cpu().numpy()[0]
                     # Only use visual angle/angular-velocity estimates; zero cart x and ẋ
                     x_hat = np.array([0.0, 0.0, x_hat_full[2], x_hat_full[3]], dtype=np.float32)
                     u = float(np.clip((-K_gt @ x_hat)[0], action_lb, action_ub))
                     actions_th.append([u])
+                    prev_obs_th = obs.copy()
                     obs, state, _, done, _ = env.step(u)
                     states_th.append(state.copy())
                     if done:
@@ -450,17 +563,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 x0 = rng_lat.uniform(-init_scale, init_scale, 4).astype(np.float32)
                 obs, state, _ = env.reset_to_state(x0)
                 done = False
+                prev_obs_lat = None
                 states_lat, actions_lat, all_obs_lat = [state.copy()], [], []
                 for _ in range(T_rollout):
                     all_obs_lat.append(obs.copy())
-                    obs_t = (torch.from_numpy(obs).float()
-                             .permute(2, 0, 1)[None].to(device) / 255.0)
+                    obs_t = _make_obs_t(obs, prev_obs_lat)
                     with torch.no_grad():
                         z_t_lat = model.encoder(obs_t).cpu().numpy()[0]
                     u = float(np.clip(
                         (-K_lat @ (z_t_lat - z_star) + u_ff_lin)[0],
                         action_lb, action_ub))
                     actions_lat.append([u])
+                    prev_obs_lat = obs.copy()
                     obs, state, _, done, _ = env.step(u)
                     states_lat.append(state.copy())
                     if done:
@@ -527,6 +641,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                     encoder=model.encoder, mpc=mpc_lin, env=env,
                     n_trials=n_trials, T=T_rollout, init_scale=init_scale,
                     seed=seed, device=device, z_star=z_star, vis_trial=0,
+                    frame_stack=frame_stack,
                 )
                 print(f'[control] Linear MPC (Q={q_label}): success={cr_lin["success_rate"]:.3f}'
                       f'  ep_len={cr_lin["mean_episode_length"]:.1f}'
@@ -571,6 +686,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             encoder=model.encoder, mpc=cem_lin, env=env,
             n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
             seed=seed, device=device, z_star=z_star, vis_trial=0,
+            frame_stack=frame_stack,
         )
         print(f'[control] CEM-linear:    success={cr_cem_lin["success_rate"]:.3f}'
               f'  ep_len={cr_cem_lin["mean_episode_length"]:.1f}'
@@ -606,6 +722,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             encoder=model.encoder, mpc=cem_nl, env=env,
             n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
             seed=seed, device=device, z_star=z_star, vis_trial=0,
+            frame_stack=frame_stack,
         )
         print(f'[control] CEM-nonlinear: success={cr_cem_nl["success_rate"]:.3f}'
               f'  ep_len={cr_cem_nl["mean_episode_length"]:.1f}'
@@ -644,6 +761,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 encoder=model.encoder, mpc=grad_mpc, env=env,
                 n_trials=n_grad, T=T_rollout, init_scale=init_scale,
                 seed=seed, device=device, z_star=z_star, vis_trial=0,
+                frame_stack=frame_stack,
             )
             print(f'[control] Grad MPC:   success={cr_grad["success_rate"]:.3f}'
                   f'  ep_len={cr_grad["mean_episode_length"]:.1f}'
@@ -693,6 +811,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 encoder=model.encoder, mpc=grad_mpc_sh, env=env,
                 n_trials=n_grad, T=T_rollout, init_scale=init_scale,
                 seed=seed, device=device, z_star=z_star, vis_trial=0,
+                frame_stack=frame_stack,
             )
             print(f'[control] Grad MPC (SH): success={cr_grad_sh["success_rate"]:.3f}'
                   f'  ep_len={cr_grad_sh["mean_episode_length"]:.1f}'
@@ -723,8 +842,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     results = {
         'experiment': {'name': exp_name, 'variant': encoder_variant,
-                       'dataset': dataset_name, 'seed': seed},
+                       'dataset': dataset_name, 'seed': seed,
+                       'frame_stack': frame_stack},
         'model':   {'n_params': n_params},
+        'state_decoder': state_decoder_results,
         'probes':  probe_results,
         'control': ctrl_results,
         'jacobian':{'rho': rho_jac, 'fixed_point_error': fp_err},
