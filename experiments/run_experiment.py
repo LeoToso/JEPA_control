@@ -16,23 +16,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    device=None, skip_if_exists=True, eval_only=False,
                    epochs_override=None, cem_only=False):
 
-    fstack_str = f'_fstack{frame_stack}' if frame_stack > 1 else ''
-    exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}{fstack_str}_seed{seed}'
-    out_dir    = Path(results_dir) / exp_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    results_file = out_dir / 'results.json'
-
-    if skip_if_exists and results_file.exists():
-        print(f'[skip] {exp_name} already exists.')
-        with open(results_file) as f:
-            return json.load(f)
-
-    print(f'\n{"="*60}\nEXPERIMENT: {exp_name}\n{"="*60}')
     t_start = time.time()
 
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Device: {device}')
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
     with open(config_path) as f:
@@ -45,6 +32,20 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     probe_cfg = cfg.get('probes', {})
     env_cfg['frame_skip'] = frame_skip
     frame_stack = int(model_cfg.get('frame_stack', 1))
+
+    fstack_str = f'_fstack{frame_stack}' if frame_stack > 1 else ''
+    exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}{fstack_str}_seed{seed}'
+    out_dir    = Path(results_dir) / exp_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_file = out_dir / 'results.json'
+
+    if skip_if_exists and results_file.exists():
+        print(f'[skip] {exp_name} already exists.')
+        with open(results_file) as f:
+            return json.load(f)
+
+    print(f'\n{"="*60}\nEXPERIMENT: {exp_name}\n{"="*60}')
+    print(f'Device: {device}')
 
     # Ground truth
     from ground_truth.cartpole_gt import CartpoleGroundTruth
