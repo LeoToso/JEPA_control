@@ -33,7 +33,7 @@ training:
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 10.0          # was 2.0 — stronger fixed-point to reduce fp_err at eval
+  lambda_fp: 50.0          # was 10.0 — fp_err=0.045/step caused unstable Jacobian & CEM failure
   lambda_spec: 5.0
   lambda_PBH: 1.0
   jacobian_every: 20
