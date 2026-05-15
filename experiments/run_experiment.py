@@ -346,7 +346,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # At z_fp the model predicts f(z_fp, u_ff) ≈ z_fp, giving CEM an achievable target.
     try:
         _rhs_fp  = c_drift + B_jac.flatten() * u_ff_lin
-        _dz_fp   = np.linalg.solve(np.eye(d) - A_jac, _rhs_fp)
+        _dz_fp   = np.linalg.solve(np.eye(A_jac.shape[0]) - A_jac, _rhs_fp)
         z_fp     = z_star + _dz_fp
         with torch.no_grad():
             _z_fp_t  = torch.tensor(z_fp, dtype=torch.float32, device=device).unsqueeze(0)
