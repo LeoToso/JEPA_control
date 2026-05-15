@@ -703,41 +703,14 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
-    # ── CEM sweep (linear + nonlinear dynamics) ───────────────────────────────
-    # Configs vary: horizon, cost matrix, planning target (z_star vs z_fp),
-    # init_std (default 3.0 vs 0.5 / 1.0), and n_iter (default 5 vs 20).
+    # ── CEM sweep ─────────────────────────────────────────────────────────────
+    # Keeping only the best-performing config from the hyperparameter sweep:
+    # H=10, Q_lat, z_fp target, σ=0.5, n_iter=20 (linear trial-0 lasted 146 steps,
+    # smoothest actions; best average ep_len across the σ/horizon grid).
     _cem_sweep = [
-        # ── z_star target, default σ ──────────────────────────────────────
-        dict(tag='baseline',       horizon=cem_horizon, Q=Q_lqr, Qf=mpc_Qf_mult*Q_lqr,
-             zs=z_star, std=cem_std, ni=cem_n_iter,
-             desc=f'H={cem_horizon} Q=I  z* σ={cem_std:.1f}'),
-        dict(tag='H5_Qlat',        horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_star, std=cem_std, ni=cem_n_iter,
-             desc=f'H=5  Qlat z* σ={cem_std:.1f}'),
-        dict(tag='H10_Qlat',       horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_star, std=cem_std, ni=cem_n_iter,
-             desc=f'H=10 Qlat z* σ={cem_std:.1f}'),
-        # ── z_fp target, default σ ────────────────────────────────────────
-        dict(tag='H5_Qlat_fp',     horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=cem_std, ni=cem_n_iter,
-             desc=f'H=5  Qlat zfp σ={cem_std:.1f}'),
-        dict(tag='H10_Qlat_fp',    horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=cem_std, ni=cem_n_iter,
-             desc=f'H=10 Qlat zfp σ={cem_std:.1f}'),
-        # ── z_fp target, σ=0.5, n_iter=20 ────────────────────────────────
-        dict(tag='H5_Qlat_fp_s05', horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=0.5,     ni=20,
-             desc='H=5  Qlat zfp σ=0.5 i20'),
-        dict(tag='H10_Qlat_fp_s05',horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=0.5,     ni=20,
+        dict(tag='H10_Qlat_fp_s05', horizon=10, Q=Q_lat, Qf=Q_lat,
+             zs=z_fp, std=0.5, ni=20,
              desc='H=10 Qlat zfp σ=0.5 i20'),
-        # ── z_fp target, σ=1.0, n_iter=20 ────────────────────────────────
-        dict(tag='H5_Qlat_fp_s1',  horizon=5,  Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=1.0,     ni=20,
-             desc='H=5  Qlat zfp σ=1.0 i20'),
-        dict(tag='H10_Qlat_fp_s1', horizon=10, Q=Q_lat, Qf=Q_lat,
-             zs=z_fp,   std=1.0,     ni=20,
-             desc='H=10 Qlat zfp σ=1.0 i20'),
     ]
 
     from control.cem import CEMLatentPlanner
