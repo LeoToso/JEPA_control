@@ -242,19 +242,20 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     with open(sd_results_path, 'w') as _f:
         _json.dump(state_decoder_results, _f, indent=2)
 
-    # ── Q_lat: physically-motivated latent cost from decoder weights ──────────
-    # If state ≈ W z + b, then ||state||²_Q_phys = (z-z*)^T W^T Q_phys W (z-z*),
-    # so Q_lat = W^T Q_phys W. Computed once from frozen decoder; never called at runtime.
+    # ── Q_lat: evaluation diagnostic only — NOT used in any planner ─────────────
+    # Measures how well the encoder's latent geometry aligns with physical cost.
+    # Q_lat = W^T Q_phys W from the state decoder weight matrix.
+    # This is evaluation-only information; the planner uses Q = I (identity).
     W_dec = state_decoder.weight.detach().cpu().numpy()   # (4, d)
     _Q_phys_cem = np.diag([50., 0.1, 100., 1.])
-    _Q_lat_raw  = W_dec.T @ _Q_phys_cem @ W_dec           # (d, d)
+    _Q_lat_raw  = W_dec.T @ _Q_phys_cem @ W_dec
     _tr_lat     = float(np.trace(_Q_lat_raw))
     _d          = W_dec.shape[1]
-    Q_lat       = _Q_lat_raw * (_d / max(_tr_lat, 1e-6))  # normalise: mean eigenvalue = 1
-    np.save(out_dir / 'Q_lat.npy', Q_lat)
-    _eig_lat = np.linalg.eigvalsh(Q_lat)
-    print(f'[control] Q_lat from decoder: raw trace={_tr_lat:.4f}  '
-          f'normed eig range [{_eig_lat.min():.3f}, {_eig_lat.max():.3f}]')
+    Q_lat_diag  = _Q_lat_raw * (_d / max(_tr_lat, 1e-6))  # renamed: never passed to planner
+    np.save(out_dir / 'Q_lat.npy', Q_lat_diag)
+    _eig_lat = np.linalg.eigvalsh(Q_lat_diag)
+    print(f'[eval]    Q_lat alignment: raw trace={_tr_lat:.4f}  '
+          f'eig range [{_eig_lat.min():.3f}, {_eig_lat.max():.3f}]  (diagnostic only)')
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
@@ -704,13 +705,14 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
     # ── CEM sweep ─────────────────────────────────────────────────────────────
-    # Keeping only the best-performing config from the hyperparameter sweep:
-    # H=10, Q_lat, z_fp target, σ=0.5, n_iter=20 (linear trial-0 lasted 146 steps,
-    # smoothest actions; best average ep_len across the σ/horizon grid).
+    # Q = I (identity) is the principled JEPA cost: the encoder is trained so that
+    # ||z - z*||² directly measures deviation from the upright equilibrium.
+    # Q_lat (derived from the state decoder) was evaluated but uses evaluation-only
+    # information and is not permitted in the planner.
     _cem_sweep = [
-        dict(tag='H10_Qlat_fp_s05', horizon=10, Q=Q_lat, Qf=Q_lat,
+        dict(tag='H10_QI_zfp_s05', horizon=10, Q=np.eye(d), Qf=np.eye(d),
              zs=z_fp, std=0.5, ni=20,
-             desc='H=10 Qlat zfp σ=0.5 i20'),
+             desc='H=10 Q=I zfp σ=0.5 i20'),
     ]
 
     from control.cem import CEMLatentPlanner
@@ -905,7 +907,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     np.save(out_dir / 'B_jac.npy',  B_jac)
     np.save(out_dir / 'z_star.npy', z_star)
     np.save(out_dir / 'z_fp.npy',   z_fp)
-    np.save(out_dir / 'Q_lat.npy',  Q_lat)
+    np.save(out_dir / 'Q_lat.npy',  Q_lat_diag)
     if state_head is not None:
         torch.save(state_head.state_dict(), out_dir / 'state_head.pt')
 
