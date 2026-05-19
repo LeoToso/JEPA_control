@@ -714,14 +714,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
     # ── CEM sweep ─────────────────────────────────────────────────────────────
-    # Q = I (identity) is the principled JEPA cost: the encoder is trained so that
-    # ||z - z*||² directly measures deviation from the upright equilibrium.
-    # Q_lat (derived from the state decoder) was evaluated but uses evaluation-only
-    # information and is not permitted in the planner.
+    # Q_lat = W^T Q_phys W focuses cost on physically meaningful latent directions.
+    # Q=I is the pure JEPA cost; Q_lat aligns with the known physical objective.
+    _Q_lat_10 = Q_lat_diag * (10.0 / max(float(np.trace(Q_lat_diag)), 1e-6))
     _cem_sweep = [
-        dict(tag='H10_QI_zfp_s05', horizon=10, Q=np.eye(d), Qf=np.eye(d),
-             zs=z_fp, std=0.5, ni=20,
-             desc='H=10 Q=I zfp σ=0.5 i20'),
+        dict(tag='H10_QI_zs_s3',   horizon=10, Q=np.eye(d), Qf=np.eye(d),
+             zs=z_star, std=3.0, ni=20,
+             desc='H=10 Q=I z* σ=3 i20'),
+        dict(tag='H10_Qlat_zs_s3', horizon=10, Q=Q_lat_diag, Qf=_Q_lat_10,
+             zs=z_star, std=3.0, ni=20,
+             desc='H=10 Qlat z* σ=3 i20'),
+        dict(tag='H25_Qlat_zs_s3', horizon=25, Q=Q_lat_diag, Qf=_Q_lat_10,
+             zs=z_star, std=3.0, ni=20,
+             desc='H=25 Qlat z* σ=3 i20'),
     ]
 
     from control.cem import CEMLatentPlanner
