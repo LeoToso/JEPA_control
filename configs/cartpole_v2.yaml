@@ -39,7 +39,7 @@ training:
   jacobian_every: 20
   use_vicreg: false
   vicreg_lambda: 5.0
-  lambda_sigreg: 0.0       # disabled — collapse prevented by pred_loss + inv_loss
+  lambda_sigreg: 5.0       # shape-only: applied to batch-mean-centered z to prevent dimensional collapse
   sigreg_num_slices: 128   # 128 slices sufficient for D=32; paper uses 1024 for large D
   sigreg_num_points: 17    # frequency evaluation points per slice
   vicreg_nu: 1.0

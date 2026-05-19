@@ -241,12 +241,15 @@ class Trainer:
             info['vicreg_total'] = vic_loss.item()
 
         # SIGreg: Sketched Isotropic Gaussian Regularisation (LeJEPA, 2025).
-        # Enforces z ~ N(0,I) via Epps-Pulley test on random 1-D projections.
-        # Prevents collapse without stop-gradient or teacher networks.
+        # Enforces the *shape* of the encoder distribution is isotropic Gaussian.
+        # Center by batch mean first so the test is agnostic to where z_star sits
+        # in latent space — we care about full-rank coverage, not zero mean.
         if self.lambda_sigreg > 0:
             from losses.sigreg import sigreg_loss
+            z0 = z_all[:, 0]
+            z0_centered = z0 - z0.mean(dim=0, keepdim=True)
             sig_loss = sigreg_loss(
-                z_all[:, 0],
+                z0_centered,
                 num_slices=self.sigreg_num_slices,
                 num_points=self.sigreg_num_points,
             )
