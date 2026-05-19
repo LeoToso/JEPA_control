@@ -222,7 +222,8 @@ class TrajectoryDataset(Dataset):
     channel-wise. At the start of a window (k=0), prev = curr (duplicate).
     """
 
-    def __init__(self, data, split='train', horizon: int = 20, frame_stack: int = 1):
+    def __init__(self, data, split='train', horizon: int = 20, frame_stack: int = 1,
+                 obs_eq: np.ndarray = None, n_eq_selfloop: int = 0):
         splits = data.get('splits', {})
         idx    = (splits[split] if splits and split in splits
                   else np.arange(len(data['obs'])))
@@ -236,7 +237,28 @@ class TrajectoryDataset(Dataset):
                            else np.arange(len(idx), dtype=np.int32))
         self.horizon     = horizon
         self.frame_stack = frame_stack
+        if obs_eq is not None and n_eq_selfloop > 0:
+            self._inject_eq_selfloops(obs_eq, n_eq_selfloop)
         self.valid_starts = self._find_valid_starts()
+
+    def _inject_eq_selfloops(self, obs_eq_np: np.ndarray, n: int) -> None:
+        """Append n identical equilibrium self-loop transitions.
+
+        Each transition has obs = next_obs = obs_eq_np, action = 0, state = 0.
+        All share one new episode_id so _find_valid_starts sees n-H valid windows.
+        pred_loss on these windows forces f(z_star, 0) ≈ z_star directly.
+        """
+        eq_img = np.tile(obs_eq_np[None], (n, 1, 1, 1)).astype(np.uint8)
+        eq_act = np.zeros((n, 1), dtype=np.float32)
+        eq_st  = np.zeros((n, 4), dtype=np.float32)
+        new_ep = int(self.ep_ids.max()) + 1
+        eq_ep  = np.full(n, new_ep, dtype=np.int32)
+        self.obs         = np.concatenate([self.obs,         eq_img], axis=0)
+        self.next_obs    = np.concatenate([self.next_obs,    eq_img], axis=0)
+        self.actions     = np.concatenate([self.actions,     eq_act], axis=0)
+        self.states      = np.concatenate([self.states,      eq_st],  axis=0)
+        self.next_states = np.concatenate([self.next_states, eq_st],  axis=0)
+        self.ep_ids      = np.concatenate([self.ep_ids,      eq_ep],  axis=0)
 
     def _find_valid_starts(self):
         H  = self.horizon
@@ -289,7 +311,8 @@ class TrajectoryDataset(Dataset):
         return {'obs_seq': obs_seq, 'actions': actions, 'states': states}
 
 
-def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack=1):
+def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack=1,
+                     obs_eq: np.ndarray = None, n_eq_selfloop: int = 0):
     """Return dataloaders. horizon=1 -> TransitionDataset; horizon>1 -> TrajectoryDataset."""
     loaders = {}
     for split in ('train', 'val', 'test'):
@@ -297,7 +320,9 @@ def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack
             continue
         if horizon > 1:
             ds = TrajectoryDataset(data, split=split, horizon=horizon,
-                                   frame_stack=frame_stack)
+                                   frame_stack=frame_stack,
+                                   obs_eq=(obs_eq if split == 'train' else None),
+                                   n_eq_selfloop=(n_eq_selfloop if split == 'train' else 0))
         else:
             ds = TransitionDataset(data, split=split)
         loaders[split] = DataLoader(

@@ -56,6 +56,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     )
     print(f'[GT] unstable eigenvalues: {np.round(gt.unstable_eigenvalues, 4)}')
 
+    # Equilibrium observation — needed both for self-loop injection and fp-loss anchor.
+    # Create early so it can be passed to make_dataloaders.
+    from envs.cartpole_visual import ContinuousCartpoleVisual as _CVEnv
+    _eq_env = _CVEnv(frame_skip=frame_skip, image_size=env_cfg['image_size'],
+                     mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
+                     pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
+                     action_range=tuple(env_cfg['action_range']))
+    _obs_eq, _, _ = _eq_env.reset_to_state(np.zeros(4, dtype=np.float32))
+    _eq_env.close()
+    n_eq_selfloop = int(cfg['data'].get('n_eq_selfloop', 0))
+    if n_eq_selfloop > 0:
+        print(f'[data] Self-loop injection: n_eq_selfloop={n_eq_selfloop}')
+
     # Dataset
     from data.dataset import load_dataset, make_dataloaders, generate_dataset
     h5_path = Path(data_dir) / f'cartpole_v2_{dataset_name}_fs{frame_skip}_seed{seed}.h5'
@@ -80,9 +93,11 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             eq_noise_std=float(cfg['data'].get('eq_noise_std', 0.001)),
         )
     loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
-                               horizon=horizon, frame_stack=frame_stack)
+                               horizon=horizon, frame_stack=frame_stack,
+                               obs_eq=_obs_eq, n_eq_selfloop=n_eq_selfloop)
     print(f'[data] train={len(loaders["train"].dataset)}  '
-          f'val={len(loaders["val"].dataset)}  horizon={horizon}')
+          f'val={len(loaders["val"].dataset)}  horizon={horizon}'
+          + (f'  (+{n_eq_selfloop} eq-selfloops)' if n_eq_selfloop > 0 else ''))
 
     # Model
     from models.jepa import make_jepa, JEPAConfig
@@ -113,13 +128,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # Give trainer the exact equilibrium image so fp loss trains at encoder(obs_eq),
     # not at an EMA over near-eq batch samples. Eliminates train/eval z* mismatch.
-    from envs.cartpole_visual import ContinuousCartpoleVisual as _CVEnv
-    _eq_env = _CVEnv(frame_skip=frame_skip, image_size=env_cfg['image_size'],
-                     mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
-                     pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
-                     action_range=tuple(env_cfg['action_range']))
-    _obs_eq, _, _ = _eq_env.reset_to_state(np.zeros(4, dtype=np.float32))
-    _eq_env.close()
+    # (_obs_eq already created above before make_dataloaders)
     trainer.set_obs_eq(_obs_eq)
     print('[train] z* anchor: using exact equilibrium observation for fp loss')
 
