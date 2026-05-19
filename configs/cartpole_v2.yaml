@@ -33,13 +33,13 @@ training:
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 1.0           # small regularizer only — self-loop pred_loss is the main fp signal
+  lambda_fp: 0.0           # disabled — self-loop pred_loss enforces f(z_star,0)=z_star directly
   lambda_spec: 0.0
   lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
   jacobian_every: 20
   use_vicreg: false
   vicreg_lambda: 5.0
-  lambda_sigreg: 5.0       # was 25.0 — lighter collapse guard; allows more structured representation
+  lambda_sigreg: 0.0       # disabled — collapse prevented by pred_loss + inv_loss
   sigreg_num_slices: 128   # 128 slices sufficient for D=32; paper uses 1024 for large D
   sigreg_num_points: 17    # frequency evaluation points per slice
   vicreg_nu: 1.0
