@@ -242,12 +242,12 @@ class Trainer:
 
         # SIGreg: Sketched Isotropic Gaussian Regularisation (LeJEPA, 2025).
         # Enforces the *shape* of the encoder distribution is isotropic Gaussian.
-        # Center by batch mean first so the test is agnostic to where z_star sits
-        # in latent space — we care about full-rank coverage, not zero mean.
+        # Detach the batch mean before subtracting: treats the mean as a constant
+        # offset so gradients flow through z0 directly without cancellation.
         if self.lambda_sigreg > 0:
             from losses.sigreg import sigreg_loss
             z0 = z_all[:, 0]
-            z0_centered = z0 - z0.mean(dim=0, keepdim=True)
+            z0_centered = z0 - z0.mean(dim=0, keepdim=True).detach()
             sig_loss = sigreg_loss(
                 z0_centered,
                 num_slices=self.sigreg_num_slices,
