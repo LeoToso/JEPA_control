@@ -35,14 +35,21 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     fstack_str = f'_fstack{frame_stack}' if frame_stack > 1 else ''
     exp_name   = f'v2_{encoder_variant}_{dataset_name}_fs{frame_skip}{fstack_str}_seed{seed}'
-    out_dir    = Path(results_dir) / exp_name
+    # ckpt_dir: stable path for model weights — --eval-only always finds the latest model here.
+    # out_dir:  timestamped path for all eval outputs (results, frames, videos, npy arrays).
+    ckpt_dir   = Path(results_dir) / exp_name
+    timestamp  = time.strftime('%Y%m%d_%H%M%S')
+    out_dir    = ckpt_dir / timestamp
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_file = out_dir / 'results.json'
 
-    if skip_if_exists and results_file.exists():
-        print(f'[skip] {exp_name} already exists.')
-        with open(results_file) as f:
-            return json.load(f)
+    if skip_if_exists and (ckpt_dir / 'model_final.pt').exists() and not eval_only:
+        print(f'[skip] {exp_name} already trained. Use --force to retrain.')
+        latest = sorted(ckpt_dir.glob('*/results.json'))
+        if latest:
+            with open(latest[-1]) as f:
+                return json.load(f)
 
     print(f'\n{"="*60}\nEXPERIMENT: {exp_name}\n{"="*60}')
     print(f'Device: {device}')
@@ -124,7 +131,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     if epochs_override is not None:
         train_cfg_exp['epochs'] = int(epochs_override)
     trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
-                      save_dir=str(out_dir / 'checkpoints'), device=device, seed=seed)
+                      save_dir=str(ckpt_dir / 'checkpoints'), device=device, seed=seed)
 
     # Give trainer the exact equilibrium image so fp loss trains at encoder(obs_eq),
     # not at an EMA over near-eq batch samples. Eliminates train/eval z* mismatch.
@@ -145,7 +152,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     obs_eq_t = _make_obs_t(_obs_eq)   # (1, 3*FS, h, w) — used for z* throughout
 
-    saved_model = out_dir / 'model_final.pt'
+    saved_model = ckpt_dir / 'model_final.pt'
     if eval_only and saved_model.exists():
         print(f'[train] --eval-only: loading {saved_model}')
         model.load_state_dict(torch.load(saved_model, map_location=device), strict=False)
@@ -158,14 +165,14 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
         )
         # Save immediately so --eval-only works even if probes are interrupted
-        torch.save(model.state_dict(), out_dir / 'model_final.pt')
+        torch.save(model.state_dict(), ckpt_dir / 'model_final.pt')
 
     # ── Post-training linear state decoder (evaluation metric for encoder comparison) ──
     # Train a simple linear z→state decoder on training data, then evaluate:
     #   • Encoding MSE: how well encoder(obs) captures state (per-component and total)
     #   • Prediction MSE: how well predictor(encoder(obs_t), u_t) predicts next state
     # This standardised metric enables apples-to-apples comparison across experiments.
-    sd_path = out_dir / 'state_decoder.pt'
+    sd_path = ckpt_dir / 'state_decoder.pt'
     sd_results_path = out_dir / 'state_decoder_results.json'
     state_decoder_results = {}
     sd_skip = eval_only and sd_path.exists()
@@ -268,7 +275,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
-    sh_path = out_dir / 'state_head.pt'
+    sh_path = ckpt_dir / 'state_head.pt'
     if cem_only:
         print('[probe] --cem-only: skipping state probe training')
         state_head = None
@@ -915,15 +922,16 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     env.close()
 
-    # Save
-    torch.save(model.state_dict(), out_dir / 'model_final.pt')
+    # Save model weights to stable ckpt_dir; eval artifacts to timestamped out_dir
+    torch.save(model.state_dict(), ckpt_dir / 'model_final.pt')
+    if state_head is not None:
+        torch.save(state_head.state_dict(), ckpt_dir / 'state_head.pt')
     np.save(out_dir / 'A_jac.npy',  A_jac)
     np.save(out_dir / 'B_jac.npy',  B_jac)
     np.save(out_dir / 'z_star.npy', z_star)
     np.save(out_dir / 'z_fp.npy',   z_fp)
     np.save(out_dir / 'Q_lat.npy',  Q_lat_diag)
-    if state_head is not None:
-        torch.save(state_head.state_dict(), out_dir / 'state_head.pt')
+    print(f'[done] eval artifacts saved to {out_dir}')
 
     results = {
         'experiment': {'name': exp_name, 'variant': encoder_variant,
