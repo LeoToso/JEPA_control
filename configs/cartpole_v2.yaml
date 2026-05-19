@@ -33,9 +33,9 @@ training:
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 50.0          # was 10.0 — fp_err=0.045/step caused unstable Jacobian & CEM failure
+  lambda_fp: 30.0          # was 50.0 — 50 crushed B_jac (0.142→0.056) making system unactuatable
   lambda_spec: 5.0
-  lambda_PBH: 1.0
+  lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
   jacobian_every: 20
   use_vicreg: false
   vicreg_lambda: 5.0
