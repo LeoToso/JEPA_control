@@ -89,6 +89,6 @@ data:
   lqr_init_range: 0.10
   lqr_noise_std: 0.1
   n_equilibrium: 500        # was 5000 — fewer near-zero-action samples that enable shortcuts
-  n_eq_selfloop: 2000       # true zero-velocity self-loop transitions injected into train set
+  n_eq_selfloop: 500        # true zero-velocity self-loop transitions injected into train set
   eq_init_range: 0.002
   eq_noise_std: 0.001

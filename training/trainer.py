@@ -241,15 +241,12 @@ class Trainer:
             info['vicreg_total'] = vic_loss.item()
 
         # SIGreg: Sketched Isotropic Gaussian Regularisation (LeJEPA, 2025).
-        # Enforces the *shape* of the encoder distribution is isotropic Gaussian.
-        # Detach the batch mean before subtracting: treats the mean as a constant
-        # offset so gradients flow through z0 directly without cancellation.
+        # Enforces z ~ N(0,I) via Epps-Pulley test on random 1-D projections.
+        # Prevents collapse without stop-gradient or teacher networks.
         if self.lambda_sigreg > 0:
             from losses.sigreg import sigreg_loss
-            z0 = z_all[:, 0]
-            z0_centered = z0 - z0.mean(dim=0, keepdim=True).detach()
             sig_loss = sigreg_loss(
-                z0_centered,
+                z_all[:, 0],
                 num_slices=self.sigreg_num_slices,
                 num_points=self.sigreg_num_points,
             )
