@@ -53,18 +53,21 @@ class CEMLatentPlanner:
         n_elites: int = 50,
         n_iter: int = 5,
         init_std: float = 3.0,
+        warm_start_sigma: float = 0.5,
         action_lb: float = -10.0,
         action_ub: float = 10.0,
         device=None,
     ):
-        self.horizon    = horizon
-        self.chunk_size = min(chunk_size, horizon)
-        self.n_samples  = n_samples
-        self.n_elites   = min(n_elites, n_samples)
-        self.n_iter     = n_iter
-        self.init_std   = init_std
-        self.action_lb  = action_lb
-        self.action_ub  = action_ub
+        self.horizon          = horizon
+        self.chunk_size       = min(chunk_size, horizon)
+        self.n_samples        = n_samples
+        self.n_elites         = min(n_elites, n_samples)
+        self.n_iter           = n_iter
+        self.init_std         = init_std
+        self.warm_start_sigma = warm_start_sigma
+        self.action_lb        = action_lb
+        self.action_ub        = action_ub
+        self._prev_mu: Optional[torch.Tensor] = None
 
         self._linear_mode = A is not None
 
@@ -145,6 +148,10 @@ class CEMLatentPlanner:
 
     # ── planning ─────────────────────────────────────────────────────────────
 
+    def reset(self) -> None:
+        """Reset warm-start state; call between episodes."""
+        self._prev_mu = None
+
     def plan(
         self, z_t: np.ndarray, z_star: np.ndarray
     ) -> Tuple[List[np.ndarray], np.ndarray]:
@@ -158,8 +165,17 @@ class CEMLatentPlanner:
         z0 = torch.tensor(z_t,    dtype=torch.float32, device=self.device).unsqueeze(0)
         zs = torch.tensor(z_star, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-        mu    = torch.zeros(self.horizon, device=self.device)
-        sigma = torch.full((self.horizon,), self.init_std, device=self.device)
+        # Warm-start: shift previous optimal sequence by one step.
+        # Without warm-starting, every step starts from mu=0 σ=3 and converges
+        # to bang-bang solutions; warm-starting gives smoother, more consistent plans.
+        if self._prev_mu is not None:
+            mu    = torch.cat([self._prev_mu[1:],
+                               torch.zeros(1, device=self.device)])
+            sigma = torch.full((self.horizon,), self.warm_start_sigma,
+                               device=self.device)
+        else:
+            mu    = torch.zeros(self.horizon, device=self.device)
+            sigma = torch.full((self.horizon,), self.init_std, device=self.device)
 
         for _ in range(self.n_iter):
             eps = torch.randn(self.n_samples, self.horizon, device=self.device)
@@ -170,8 +186,9 @@ class CEMLatentPlanner:
             U_elite   = U[elite_idx]
 
             mu    = U_elite.mean(0)
-            sigma = U_elite.std(0).clamp(min=0.1)
+            sigma = U_elite.std(0).clamp(min=0.05)
 
+        self._prev_mu = mu.detach()
         u_out = mu.clamp(self.action_lb, self.action_ub)
 
         # Collect trajectory under mean actions
@@ -201,6 +218,6 @@ class CEMLatentPlanner:
         return (
             f"CEM-{mode}  H={self.horizon}  chunk={self.chunk_size}"
             f"  N={self.n_samples}  elites={self.n_elites}"
-            f"  iter={self.n_iter}  σ0={self.init_std}"
+            f"  iter={self.n_iter}  σ0={self.init_std}  σ_warm={self.warm_start_sigma}"
             f"  lb={self.action_lb}  ub={self.action_ub}"
         )

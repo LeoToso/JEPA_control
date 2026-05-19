@@ -24,6 +24,10 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
     settling_time= T
     use_aug_state= False
 
+    # Reset warm-start state so each episode begins with a fresh prior
+    if hasattr(mpc, 'reset'):
+        mpc.reset()
+
     obs, state, _ = env.reset_to_state(x0)
     states: List     = []
     latent_states: List = []

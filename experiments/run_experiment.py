@@ -723,17 +723,24 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # ── CEM sweep ─────────────────────────────────────────────────────────────
     # Q_lat = W^T Q_phys W focuses cost on physically meaningful latent directions.
     # Q=I is the pure JEPA cost; Q_lat aligns with the known physical objective.
+    # Warm-starting (σ_warm=0.5) shifts the previous optimal action sequence to the
+    # next step's initialisation — prevents the cold-start bang-bang bias where
+    # random σ=3 samples produce saturated elites that lock in ±10 actions.
     _Q_lat_10 = Q_lat_diag * (10.0 / max(float(np.trace(Q_lat_diag)), 1e-6))
+    _R_hi     = 0.1 * np.eye(B_jac.shape[1])   # stronger action penalty → smoother u
     _cem_sweep = [
-        dict(tag='H10_QI_zs_s3',   horizon=10, Q=np.eye(d), Qf=np.eye(d),
-             zs=z_star, std=3.0, ni=20,
-             desc='H=10 Q=I z* σ=3 i20'),
-        dict(tag='H10_Qlat_zs_s3', horizon=10, Q=Q_lat_diag, Qf=_Q_lat_10,
-             zs=z_star, std=3.0, ni=20,
-             desc='H=10 Qlat z* σ=3 i20'),
-        dict(tag='H25_Qlat_zs_s3', horizon=25, Q=Q_lat_diag, Qf=_Q_lat_10,
-             zs=z_star, std=3.0, ni=20,
-             desc='H=25 Qlat z* σ=3 i20'),
+        dict(tag='H10_QI_zs_ws',    horizon=10, Q=np.eye(d),    Qf=np.eye(d),
+             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
+             desc='H=10 Q=I z* warm-start'),
+        dict(tag='H10_Qlat_zs_ws',  horizon=10, Q=Q_lat_diag,   Qf=_Q_lat_10,
+             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
+             desc='H=10 Qlat z* warm-start'),
+        dict(tag='H25_Qlat_zs_ws',  horizon=25, Q=Q_lat_diag,   Qf=_Q_lat_10,
+             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
+             desc='H=25 Qlat z* warm-start'),
+        dict(tag='H10_Qlat_zs_Rhi', horizon=10, Q=Q_lat_diag,   Qf=_Q_lat_10,
+             zs=z_star, std=3.0, ws=0.5, R=_R_hi, ni=20,
+             desc='H=10 Qlat z* R=0.1 warm-start'),
     ]
 
     from control.cem import CEMLatentPlanner
@@ -742,6 +749,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         _Q    = _sc['Q'];     _Qf   = _sc['Qf']
         _desc = _sc['desc'];  _zs   = _sc.get('zs', z_star)
         _std  = _sc.get('std', cem_std)
+        _ws   = _sc.get('ws', 0.5)
+        _R_sc = _sc.get('R', R_lqr)
         _ni   = _sc.get('ni',  cem_n_iter)
 
         # — linear (Jacobian) dynamics —
@@ -749,7 +758,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             _cem_lin = CEMLatentPlanner(
                 A=A_stab, B=B_jac, c_offset=c_drift,
-                Q=_Q, R=R_lqr, Q_f=_Qf,
+                Q=_Q, R=_R_sc, Q_f=_Qf,
+                warm_start_sigma=_ws,
                 horizon=_H, chunk_size=cem_chunk,
                 n_samples=cem_n_samp, n_elites=cem_n_elite,
                 n_iter=_ni, init_std=_std,
@@ -784,7 +794,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             _cem_nl = CEMLatentPlanner(
                 predictor=model.predictor, action_encoder=model.action_encoder,
-                Q=_Q, R=R_lqr, Q_f=_Qf,
+                Q=_Q, R=_R_sc, Q_f=_Qf,
+                warm_start_sigma=_ws,
                 horizon=_H, chunk_size=cem_chunk,
                 n_samples=cem_n_samp, n_elites=cem_n_elite,
                 n_iter=_ni, init_std=_std,
