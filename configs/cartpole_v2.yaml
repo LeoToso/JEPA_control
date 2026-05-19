@@ -25,7 +25,7 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   batch_size: 128
-  epochs: 200
+  epochs: 100
   horizon: 5
   lambda_pred: 1.0
   lambda_state: 0.0        # no state supervision at any phase (no state labels used)
@@ -34,7 +34,7 @@ training:
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
   lambda_fp: 1.0           # small regularizer only — self-loop pred_loss is the main fp signal
-  lambda_spec: 5.0
+  lambda_spec: 0.0
   lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
   jacobian_every: 20
   use_vicreg: false
