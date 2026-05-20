@@ -35,7 +35,7 @@ training:
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
   lambda_fp: 30.0          # fixed-point loss: f(z*,0)≈z* — complements self-loop pred_loss
   lambda_spec: 5.0
-  lambda_spec_marginal: 0.0  # marginal-mode spectral matching (cart integrators); 0=off
+  lambda_spec_marginal: 3.0  # match 2 latent eigenvalues to the cart integrator modes (|λ|=1)
   lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
   jacobian_every: 20
   use_vicreg: false

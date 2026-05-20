@@ -125,7 +125,13 @@ class Trainer:
             eta_min=lr * 0.1,
         )
 
-        self.true_unstable_eigs = gt.unstable_eigenvalues if gt is not None else None
+        self.true_unstable_eigs  = gt.unstable_eigenvalues  if gt is not None else None
+        # Marginal eigenvalues (|λ|≈1, the cart integrator modes).
+        # Matching them forces the predictor to encode free cart drift — without
+        # this the cart position drifts unmodelled and the planner ignores it.
+        self.true_marginal_eigs  = gt.marginal_eigenvalues  if gt is not None else np.array([])
+        self.n_marginal_modes    = int(gt.n_marginal)       if gt is not None else 0
+        self.lambda_spec_marginal = float(self.cfg.get('lambda_spec_marginal', 0.0))
         # z* anchor: set by set_obs_eq() to encoder(obs_eq); falls back to batch EMA
         self._z_star_ema: Optional[torch.Tensor] = None
         self._obs_eq: Optional[torch.Tensor] = None  # (1,3,h,w) equilibrium image
@@ -161,7 +167,8 @@ class Trainer:
         with open(self.log_path, 'w', newline='') as f:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
-                 'vicreg', 'state_loss', 'fp_loss', 'spec_loss', 'pbh_loss'])
+                 'vicreg', 'state_loss', 'fp_loss', 'spec_loss',
+                 'spec_marginal_loss', 'pbh_loss'])
 
     def _log_csv(self, epoch, split, step, info):
         with open(self.log_path, 'a', newline='') as f:
@@ -169,7 +176,8 @@ class Trainer:
                 epoch, split, step,
                 info.get('total_loss', ''), info.get('pred_loss', ''),
                 info.get('vicreg_total', ''), info.get('state_loss', ''),
-                info.get('fp_loss', ''), info.get('spec_loss', ''), info.get('pbh_loss', ''),
+                info.get('fp_loss', ''), info.get('spec_loss', ''),
+                info.get('spec_marginal_loss', ''), info.get('pbh_loss', ''),
             ])
 
     # ── Loss computation ──────────────────────────────────────────────────────
@@ -360,6 +368,18 @@ class Trainer:
                                      device=rho_jac_t.device) - rho_jac_t)
                     total_loss = total_loss + self.lambda_spec * spec_loss
                     info['spec_loss'] = spec_loss.item()
+
+                # Marginal mode matching: pull the k nearest learned eigenvalues
+                # toward |λ|=1.  Uses a top-k sort so each marginal target gets a
+                # distinct learned eigenvalue (avoids the duplicate-target problem).
+                if self.lambda_spec_marginal > 0 and self.n_marginal_modes > 0:
+                    dist_to_one = (eigvals.real - 1.0) ** 2 + eigvals.imag ** 2
+                    sorted_idx  = torch.argsort(dist_to_one)
+                    k = min(self.n_marginal_modes, len(sorted_idx))
+                    marginal_loss = dist_to_one[sorted_idx[:k]].sum()
+                    total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
+                    info['spec_marginal_loss'] = marginal_loss.item()
+
                 if self.lambda_PBH > 0:
                     pbh_terms = []
                     d_dyn = A_jac.shape[0]
@@ -506,7 +526,9 @@ class Trainer:
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str     = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
-            spec_str   = f"  spec={tr.get('spec_loss',     0):.4f}" if 'spec_loss'       in tr else ''
+            spec_str   = (f"  spec={tr.get('spec_loss', 0):.4f}"
+                          + (f"+m{tr.get('spec_marginal_loss', 0):.4f}"
+                             if 'spec_marginal_loss' in tr else '')) if 'spec_loss' in tr else ''
             anchor_str = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'     in tr else ''
             sig_str    = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'     in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'

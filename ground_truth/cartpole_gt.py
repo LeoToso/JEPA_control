@@ -102,6 +102,12 @@ class CartpoleGroundTruth:
         self.stable_mask = np.abs(eigvals) <= 1.0 + eps_marginal
         self.unstable_mask = np.abs(eigvals) > 1.0 + eps_marginal
         self.near_unstable_mask = np.abs(eigvals) >= 1.0 - 0.05
+        # Marginally stable: |λ| in (1-0.01, 1+eps] — the free-cart integrators.
+        # These are distinct from the unstable pendulum mode but equally critical:
+        # without encoding them the predictor doesn't know cart position drifts freely.
+        self.marginal_mask = (np.abs(eigvals) >= 1.0 - 0.01) & ~self.unstable_mask
+        self.marginal_eigenvalues = eigvals[self.marginal_mask]
+        self.n_marginal = int(np.sum(self.marginal_mask))
 
         self.stable_eigenvalues = eigvals[self.stable_mask]
         self.unstable_eigenvalues = eigvals[self.unstable_mask]
