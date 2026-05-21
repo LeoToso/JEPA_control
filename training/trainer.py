@@ -360,12 +360,15 @@ class Trainer:
                         dist_sq = diff.real ** 2 + diff.imag ** 2
                         spec_terms.append(dist_sq.min())
                     spec_loss = torch.stack(spec_terms).sum()
-                    # Penalise when spectral radius is below the GT unstable value
+                    # Symmetric spectral-radius penalty: push rho toward target_rho
+                    # from both sides.  The old one-sided relu only penalised rho<target,
+                    # leaving a spurious rho=1.18 (vs GT 1.08) uncorrected, which demands
+                    # ~10% extra corrective force the controller doesn't have.
                     target_rho = float(max(np.abs(self.true_unstable_eigs)))
                     rho_jac_t  = torch.max(torch.abs(eigvals))
-                    spec_loss  = spec_loss + 2.0 * torch.relu(
-                        torch.tensor(target_rho, dtype=rho_jac_t.dtype,
-                                     device=rho_jac_t.device) - rho_jac_t)
+                    target_rho_t = torch.tensor(target_rho, dtype=rho_jac_t.dtype,
+                                                device=rho_jac_t.device)
+                    spec_loss  = spec_loss + 2.0 * (rho_jac_t - target_rho_t) ** 2
                     total_loss = total_loss + self.lambda_spec * spec_loss
                     info['spec_loss'] = spec_loss.item()
 
