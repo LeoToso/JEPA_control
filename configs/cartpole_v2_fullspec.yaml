@@ -25,7 +25,7 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   batch_size: 128
-  epochs: 100
+  epochs: 200
   horizon: 5
   lambda_pred: 1.0
   lambda_state: 0.0        # no state supervision at any phase (no state labels used)
