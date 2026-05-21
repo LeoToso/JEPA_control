@@ -31,9 +31,9 @@ training:
   lambda_state: 0.0        # no state supervision at any phase (no state labels used)
   lambda_anchor: 0.0       # state_head equilibrium anchor: disabled (no state supervision)
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
-  lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
+  lambda_inv: 5.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 0.0           # disabled — subsumed by lambda_local
+  lambda_fp: 10.0          # fixed-point: f(z*,0)=z*; L_local alone doesn't cover z=z* exactly
   lambda_spec: 0.0         # disabled — replaced by lambda_unstable
   lambda_spec_marginal: 0.0  # disabled — L_local implicitly encodes marginal modes
   lambda_PBH: 5.0
