@@ -149,6 +149,10 @@ def main():
     print('-' * len(header))
 
     results = []
+    # best vis_result per horizon: updated whenever a better config is found
+    best_vis: dict[int, dict] = {H: None for H in args.horizons}
+    best_score: dict[int, tuple] = {H: (-1.0, -1.0) for H in args.horizons}
+
     t0 = time.time()
     for (alpha, beta, H) in combos:
         Q  = alpha * np.eye(d)
@@ -176,6 +180,7 @@ def main():
             stabilization_threshold=stab_thr,
             settling_threshold=sett_thr,
             seed=args.seed, device=device, z_star=z_star,
+            vis_trial=0,
             frame_stack=frame_stack,
         )
         row = dict(H=H, alpha=alpha, beta=beta,
@@ -189,6 +194,12 @@ def main():
               f"{cr['mean_episode_length']:>8.1f}  "
               f"{cr['mean_fraction_stable']:>9.3f}  "
               f"{cr.get('mean_cost', float('nan')):>10.1f}")
+
+        # Keep vis_result for the best config per horizon seen so far
+        score = (cr['success_rate'], cr['mean_fraction_stable'])
+        if score > best_score[H]:
+            best_score[H] = score
+            best_vis[H]   = (cr.get('vis_result'), alpha, beta)
 
     elapsed = time.time() - t0
     print(f'\nDone in {elapsed:.0f}s')
@@ -205,13 +216,31 @@ def main():
               f"{row['frac_stable']:>9.3f}  "
               f"{row['mean_cost']:>10.1f}")
 
-    # Save results as numpy-friendly dict
+    # Save results and figures
     out_dir = Path('results') / 'cem_qr_sweep'
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime('%Y%m%d_%H%M%S')
     out_path = out_dir / f'sweep_{ts}.npy'
     np.save(out_path, results)
     print(f'\nResults saved to {out_path}')
+
+    # Save frame strip + GIF for the best config per horizon
+    from control.visualize import save_rollout_frames, save_rollout_video
+    print('\n── Saving figures for best config per horizon ──')
+    for H in args.horizons:
+        entry = best_vis[H]
+        if entry is None or entry[0] is None:
+            print(f'  H={H}: no vis_result available')
+            continue
+        vis, alpha, beta = entry
+        tag   = f'H{H}_a{alpha:.3g}_b{beta:.4g}'
+        title = f'CEM linear  H={H}  α={alpha}  β={beta}  '  \
+                f'success={best_score[H][0]:.2f}  frac={best_score[H][1]:.2f}'
+        frames_path = out_dir / f'{tag}_frames_{ts}.png'
+        gif_path    = out_dir / f'{tag}_{ts}.gif'
+        save_rollout_frames(vis, frames_path, n_frames=8, title=title)
+        save_rollout_video(vis,  gif_path,    fps=15,    title=title)
+        print(f'  H={H}  α={alpha}  β={beta}  → {frames_path.name}  {gif_path.name}')
 
 
 if __name__ == '__main__':
