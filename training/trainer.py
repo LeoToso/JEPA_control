@@ -524,6 +524,8 @@ class Trainer:
                 _spec_conv_epoch = epoch
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
+            if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
+                self.save_checkpoint(tag=f'epoch{epoch+1:04d}')
             dt = time.time() - t0
             state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
@@ -581,5 +583,13 @@ class Trainer:
         path = self.save_dir / f'checkpoint_{tag}.pt'
         torch.save({'epoch': self.epoch, 'global_step': self.global_step,
                     'model_state': self.model.state_dict(),
+                    'optimizer_state': self.optimizer.state_dict(),
+                    'scheduler_state': self.scheduler.state_dict(),
                     'best_val_loss': self.best_val_loss,
                     'config': self.model.get_config_dict()}, path)
+        # Always keep a 'latest' copy for easy resume
+        if tag != 'latest':
+            latest = self.save_dir / 'checkpoint_latest.pt'
+            import shutil
+            shutil.copy2(path, latest)
+        print(f'[ckpt] saved → {path}')
