@@ -33,8 +33,8 @@ training:
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 30.0          # fixed-point loss: f(z*,0)≈z* — complements self-loop pred_loss
-  lambda_spec: 5.0
+  lambda_fp: 100.0         # was 30 — tighter fixed-point to reduce fp_err at eval
+  lambda_spec: 20.0        # was 5 — stronger spectral push to override pred_loss balance
   lambda_spec_marginal: 3.0  # match 2 latent eigenvalues to the cart integrator modes (|λ|=1)
   lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
   jacobian_every: 20
