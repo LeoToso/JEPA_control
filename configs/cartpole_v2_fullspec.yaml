@@ -52,7 +52,7 @@ training:
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
-  checkpoint_every: 50
+  checkpoint_every: 25
   warmup_epochs: 0          # no warmup: all losses active + encoder trainable from epoch 1
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 9999
