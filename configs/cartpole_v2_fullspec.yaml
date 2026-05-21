@@ -33,10 +33,15 @@ training:
   lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
   lambda_inv: 1.0          # inverse dynamics: ||ψ(z_t, z_{t+1}) - u_t/scale||^2 (RichID-style)
   inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
-  lambda_fp: 100.0         # was 30 — tighter fixed-point to reduce fp_err at eval
-  lambda_spec: 20.0        # was 5 — stronger spectral push to override pred_loss balance
-  lambda_spec_marginal: 3.0  # match 2 latent eigenvalues to the cart integrator modes (|λ|=1)
-  lambda_PBH: 5.0          # was 1.0 — counteract B_jac collapse from strong fp; keeps mu_S > delta_tol
+  lambda_fp: 0.0           # disabled — subsumed by lambda_local
+  lambda_spec: 0.0         # disabled — replaced by lambda_unstable
+  lambda_spec_marginal: 0.0  # disabled — L_local implicitly encodes marginal modes
+  lambda_PBH: 5.0
+  lambda_local: 50.0       # f(z_t,u_t) ≈ z*+A(z_t-z*)+Bu_t on self-loop samples
+  lambda_unstable: 10.0    # data-driven instability margin: 1+η ≤ ρ(A) ≤ ρ_max
+  unstable_eta: 0.05       # minimum instability: ρ(A) ≥ 1.05
+  rho_max_init: 1.3        # initial ρ_max; updated each epoch from near-eq growth rates
+  local_state_threshold: 0.05  # |s|_inf threshold identifying self-loop samples
   jacobian_every: 20
   use_vicreg: false
   vicreg_lambda: 5.0

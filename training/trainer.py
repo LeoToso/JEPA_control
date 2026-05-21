@@ -126,12 +126,22 @@ class Trainer:
         )
 
         self.true_unstable_eigs  = gt.unstable_eigenvalues  if gt is not None else None
-        # Marginal eigenvalues (|λ|≈1, the cart integrator modes).
-        # Matching them forces the predictor to encode free cart drift — without
-        # this the cart position drifts unmodelled and the planner ignores it.
         self.true_marginal_eigs  = gt.marginal_eigenvalues  if gt is not None else np.array([])
         self.n_marginal_modes    = int(gt.n_marginal)       if gt is not None else 0
         self.lambda_spec_marginal = float(self.cfg.get('lambda_spec_marginal', 0.0))
+
+        # ── Data-driven local linearization + instability losses ──────────────
+        # Replaces GT-eigenvalue spectral matching with two observation-only terms:
+        #   L_local:    f(z_t,u_t) ≈ z*+A(z_t-z*)+Bu_t  on self-loop samples
+        #   L_unstable: 1+η ≤ ρ(A) ≤ ρ_max  (data-driven bounds, no GT needed)
+        self.lambda_local    = float(self.cfg.get('lambda_local',    0.0))
+        self.lambda_unstable = float(self.cfg.get('lambda_unstable', 0.0))
+        self.unstable_eta    = float(self.cfg.get('unstable_eta',    0.05))
+        self.local_state_threshold = float(self.cfg.get('local_state_threshold', 0.05))
+        self.rho_max_estimate = float(self.cfg.get('rho_max_init', 1.3))
+        self._rho_buffer: list = []          # near-eq growth rates, reset each epoch
+        self._A_jac_cache: Optional[torch.Tensor] = None   # stop-grad, updated every jacobian_every steps
+        self._B_jac_cache: Optional[torch.Tensor] = None
         # z* anchor: set by set_obs_eq() to encoder(obs_eq); falls back to batch EMA
         self._z_star_ema: Optional[torch.Tensor] = None
         self._obs_eq: Optional[torch.Tensor] = None  # (1,3,h,w) equilibrium image
@@ -167,8 +177,8 @@ class Trainer:
         with open(self.log_path, 'w', newline='') as f:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
-                 'vicreg', 'state_loss', 'fp_loss', 'spec_loss',
-                 'spec_marginal_loss', 'pbh_loss'])
+                 'vicreg', 'state_loss', 'fp_loss', 'local_loss',
+                 'unstable_loss', 'spec_loss', 'pbh_loss'])
 
     def _log_csv(self, epoch, split, step, info):
         with open(self.log_path, 'a', newline='') as f:
@@ -176,8 +186,9 @@ class Trainer:
                 epoch, split, step,
                 info.get('total_loss', ''), info.get('pred_loss', ''),
                 info.get('vicreg_total', ''), info.get('state_loss', ''),
-                info.get('fp_loss', ''), info.get('spec_loss', ''),
-                info.get('spec_marginal_loss', ''), info.get('pbh_loss', ''),
+                info.get('fp_loss', ''), info.get('local_loss', ''),
+                info.get('unstable_loss', ''), info.get('spec_loss', ''),
+                info.get('pbh_loss', ''),
             ])
 
     # ── Loss computation ──────────────────────────────────────────────────────
@@ -322,8 +333,7 @@ class Trainer:
             total_loss = total_loss + self.lambda_anchor * anchor_loss
             info['anchor_loss'] = anchor_loss.item()
 
-        # Fixed-point loss: predictor should map z* to itself under zero action.
-        # Directly penalises the phantom drift that corrupts MPC plans.
+        # Fixed-point loss (legacy, kept for backward compat — subsumed by L_local).
         if is_train and self.lambda_fp > 0 and self._z_star_ema is not None:
             a_zero = self.model.action_encoder(
                 torch.zeros(1, 1, device=self.device))
@@ -334,22 +344,72 @@ class Trainer:
             total_loss = total_loss + self.lambda_fp * fp_loss
             info['fp_loss'] = fp_loss.item()
 
-        # Jacobian regularisation (spectral + PBH) every jacobian_every steps
-        if (is_train and self.global_step % self.jacobian_every == 0
+        # ── Local linearization loss (L_local) ───────────────────────────────
+        # Applied every step to self-loop (near-equilibrium) samples.
+        # Forces f(z_t,u_t) ≈ z* + A(z_t-z*) + B·u_t using stop-grad A, B.
+        # Subsumes fp_loss (z_t=z*, u_t=0 case) and directly trains B's direction.
+        if (is_train and self.lambda_local > 0
+                and self._A_jac_cache is not None
+                and self._z_star_ema is not None
+                and 'states' in batch):
+            states_t = batch['states'][:, 0].to(self.device).float()
+            sl_mask = states_t.abs().max(dim=1).values < self.local_state_threshold
+            if sl_mask.sum() > 0:
+                z_sl  = z_all[sl_mask, 0]    # (N, d)
+                u_sl  = actions[sl_mask, 0]   # (N, 1)
+                z_star_sg = self._z_star_ema.detach()   # (d,)
+                A_sg = self._A_jac_cache                # (d, d) already detached
+                B_sg = self._B_jac_cache                # (d, 1) already detached
+                dz   = z_sl - z_star_sg.unsqueeze(0)   # (N, d)
+                linear_pred = (z_star_sg.unsqueeze(0)
+                               + torch.mm(dz, A_sg.T)       # A·(z-z*)
+                               + torch.mm(u_sl, B_sg.T))    # B·u
+                a_enc_sl = self.model.action_encoder(u_sl)
+                z_pred_sl = self.model.predictor(z_sl, a_enc_sl)
+                local_loss = F.mse_loss(z_pred_sl, linear_pred.detach())
+                total_loss = total_loss + self.lambda_local * local_loss
+                info['local_loss'] = local_loss.item()
+
+        # ── Jacobian regularisation every jacobian_every steps ────────────────
+        _needs_jac = (
+            self.lambda_unstable > 0
+            or (self.lambda_spec > 0
                 and self.true_unstable_eigs is not None
-                and len(self.true_unstable_eigs) > 0
-                and (self.lambda_spec > 0 or self.lambda_PBH > 0)):
+                and len(self.true_unstable_eigs) > 0)
+            or (self.lambda_PBH > 0
+                and self.true_unstable_eigs is not None
+                and len(self.true_unstable_eigs) > 0)
+        )
+        if is_train and self.global_step % self.jacobian_every == 0 and _needs_jac:
             try:
                 from control.jacobian import compute_jacobian_torch
-                # Use EMA-tracked z* (more stable than per-batch mean)
                 z_star_t = (self._z_star_ema if self._z_star_ema is not None
                             else z_all[:, 0].mean(dim=0).detach())
                 A_jac, B_jac = compute_jacobian_torch(
                     self.model.predictor, self.model.action_encoder,
                     z_star_t, self.device,
                 )
-                if self.lambda_spec > 0:
-                    eigvals = torch.linalg.eigvals(A_jac)
+                # Cache for L_local (used every step between Jacobian updates)
+                self._A_jac_cache = A_jac.detach()
+                self._B_jac_cache = B_jac.detach()
+
+                eigvals = torch.linalg.eigvals(A_jac)
+
+                # L_unstable: data-driven instability margin.
+                # No GT eigenvalues needed — only requires knowing the equilibrium
+                # is unstable (η>0) and a data-derived upper bound ρ_max.
+                if self.lambda_unstable > 0:
+                    rho_jac = torch.max(torch.abs(eigvals))
+                    lower   = torch.relu(1.0 + self.unstable_eta - rho_jac) ** 2
+                    upper   = torch.relu(rho_jac - self.rho_max_estimate) ** 2
+                    unstable_loss = lower + upper
+                    total_loss = total_loss + self.lambda_unstable * unstable_loss
+                    info['unstable_loss'] = unstable_loss.item()
+
+                # L_spec (legacy GT-eigenvalue matching, backward compat)
+                if (self.lambda_spec > 0
+                        and self.true_unstable_eigs is not None
+                        and len(self.true_unstable_eigs) > 0):
                     true_eigs_t = torch.tensor(
                         self.true_unstable_eigs,
                         dtype=eigvals.dtype, device=eigvals.device,
@@ -360,30 +420,26 @@ class Trainer:
                         dist_sq = diff.real ** 2 + diff.imag ** 2
                         spec_terms.append(dist_sq.min())
                     spec_loss = torch.stack(spec_terms).sum()
-                    # Symmetric spectral-radius penalty: push rho toward target_rho
-                    # from both sides.  The old one-sided relu only penalised rho<target,
-                    # leaving a spurious rho=1.18 (vs GT 1.08) uncorrected, which demands
-                    # ~10% extra corrective force the controller doesn't have.
-                    target_rho = float(max(np.abs(self.true_unstable_eigs)))
-                    rho_jac_t  = torch.max(torch.abs(eigvals))
+                    target_rho   = float(max(np.abs(self.true_unstable_eigs)))
+                    rho_jac_t    = torch.max(torch.abs(eigvals))
                     target_rho_t = torch.tensor(target_rho, dtype=rho_jac_t.dtype,
                                                 device=rho_jac_t.device)
-                    spec_loss  = spec_loss + 2.0 * (rho_jac_t - target_rho_t) ** 2
-                    total_loss = total_loss + self.lambda_spec * spec_loss
+                    spec_loss   = spec_loss + 2.0 * (rho_jac_t - target_rho_t) ** 2
+                    total_loss  = total_loss + self.lambda_spec * spec_loss
                     info['spec_loss'] = spec_loss.item()
 
-                # Marginal mode matching: pull the k nearest learned eigenvalues
-                # toward |λ|=1.  Uses a top-k sort so each marginal target gets a
-                # distinct learned eigenvalue (avoids the duplicate-target problem).
-                if self.lambda_spec_marginal > 0 and self.n_marginal_modes > 0:
-                    dist_to_one = (eigvals.real - 1.0) ** 2 + eigvals.imag ** 2
-                    sorted_idx  = torch.argsort(dist_to_one)
-                    k = min(self.n_marginal_modes, len(sorted_idx))
-                    marginal_loss = dist_to_one[sorted_idx[:k]].sum()
-                    total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
-                    info['spec_marginal_loss'] = marginal_loss.item()
+                    if self.lambda_spec_marginal > 0 and self.n_marginal_modes > 0:
+                        dist_to_one = (eigvals.real - 1.0) ** 2 + eigvals.imag ** 2
+                        sorted_idx  = torch.argsort(dist_to_one)
+                        k = min(self.n_marginal_modes, len(sorted_idx))
+                        marginal_loss = dist_to_one[sorted_idx[:k]].sum()
+                        total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
+                        info['spec_marginal_loss'] = marginal_loss.item()
 
-                if self.lambda_PBH > 0:
+                # PBH controllability at each GT unstable eigenvalue
+                if (self.lambda_PBH > 0
+                        and self.true_unstable_eigs is not None
+                        and len(self.true_unstable_eigs) > 0):
                     pbh_terms = []
                     d_dyn = A_jac.shape[0]
                     for lam_star_val in self.true_unstable_eigs:
@@ -391,18 +447,31 @@ class Trainer:
                             float(np.real(lam_star_val)),
                             dtype=A_jac.dtype, device=A_jac.device,
                         )
-                        M_S   = torch.cat(
+                        M_S = torch.cat(
                             [lam_r * torch.eye(d_dyn, device=A_jac.device,
                                                dtype=A_jac.dtype) - A_jac,
                              B_jac], dim=-1,
                         )
-                        sv    = torch.linalg.svdvals(M_S)
+                        sv = torch.linalg.svdvals(M_S)
                         pbh_terms.append(-torch.log(sv[-1] + 1e-6))
                     pbh_loss = torch.stack(pbh_terms).mean()
                     total_loss = total_loss + self.lambda_PBH * pbh_loss
                     info['pbh_loss'] = pbh_loss.item()
             except Exception as exc:
                 warnings.warn(f'Jacobian regularisation failed: {exc}')
+
+        # Accumulate near-equilibrium growth rates for ρ_max estimation.
+        # Collected every training step; ρ_max updated at epoch boundary in fit().
+        if is_train and self.lambda_unstable > 0 and self._z_star_ema is not None:
+            with torch.no_grad():
+                z_star_d = self._z_star_ema.detach()
+                dz_t  = (z_all[:, 0] - z_star_d.unsqueeze(0)).norm(dim=1)
+                dz_t1 = (z_all[:, 1] - z_star_d.unsqueeze(0)).norm(dim=1)
+                small_u  = actions[:, 0].abs().squeeze(-1) < 1.0
+                near_eq  = (dz_t > 0.02) & (dz_t < 0.5) & small_u
+                if near_eq.sum() > 0:
+                    r_vals = dz_t1[near_eq] / (dz_t[near_eq] + 1e-6)
+                    self._rho_buffer.extend(r_vals.cpu().tolist())
 
         info['total_loss'] = total_loss.item()
         return total_loss, info
@@ -506,6 +575,16 @@ class Trainer:
                     print(f'[train] Encoder unfrozen at epoch {epoch+1}'
                           f'  (lr_mult={enc_lr_mult})')
 
+            # Update ρ_max from growth rates collected during the previous epoch.
+            if self.lambda_unstable > 0 and len(self._rho_buffer) > 10:
+                r_arr = np.array(self._rho_buffer)
+                new_rho_max = float(np.clip(r_arr.mean() + 2.0 * r_arr.std(),
+                                            1.0 + self.unstable_eta + 0.01, 1.6))
+                print(f'[train] ρ_max: {self.rho_max_estimate:.4f}'
+                      f' → {new_rho_max:.4f}  (n={len(self._rho_buffer)})')
+                self.rho_max_estimate = new_rho_max
+                self._rho_buffer = []
+
             t0 = time.time()
             tr  = self.train_epoch(train_loader)
             val = self.val_epoch(val_loader)
@@ -530,17 +609,19 @@ class Trainer:
             state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
-            fp_str     = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
-            spec_str   = (f"  spec={tr.get('spec_loss', 0):.4f}"
-                          + (f"+m{tr.get('spec_marginal_loss', 0):.4f}"
-                             if 'spec_marginal_loss' in tr else '')) if 'spec_loss' in tr else ''
-            anchor_str = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'     in tr else ''
-            sig_str    = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'     in tr else ''
+            fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
+            local_str    = f"  local={tr.get('local_loss',   0):.4f}" if 'local_loss'     in tr else ''
+            unstable_str = f"  ρ={tr.get('unstable_loss',   0):.4f}" if 'unstable_loss'  in tr else ''
+            spec_str     = (f"  spec={tr.get('spec_loss', 0):.4f}"
+                            + (f"+m{tr.get('spec_marginal_loss', 0):.4f}"
+                               if 'spec_marginal_loss' in tr else '')) if 'spec_loss' in tr else ''
+            anchor_str   = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'    in tr else ''
+            sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{spec_str}{anchor_str}{sig_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
