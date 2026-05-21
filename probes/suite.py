@@ -72,14 +72,22 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
                 return torch.cat([prev_t, curr_t], dim=1)
             return curr_t
 
+        # Compute c_drift = f(z*, 0) - z* so the linear model matches what CEM uses:
+        #   z1_lin = A(z0 - z*) + B·u + z* + c_drift
+        with torch.no_grad():
+            _zs_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
+            _a0    = model.action_encoder(torch.zeros(1, 1, device=device))
+            c_drift = (model.predictor(_zs_t, _a0) - _zs_t).cpu().numpy()[0]
+
         residuals = {}
+        abs_residuals = {}
         for theta in thetas:
             obs, _, _ = env.reset_to_state(
                 np.array([0., 0., theta, 0.], dtype=np.float32))
             with torch.no_grad():
                 z0 = model.encoder(_encode(obs)).cpu().numpy()[0]
 
-            errs = []
+            errs, abs_errs = [], []
             for _ in range(10):
                 u = float(rng.uniform(-1.0, 1.0))
                 prev_obs = obs.copy()
@@ -88,16 +96,21 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
                     z1 = model.encoder(_encode(obs_next, prev_obs)).cpu().numpy()[0]
                     obs, _, _ = env.reset_to_state(  # reset for next sample
                         np.array([0., 0., theta, 0.], dtype=np.float32))
-                # linear prediction
-                z1_lin = A_jac @ (z0 - z_star) + B_jac[:, 0] * u + z_star
-                # floor denom to avoid near-zero division at equilibrium (theta=0)
-                denom  = max(np.linalg.norm(z1 - z_star), 0.01 * np.sqrt(len(z_star)))
-                errs.append(float(np.linalg.norm(z1_lin - z1) / denom))
-            residuals[f'theta={theta:+.2f}'] = float(np.mean(errs))
+                # linear prediction including constant drift c = f(z*,0)-z*
+                z1_lin = A_jac @ (z0 - z_star) + B_jac[:, 0] * u + z_star + c_drift
+                abs_err = float(np.linalg.norm(z1_lin - z1))
+                abs_errs.append(abs_err)
+                # relative error: normalise by displacement from z* (floor avoids /0)
+                denom = max(np.linalg.norm(z1 - z_star), 0.01 * np.sqrt(len(z_star)))
+                errs.append(abs_err / denom)
+            residuals[f'theta={theta:+.2f}']     = float(np.mean(errs))
+            abs_residuals[f'theta={theta:+.2f}'] = float(np.mean(abs_errs))
 
         results['linearization'] = {
-            'residuals':      residuals,
-            'mean_residual':  float(np.mean(list(residuals.values()))),
+            'residuals':          residuals,
+            'abs_residuals':      abs_residuals,
+            'mean_residual':      float(np.mean(list(residuals.values()))),
+            'mean_abs_residual':  float(np.mean(list(abs_residuals.values()))),
         }
     except Exception as exc:
         warnings.warn(f'Linearization probe failed: {exc}')
@@ -130,9 +143,12 @@ def _print_summary(results: Dict, gt):
 
     lin = results.get('linearization', {})
     if 'error' not in lin:
-        print(f"  Mean linearization residual:{lin.get('mean_residual', float('nan')):.4f}")
+        print(f"  Mean linearization residual (relative):{lin.get('mean_residual', float('nan')):.4f}")
+        print(f"  Mean linearization residual (absolute):{lin.get('mean_abs_residual', float('nan')):.4f}")
+        abs_res = lin.get('abs_residuals', {})
         for k, v in lin.get('residuals', {}).items():
-            print(f"    {k}: {v:.4f}")
+            abs_v = abs_res.get(k, float('nan'))
+            print(f"    {k}: rel={v:.4f}  abs={abs_v:.4f}")
     else:
         print(f"  Linearization probe ERROR: {lin['error']}")
     print('=' * 55 + '\n')
