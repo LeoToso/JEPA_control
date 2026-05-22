@@ -76,8 +76,10 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
         #   z1_lin = A(z0 - z*) + B·u + z* + c_drift
         with torch.no_grad():
             _zs_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
-            _a0    = model.action_encoder(torch.zeros(1, 1, device=device))
-            c_drift = (model.predictor(_zs_t, _a0) - _zs_t).cpu().numpy()[0]
+            _pW = getattr(model.config, 'predictor_window', 1)
+            _zs_win = _zs_t.unsqueeze(1).expand(1, _pW, -1)
+            _u_zero_win = torch.zeros(1, _pW, 1, device=device)
+            c_drift = (model.predict(_zs_win, _u_zero_win) - _zs_t).cpu().numpy()[0]
 
         residuals = {}
         abs_residuals = {}

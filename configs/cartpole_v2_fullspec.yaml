@@ -14,7 +14,8 @@ model:
   action_latent_dim: 32
   action_encoder: none
   patch_size: 8
-  frame_stack: 2
+  frame_stack: 1
+  predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
@@ -52,6 +53,7 @@ training:
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
+  predictor_window: 3
   checkpoint_every: 20
   warmup_epochs: 0
   warmup_lambda_state: 0.0

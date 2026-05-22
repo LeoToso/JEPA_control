@@ -42,6 +42,7 @@ class CEMLatentPlanner:
         # ── nonlinear mode ───────────────────────────────────────────────
         predictor=None,
         action_encoder=None,
+        predictor_window: int = 1,
         # ── cost ─────────────────────────────────────────────────────────
         Q: Optional[np.ndarray] = None,
         R=0.01,
@@ -70,6 +71,10 @@ class CEMLatentPlanner:
         self._prev_mu: Optional[torch.Tensor] = None
 
         self._linear_mode = A is not None
+        self._predictor_window = predictor_window
+        # History for nonlinear windowed mode (reset on reset())
+        self._z_hist = None   # list of W tensors (1, d)
+        self._u_hist = None   # list of W-1 tensors (1, 1) -- past chosen actions
 
         # Resolve device
         if device is None:
@@ -113,14 +118,37 @@ class CEMLatentPlanner:
 
     def _step(self, z: torch.Tensor, u: torch.Tensor,
               z_star: torch.Tensor) -> torch.Tensor:
-        """Single-step dynamics.  z, z_star: (N, d).  u: (N, 1)."""
+        """Single-step dynamics.  z, z_star: (N, d).  u: (N, 1).
+        For nonlinear W=1 (Markov) case only.  Windowed nonlinear uses _step_windowed."""
         if self._linear_mode:
             dz = z - z_star
             return dz @ self._A.T + u @ self._B.T + z_star + self._c
         else:
+            # Markov (W=1) nonlinear path — kept for backward compatibility
             with torch.no_grad():
                 a = self.action_encoder(u)   # (N, d_a)
                 return self.predictor(z, a)  # (N, d)
+
+    def _step_windowed(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
+        """Windowed nonlinear step.
+        z_win: (N, W, d)  u_win: (N, W, 1)
+        Returns z_next: (N, d)
+        Assumes self.predictor is a JEPAModel (has .predict()) or MLPPredictor directly.
+        """
+        with torch.no_grad():
+            # Check if predictor has a predict() method (JEPAModel) or is raw MLPPredictor
+            if hasattr(self.predictor, 'predict'):
+                return self.predictor.predict(z_win, u_win)
+            else:
+                # Raw MLPPredictor: encode actions then call predictor
+                N, W, d = z_win.shape
+                u_flat = u_win.reshape(N * W, 1)
+                a_flat = self.action_encoder(u_flat)
+                d_a = a_flat.shape[-1]
+                a_win = a_flat.reshape(N, W, d_a)
+                z_flat = z_win.reshape(N, W * d)
+                a_flat_cat = a_win.reshape(N, W * d_a)
+                return self.predictor(z_flat, a_flat_cat)
 
     # ── cost evaluation ───────────────────────────────────────────────────────
 
@@ -134,13 +162,43 @@ class CEMLatentPlanner:
         z = z0.expand(N, -1)    # (N, d)
         zs = z_star.expand(N, -1)
 
+        W = self._predictor_window
+
+        # For windowed nonlinear mode, initialize a window buffer per trajectory
+        if not self._linear_mode and W > 1:
+            # Build initial z window: if history available, use it; else repeat z0
+            if self._z_hist is not None:
+                # _z_hist is a list of W tensors each (1, d); expand to (N, d)
+                z_win_list = [h.expand(N, -1) for h in self._z_hist]
+            else:
+                z_win_list = [z] * W  # list of W (N, d) tensors
+
+            if self._u_hist is not None:
+                # _u_hist is a list of W-1 tensors each (1, 1)
+                u_win_list = [h.expand(N, -1) for h in self._u_hist]
+            else:
+                u_win_list = [torch.zeros(N, 1, device=self.device)] * (W - 1)
+
         costs = torch.zeros(N, device=self.device)
         for t in range(self.horizon):
             u_t = U[:, t:t+1]               # (N, 1)
             dz  = z - zs
             costs += ((dz @ self._Q) * dz).sum(-1)          # stage state cost
             costs += self._R_scalar * (u_t * u_t).squeeze(-1)  # control cost
-            z = self._step(z, u_t, zs)
+
+            if self._linear_mode:
+                z = self._step(z, u_t, zs)
+            elif W > 1:
+                # Build (N, W, d) and (N, W, 1) window tensors
+                z_win_tensor = torch.stack(z_win_list[-W:], dim=1)      # (N, W, d)
+                u_full_list = u_win_list[-(W-1):] + [u_t]               # W entries
+                u_win_tensor = torch.stack(u_full_list, dim=1)          # (N, W, 1)
+                z_new = self._step_windowed(z_win_tensor, u_win_tensor)  # (N, d)
+                z_win_list.append(z_new)
+                u_win_list.append(u_t)
+                z = z_new
+            else:
+                z = self._step(z, u_t, zs)
 
         dz_f = z - zs
         costs += ((dz_f @ self._Qf) * dz_f).sum(-1)        # terminal cost
@@ -151,6 +209,8 @@ class CEMLatentPlanner:
     def reset(self) -> None:
         """Reset warm-start state; call between episodes."""
         self._prev_mu = None
+        self._z_hist = None
+        self._u_hist = None
 
     def plan(
         self, z_t: np.ndarray, z_star: np.ndarray
@@ -191,14 +251,49 @@ class CEMLatentPlanner:
         self._prev_mu = mu.detach()
         u_out = mu.clamp(self.action_lb, self.action_ub)
 
+        W = self._predictor_window
+
         # Collect trajectory under mean actions
         with torch.no_grad():
             z = z0.clone()
             traj = [z_t.copy()]
+            if not self._linear_mode and W > 1:
+                # Use history for trajectory collection too
+                if self._z_hist is not None:
+                    z_win_list = [h.clone() for h in self._z_hist]
+                else:
+                    z_win_list = [z.clone()] * W
+                if self._u_hist is not None:
+                    u_win_list = [h.clone() for h in self._u_hist]
+                else:
+                    u_win_list = [torch.zeros(1, 1, device=self.device)] * (W - 1)
             for t in range(self.horizon):
                 u_t = u_out[t:t+1].unsqueeze(-1)   # (1, 1)
-                z   = self._step(z, u_t, zs)
+                if self._linear_mode:
+                    z = self._step(z, u_t, zs)
+                elif W > 1:
+                    z_win_tensor = torch.stack(z_win_list[-W:], dim=1)      # (1, W, d)
+                    u_full_list = u_win_list[-(W-1):] + [u_t]
+                    u_win_tensor = torch.stack(u_full_list, dim=1)          # (1, W, 1)
+                    z = self._step_windowed(z_win_tensor, u_win_tensor)     # (1, d)
+                    z_win_list.append(z)
+                    u_win_list.append(u_t)
+                else:
+                    z = self._step(z, u_t, zs)
                 traj.append(z[0].cpu().numpy())
+
+        # Update history with current z_t and chosen first action (nonlinear W>1 only)
+        if not self._linear_mode and W > 1:
+            u_chosen = u_out[0:1].unsqueeze(-1)   # (1, 1)
+            if self._z_hist is None:
+                # Initialize: W copies of z0
+                self._z_hist = [z0.clone()] * W
+            else:
+                self._z_hist = (self._z_hist + [z0.clone()])[-W:]
+            if self._u_hist is None:
+                self._u_hist = [torch.zeros(1, 1, device=self.device)] * (W - 1)
+            else:
+                self._u_hist = (self._u_hist + [u_chosen.clone()])[-( W - 1):]
 
         actions = [np.array([float(u_out[k].cpu())]) for k in range(self.chunk_size)]
         return actions, np.array(traj)

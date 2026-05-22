@@ -82,6 +82,7 @@ class Trainer:
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
+        self.predictor_window = int(self.cfg.get('predictor_window', 1))
 
         lr           = float(self.cfg.get('lr', 1e-4))
         weight_decay = float(self.cfg.get('weight_decay', 1e-4))
@@ -233,15 +234,21 @@ class Trainer:
         # the constant offset that inflates linearisation residual near z*.
         z_targets = z_all[:, 1:].detach()              # (B, H, d)
 
-        # Multi-step unrolled prediction loss
-        z_curr = z_all[:, 0]
+        # Multi-step unrolled prediction loss with optional window context
+        W = self.predictor_window
+        # Initialize window: pad with z_0 repeated (W copies)
+        z_win_buf = [z_all[:, 0]] * W          # list of (B, d) tensors
+        u_win_buf = [torch.zeros(B, 1, device=self.device)] * W
+
         pred_loss = torch.zeros(1, device=self.device)
         for k in range(H):
-            u_k   = actions[:, k]
-            a_k   = self.model.action_encoder(u_k)
-            z_hat = self.model.predictor(z_curr, a_k)
+            u_k = actions[:, k]               # (B, 1)
+            z_stack = torch.stack(z_win_buf[-W:], dim=1)   # (B, W, d)
+            u_stack = torch.stack(u_win_buf[-W:], dim=1)   # (B, W, 1)
+            z_hat = self.model.predict(z_stack, u_stack)   # (B, d)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
-            z_curr = z_hat
+            z_win_buf.append(z_hat)
+            u_win_buf.append(u_k)
         pred_loss = pred_loss / H
 
         total_loss = self.lambda_pred * pred_loss
@@ -335,12 +342,11 @@ class Trainer:
 
         # Fixed-point loss (legacy, kept for backward compat — subsumed by L_local).
         if is_train and self.lambda_fp > 0 and self._z_star_ema is not None:
-            a_zero = self.model.action_encoder(
-                torch.zeros(1, 1, device=self.device))
-            z_star_pred = self.model.predictor(
-                self._z_star_ema.unsqueeze(0), a_zero)
-            fp_loss = F.mse_loss(z_star_pred,
-                                 self._z_star_ema.unsqueeze(0).detach())
+            W = self.predictor_window
+            z_star_win = self._z_star_ema.unsqueeze(0).unsqueeze(0).expand(1, W, -1)  # (1, W, d)
+            u_zero_win = torch.zeros(1, W, 1, device=self.device)
+            z_star_pred = self.model.predict(z_star_win, u_zero_win)
+            fp_loss = F.mse_loss(z_star_pred, self._z_star_ema.unsqueeze(0).detach())
             total_loss = total_loss + self.lambda_fp * fp_loss
             info['fp_loss'] = fp_loss.item()
 
@@ -386,8 +392,7 @@ class Trainer:
                 z_star_t = (self._z_star_ema if self._z_star_ema is not None
                             else z_all[:, 0].mean(dim=0).detach())
                 A_jac, B_jac = compute_jacobian_torch(
-                    self.model.predictor, self.model.action_encoder,
-                    z_star_t, self.device,
+                    self.model, z_star_t, self.device,
                 )
                 # Cache for L_local (used every step between Jacobian updates)
                 self._A_jac_cache = A_jac.detach()
@@ -656,8 +661,7 @@ class Trainer:
         """Compute (A_jac, B_jac) as numpy arrays at z_star."""
         from control.jacobian import compute_jacobian_np
         return compute_jacobian_np(
-            self.model.predictor, self.model.action_encoder,
-            z_star, self.device,
+            self.model, z_star, self.device,
         )
 
     def save_checkpoint(self, tag='latest'):

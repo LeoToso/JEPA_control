@@ -29,6 +29,7 @@ class JEPAConfig:
     # Predictor
     predictor_hidden_dim: int = 256
     predictor_n_layers: int = 2
+    predictor_window: int = 1      # window size W for windowed MLP predictor
 
     @classmethod
     def from_dict(cls, d: dict) -> 'JEPAConfig':
@@ -68,6 +69,7 @@ class JEPAModel(nn.Module):
             action_dim=self.action_encoder.latent_action_dim,
             hidden_dim=config.predictor_hidden_dim,
             n_layers=config.predictor_n_layers,
+            window=config.predictor_window,
         )
 
         # EMA target encoder: same architecture as online encoder, not in optimizer.
@@ -86,6 +88,32 @@ class JEPAModel(nn.Module):
     @property
     def latent_dim(self):
         return self.config.latent_dim
+
+    def predict(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
+        """Windowed prediction: z_{t+1} = f([z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]).
+
+        Parameters
+        ----------
+        z_win : (B, W, d)  — window of W latent states, most recent last
+        u_win : (B, W, 1)  — window of W raw actions (scalars), most recent last
+
+        Returns
+        -------
+        z_next : (B, d)
+        """
+        B, W, d = z_win.shape
+        # Encode each action in the window separately, then concatenate
+        # u_win: (B, W, 1) -> reshape to (B*W, 1), encode, reshape back
+        u_flat = u_win.reshape(B * W, 1)                   # (B*W, 1)
+        a_flat = self.action_encoder(u_flat)                # (B*W, d_a)
+        d_a = a_flat.shape[-1]
+        a_win = a_flat.reshape(B, W, d_a)                  # (B, W, d_a)
+
+        # Flatten window dimensions: (B, W, d) -> (B, W*d)
+        z_flat = z_win.reshape(B, W * d)                   # (B, W*d)
+        a_flat_cat = a_win.reshape(B, W * d_a)             # (B, W*d_a)
+
+        return self.predictor(z_flat, a_flat_cat)          # (B, d)
 
     def forward(self, obs, action, next_obs):
         z_t   = self.encoder(obs)
@@ -106,6 +134,7 @@ class JEPAModel(nn.Module):
             'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,
             'vit_num_heads': c.vit_num_heads,
+            'predictor_window': c.predictor_window,
         }
 
 

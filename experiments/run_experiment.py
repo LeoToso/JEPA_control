@@ -121,6 +121,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         vit_depth=model_cfg.get('vit_depth', 4),
         vit_num_heads=model_cfg.get('vit_num_heads', 4),
         predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
+        predictor_window=int(model_cfg.get('predictor_window', 1)),
     )
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -335,21 +336,22 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Jacobian A_jac, B_jac
     print('[control] Computing Jacobian at z* ...')
     from control.jacobian import compute_jacobian_np
-    A_jac, B_jac = compute_jacobian_np(
-        model.predictor, model.action_encoder, z_star, device)
+    A_jac, B_jac = compute_jacobian_np(model, z_star, device)
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] rho(A_jac)={rho_jac:.4f}')
 
     # Fixed-point diagnostic: does f(z*, 0) ≈ z*?
+    _W = model.config.predictor_window
     with torch.no_grad():
-        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
-        a_zero    = model.action_encoder(torch.zeros(1, 1, device=device))
-        z_pred_eq = model.predictor(z_star_t, a_zero)
+        z_star_t = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
+        z_star_win = z_star_t.unsqueeze(1).expand(1, _W, -1)   # (1, W, d)
+        u_zero_win = torch.zeros(1, _W, 1, device=device)
+        z_pred_eq  = model.predict(z_star_win, u_zero_win)
         fp_err = float(torch.norm(z_pred_eq - z_star_t).item())
     print(f'[control] Predictor fixed-point error ||f(z*,0)-z*|| = {fp_err:.4f}')
 
     # ── Diagnostics: equilibrium drift and state estimation ───────────────────
-    c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]  # (d,) constant bias
+    c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]  # (d,) constant bias — from windowed predict above
     # Feedforward action that best cancels drift along B_jac direction:
     #   u_ff = -B^+ @ c  (least-squares; cancels the B-aligned component)
     BtB = B_jac.T @ B_jac + 1e-4 * np.eye(B_jac.shape[1])
@@ -368,9 +370,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         z_fp     = z_star + _dz_fp
         with torch.no_grad():
             _z_fp_t  = torch.tensor(z_fp, dtype=torch.float32, device=device).unsqueeze(0)
-            _a_ff_t  = model.action_encoder(
-                torch.tensor([[u_ff_lin]], dtype=torch.float32, device=device))
-            _z_fp_nl = model.predictor(_z_fp_t, _a_ff_t)
+            _z_fp_win = _z_fp_t.unsqueeze(1).expand(1, _W, -1)
+            _u_ff_win = torch.full((1, _W, 1), u_ff_lin, device=device)
+            _z_fp_nl  = model.predict(_z_fp_win, _u_ff_win)
             fp_err_fp = float(torch.norm(_z_fp_nl - _z_fp_t).item())
         print(f'[control] z_fp: ||z_fp-z_star||={np.linalg.norm(_dz_fp):.4f}  '
               f'fp_err={fp_err_fp:.4f}  (was {fp_err:.4f} at z_star)')
@@ -382,14 +384,15 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     with torch.no_grad():
         # How does the predictor drift from z* over H steps with zero action?
         print('[control] Predictor drift from z* (u=0, 5 steps):')
-        z_cur = z_star_t.clone()
-        a_zero = model.action_encoder(torch.zeros(1, 1, device=device))
+        z_drift_win = z_star_t.unsqueeze(1).expand(1, _W, -1).clone()  # (1, W, d)
+        u_drift_win = torch.zeros(1, _W, 1, device=device)
         for k in range(5):
-            z_cur = model.predictor(z_cur, a_zero)
-            dist = float(torch.norm(z_cur - z_star_t).item())
+            z_next = model.predict(z_drift_win, u_drift_win)
+            z_drift_win = torch.cat([z_drift_win[:, 1:], z_next.unsqueeze(1)], dim=1)
+            dist = float(torch.norm(z_next - z_star_t).item())
             state_str = ''
             if state_head is not None:
-                x_k = state_head(z_cur).cpu().numpy()[0]
+                x_k = state_head(z_next).cpu().numpy()[0]
                 state_str = f'  [x={x_k[0]:.3f} ẋ={x_k[1]:.3f} θ={x_k[2]:.3f} θ̇={x_k[3]:.3f}]'
             print(f'  step {k+1}: ||z-z*||={dist:.4f}{state_str}')
         # State_head estimate at z* (should be ~[0,0,0,0])
@@ -795,6 +798,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             _cem_nl = CEMLatentPlanner(
                 predictor=model.predictor, action_encoder=model.action_encoder,
+                predictor_window=model.config.predictor_window,
                 Q=_Q, R=_R_sc, Q_f=_Qf,
                 warm_start_sigma=_ws,
                 horizon=_H, chunk_size=cem_chunk,
