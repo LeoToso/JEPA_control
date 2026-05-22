@@ -14,7 +14,7 @@ model:
   action_latent_dim: 32
   action_encoder: none
   patch_size: 8
-  frame_stack: 1
+  frame_stack: 2
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
@@ -24,36 +24,36 @@ model:
 training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
-  batch_size: 128
+  batch_size: 256
   epochs: 200
-  horizon: 5
+  horizon: 10
   lambda_pred: 1.0
-  lambda_state: 0.0        # no state supervision at any phase (no state labels used)
-  lambda_anchor: 0.0       # state_head equilibrium anchor: disabled (no state supervision)
-  lambda_enc_anchor: 0.0   # disabled: with no warmup, this pushes toward collapse
-  lambda_inv: 0.0          # disabled
-  inv_action_scale: 10.0   # normalise actions by ±10 range so inv_loss ~ O(1)
+  lambda_state: 0.0
+  lambda_anchor: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0          # disabled: stuck at 0.359 regardless of weight
+  inv_action_scale: 10.0
   lambda_fp: 50.0          # fixed-point: f(z*,0)=z*
-  lambda_spec: 20.0        # spectral: match ρ(A) to GT unstable eigenvalue 1.0827
+  lambda_spec: 10.0        # spectral: match ρ(A) to GT unstable eigenvalue 1.0827
   lambda_spec_marginal: 0.0
-  lambda_PBH: 5.0
-  lambda_local: 0.0        # disabled
-  lambda_unstable: 0.0     # disabled
-  unstable_eta: 0.05       # minimum instability: ρ(A) ≥ 1.05
-  rho_max_init: 1.3        # initial ρ_max; updated each epoch from near-eq growth rates
-  local_state_threshold: 0.05  # |s|_inf threshold identifying self-loop samples
-  jacobian_every: 20
+  lambda_PBH: 10.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  unstable_eta: 0.05
+  rho_max_init: 1.3
+  local_state_threshold: 0.05
+  jacobian_every: 10
   use_vicreg: false
   vicreg_lambda: 5.0
-  lambda_sigreg: 5.0       # shape-only: applied to batch-mean-centered z to prevent dimensional collapse
-  sigreg_num_slices: 128   # 128 slices sufficient for D=32; paper uses 1024 for large D
-  sigreg_num_points: 17    # frequency evaluation points per slice
+  lambda_sigreg: 5.0
+  sigreg_num_slices: 128
+  sigreg_num_points: 17
   vicreg_nu: 1.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
-  checkpoint_every: 25
-  warmup_epochs: 0          # no warmup: all losses active + encoder trainable from epoch 1
+  checkpoint_every: 20
+  warmup_epochs: 0
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
@@ -61,7 +61,7 @@ training:
 probes:
   epsilon_lambda: 0.05
   delta_tol: 0.05
-  n_trials_control: 50
+  n_trials_control: 30
   n_trials_grad_mpc: 10
   T_rollout: 200
 
@@ -91,10 +91,10 @@ data:
   n_random: 50000
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 0.30   # was 0.15 — more extreme starts for larger obs-to-obs deltas
+  random_init_range: 0.40
   lqr_init_range: 0.10
   lqr_noise_std: 0.1
-  n_equilibrium: 500        # was 5000 — fewer near-zero-action samples that enable shortcuts
-  n_eq_selfloop: 500        # true zero-velocity self-loop transitions injected into train set
+  n_equilibrium: 500
+  n_eq_selfloop: 500
   eq_init_range: 0.002
   eq_noise_std: 0.001
