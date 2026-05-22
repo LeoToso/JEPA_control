@@ -230,8 +230,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                     _enc_comp[_j].append(_dsq[:, _j].mean().item())
                 _enc_tot.append(_dsq.mean().item())
             for _k in range(_H):
-                _a_k   = model.action_encoder(_acts[:, _k])
-                _z_hat = model.predictor(_z_v[:, _k], _a_k)
+                _pW_sd = model.config.predictor_window
+                _z_win_sd = _z_v[:, max(0, _k - _pW_sd + 1):_k + 1]   # (B, ≤W, d)
+                # Pad front with z_0 repeats if window not full yet
+                _pad_sd = _pW_sd - _z_win_sd.shape[1]
+                if _pad_sd > 0:
+                    _z_win_sd = torch.cat([
+                        _z_v[:, 0:1].expand(-1, _pad_sd, -1), _z_win_sd], dim=1)
+                _u_win_sd = _acts[:, max(0, _k - _pW_sd + 1):_k + 1]  # (B, ≤W, 1)
+                if _u_win_sd.shape[1] < _pW_sd:
+                    _u_win_sd = torch.cat([
+                        torch.zeros(_acts.shape[0], _pad_sd, 1, device=device),
+                        _u_win_sd], dim=1)
+                _z_hat = model.predict(_z_win_sd, _u_win_sd)
                 _s_hat = state_decoder(_z_hat)
                 _dsq   = (_s_hat - _st[:, _k + 1]).pow(2)
                 for _j in range(4):
