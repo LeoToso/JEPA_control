@@ -7,7 +7,10 @@ import numpy as np
 
 def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
                    env, z_star: np.ndarray, device, config: dict = {},
-                   frame_stack: int = 1) -> Dict:
+                   frame_stack: int = 1, B_eff: np.ndarray = None) -> Dict:
+    # B_eff: effective (d×1) B for raw scalar action; falls back to B_jac[:, :1]
+    if B_eff is None:
+        B_eff = B_jac[:, :1]
     results = {}
     eps_lambda = float(config.get('epsilon_lambda', 0.05))
     delta_tol  = float(config.get('delta_tol',      0.05))
@@ -99,7 +102,8 @@ def run_all_probes(A_jac: np.ndarray, B_jac: np.ndarray, gt, model,
                     obs, _, _ = env.reset_to_state(  # reset for next sample
                         np.array([0., 0., theta, 0.], dtype=np.float32))
                 # linear prediction including constant drift c = f(z*,0)-z*
-                z1_lin = A_jac @ (z0 - z_star) + B_jac[:, 0] * u + z_star + c_drift
+                # B_eff[:, 0] is the effective column for scalar raw action u
+                z1_lin = A_jac @ (z0 - z_star) + B_eff[:, 0] * u + z_star + c_drift
                 abs_err = float(np.linalg.norm(z1_lin - z1))
                 abs_errs.append(abs_err)
                 # relative error: normalise by displacement from z* (floor avoids /0)

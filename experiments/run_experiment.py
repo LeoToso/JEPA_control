@@ -248,6 +248,17 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] rho(A_jac)={rho_jac:.4f}')
 
+    # Effective B for raw scalar action: B_eff = B_jac @ W_enc  (d×1)
+    # B_jac = ∂f/∂c (d×m) where c = W_enc @ u is the lifted action.
+    # For linear controllers and diagnostics we need df/du = B_jac @ W_enc.
+    if hasattr(model.action_encoder, 'W'):
+        _W_enc_np = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
+        B_eff = B_jac @ _W_enc_np   # (d, 1)
+    else:
+        B_eff = B_jac   # IdentityActionEncoder: already (d, 1)
+    print(f'[control] B_jac norm: {np.linalg.norm(B_jac):.4f}  '
+          f'B_eff (scalar) norm: {np.linalg.norm(B_eff):.4f}')
+
     # Fixed-point diagnostic: does f(z*, 0) ≈ z*?
     _W = model.config.predictor_window
     with torch.no_grad():
@@ -260,20 +271,17 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # ── Diagnostics: equilibrium drift and state estimation ───────────────────
     c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]  # (d,) constant bias — from windowed predict above
-    # Feedforward action that best cancels drift along B_jac direction:
-    #   u_ff = -B^+ @ c  (least-squares; cancels the B-aligned component)
-    BtB = B_jac.T @ B_jac + 1e-4 * np.eye(B_jac.shape[1])
-    u_ff_lin = float(-np.linalg.solve(BtB, B_jac.T @ c_drift)[0])
-    b_norm = float(np.linalg.norm(B_jac))
-    cancelled = float(np.linalg.norm(B_jac * u_ff_lin))
-    print(f'[control] B_jac norm: {b_norm:.4f}')
+    # Feedforward scalar action that best cancels drift along B_eff direction.
+    b_eff = B_eff[:, 0]  # (d,) effective B column for raw scalar action
+    u_ff_lin = float(-np.dot(b_eff, c_drift) / (np.dot(b_eff, b_eff) + 1e-8))
+    cancelled = float(np.linalg.norm(b_eff * u_ff_lin))
     print(f'[control] u_ff={u_ff_lin:.4f}  cancels {cancelled:.4f}/{fp_err:.4f} of drift')
 
     # ── True predictor fixed point z_fp ──────────────────────────────────────
     # Solve (I - A_jac) @ dz = c_drift + B_jac * u_ff_lin in the linear model.
     # At z_fp the model predicts f(z_fp, u_ff) ≈ z_fp, giving CEM an achievable target.
     try:
-        _rhs_fp  = c_drift + B_jac.flatten() * u_ff_lin
+        _rhs_fp  = c_drift + b_eff * u_ff_lin
         _dz_fp   = np.linalg.solve(np.eye(A_jac.shape[0]) - A_jac, _rhs_fp)
         z_fp     = z_star + _dz_fp
         with torch.no_grad():
@@ -316,7 +324,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         A_jac=A_jac, B_jac=B_jac, gt=gt,
         model=model, env=env, z_star=z_star,
         device=device, config=probe_cfg,
-        frame_stack=frame_stack,
+        frame_stack=frame_stack, B_eff=B_eff,
     )
 
     # MPC setup
@@ -328,7 +336,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     n_trials     = int(probe_cfg.get('n_trials_control', 100))
     T_rollout    = int(probe_cfg.get('T_rollout', 200))
     init_scale   = float(ctrl_cfg.get('init_scale', 0.05))
-    R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(B_jac.shape[1])
+    R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(1)   # scalar action → (1,1)
     d            = len(z_star)
 
     # Pure JEPA: CEM cost is identity in latent space — ||z - z*||^2.
@@ -513,7 +521,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         try:
             from control.lqr import solve_discrete_lqr
             Q_lat_I = np.eye(d)
-            K_lat, _, cl_eigs_lat = solve_discrete_lqr(A_jac, B_jac, Q_lat_I, R_lqr,
+            K_lat, _, cl_eigs_lat = solve_discrete_lqr(A_jac, B_eff, Q_lat_I, R_lqr,
                                                         true_unstable_eigs=gt.unstable_eigenvalues,
                                                         pre_stabilize=True)
             rho_lat_cl = float(np.max(np.abs(cl_eigs_lat)))
@@ -592,12 +600,12 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                 tag = 'linear_mpc' if q_label == Q_lqr_source else 'linear_mpc_qI'
                 if tag == 'linear_mpc_qI' and Q_lqr_source == 'identity':
                     continue  # already ran Q=I above; skip duplicate
-                mpc_lin = LatentMPC(A=A_stab, B=B_jac, Q=Q_use, R=R_lqr,
+                mpc_lin = LatentMPC(A=A_stab, B=B_eff, Q=Q_use, R=R_lqr,
                                      horizon=mpc_horizon, chunk_size=mpc_chunk,
                                      Q_f=Qf_use, action_lb=action_lb, action_ub=action_ub,
                                      u_offset=u_ff_lin, c_offset=c_drift)
                 K_lin  = mpc_lin.K_list[0]
-                rho_cl = float(np.max(np.abs(np.linalg.eigvals(A_jac - B_jac @ K_lin))))
+                rho_cl = float(np.max(np.abs(np.linalg.eigvals(A_jac - B_eff @ K_lin))))
                 print(f'[control] {mpc_lin.summary()}  Q={q_label}')
                 print(f'[control] rho(A_cl)={rho_cl:.4f}  {"STABLE" if rho_cl < 1 else "UNSTABLE"}')
 
