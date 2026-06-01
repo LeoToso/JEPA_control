@@ -181,7 +181,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # downstream evaluation uses Q=I (identity) CEM which doesn't need Q_lat.
     print('[state_decoder] skipped (disabled)')
     state_decoder_results = {}
-    Q_lat_diag = np.eye(d)   # unused placeholder; CEM uses Q=I
+    Q_lat_diag = np.eye(model.config.latent_dim)   # unused placeholder; CEM uses Q=I
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
