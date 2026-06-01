@@ -97,13 +97,19 @@ cem:
   n_trials: 50
 
 data:
-  n_random: 50000
+  n_random: 100000         # 50k random + 50k LQR (mixed mode splits 50/50)
   train_frac: 0.8
   val_frac: 0.1
   random_init_range: 0.40
   lqr_init_range: 0.10
-  lqr_noise_std: 0.1
-  n_equilibrium: 500
+  lqr_noise_std: 0.25      # increased from 0.1: more action diversity near eq
+  n_equilibrium: 1000      # increased from 500
   n_eq_selfloop: 500
   eq_init_range: 0.002
   eq_noise_std: 0.001
+  # ── PRBS persistent excitation block ───────────────────────────────────────
+  n_pe: 25000              # PRBS near-eq transitions for L_temp + Gramian PE
+  pe_init_range: 0.05      # start close to upright (linear regime)
+  pe_action_amplitude: 3.0 # ±3N: excites without instantly destabilizing
+  pe_flip_prob: 0.15       # average hold = ~7 steps (temporal structure for W=3)
+  pe_max_ep_len: 40        # reset before pole falls far from equilibrium

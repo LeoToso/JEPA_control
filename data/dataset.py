@@ -27,13 +27,29 @@ def _compute_lqr_gain():
 
 def _collect_transitions(env, n_transitions, mode, lqr_gain,
                          action_low, action_high, init_range,
-                         lqr_noise_std, rng):
+                         lqr_noise_std, rng,
+                         pe_action_amplitude=3.0, pe_flip_prob=0.15,
+                         pe_max_ep_len=40):
+    """Collect n_transitions single-step transitions.
+
+    mode:
+        'random' — uniform random actions over full action range
+        'lqr'    — LQR + Gaussian noise (lqr_noise_std)
+        'prbs'   — Pseudo-Random Binary Sequence near equilibrium:
+                   hold ±pe_action_amplitude, flip sign with probability
+                   pe_flip_prob each step, reset every pe_max_ep_len steps.
+                   Provides persistent excitation with temporal structure.
+    """
     obs_list, state_list, action_list = [], [], []
     next_obs_list, next_state_list, ep_id_list = [], [], []
     obs, state, _ = env.reset(init_range=init_range)
     steps_since_reset = 0
     collected = 0
     episode_id = 0
+    current_prbs = float(rng.choice([-1, 1])) * pe_action_amplitude
+
+    max_ep_len = pe_max_ep_len if mode == 'prbs' else 200
+
     while collected < n_transitions:
         if mode == 'random':
             u = float(rng.uniform(action_low, action_high))
@@ -41,8 +57,15 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
             u_lqr = float(np.clip((lqr_gain @ state).item(), action_low, action_high))
             u = float(np.clip(u_lqr + float(rng.normal(0.0, lqr_noise_std)),
                               action_low, action_high))
+        elif mode == 'prbs':
+            if steps_since_reset == 0:
+                current_prbs = float(rng.choice([-1, 1])) * pe_action_amplitude
+            elif rng.random() < pe_flip_prob:
+                current_prbs = -current_prbs
+            u = current_prbs
         else:
             raise ValueError(f'Unknown mode: {mode}')
+
         next_obs, next_state, _, done, _ = env.step(u)
         obs_list.append(obs.copy())
         state_list.append(state.copy())
@@ -52,12 +75,14 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
         ep_id_list.append(episode_id)
         collected += 1
         steps_since_reset += 1
-        if done or steps_since_reset > 200:
+
+        if done or steps_since_reset >= max_ep_len:
             obs, state, _ = env.reset(init_range=init_range)
             steps_since_reset = 0
             episode_id += 1
         else:
             obs, state = next_obs, next_state
+
     return {
         'obs':         np.stack(obs_list).astype(np.uint8),
         'states':      np.stack(state_list).astype(np.float32),
@@ -72,22 +97,40 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                      save_path=None, seed=42, train_frac=0.8, val_frac=0.1,
                      action_range=(-5.0, 5.0), init_range=0.1,
                      lqr_init_range=None, lqr_noise_std=0.1, image_size=64,
-                     n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001):
+                     n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001,
+                     n_pe=0, pe_init_range=0.05, pe_action_amplitude=3.0,
+                     pe_flip_prob=0.15, pe_max_ep_len=40):
+    """Generate a dataset of cartpole transitions.
+
+    dataset_type='mixed': n_transitions//2 random + n_transitions//2 LQR,
+    plus optional near-equilibrium blocks (n_equilibrium, n_pe).
+
+    PRBS (n_pe > 0): starts near equilibrium (pe_init_range), applies a
+    Pseudo-Random Binary Sequence of ±pe_action_amplitude to maximise
+    persistent excitation in the linear regime around z*. Temporal structure
+    (average hold = 1/pe_flip_prob steps) is important for the windowed
+    predictor and the temporal covariance consistency loss (L_temp).
+    """
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng = np.random.RandomState(seed)
-    lqr_gain = _compute_lqr_gain() if dataset_type in ('lqr', 'mixed') else None
+    lqr_gain = _compute_lqr_gain() if dataset_type in ('lqr', 'mixed') or n_pe > 0 else None
     env = ContinuousCartpoleVisual(frame_skip=frame_skip, image_size=image_size,
                                    action_range=(-10.0, 10.0), seed=seed)
     action_low, action_high = action_range
     if lqr_init_range is None:
         lqr_init_range = max(0.05, init_range * 0.5)
+
     if dataset_type == 'mixed':
         n_random = n_transitions // 2
         n_lqr    = n_transitions - n_random
+        print(f'[data] Collecting {n_random} random transitions '
+              f'(init_range={init_range})...')
         data_rand = _collect_transitions(env, n_random, 'random', lqr_gain,
                                          action_low, action_high,
                                          init_range=init_range,
                                          lqr_noise_std=lqr_noise_std, rng=rng)
+        print(f'[data] Collecting {n_lqr} LQR+noise transitions '
+              f'(init_range={lqr_init_range}, noise_std={lqr_noise_std})...')
         data_lqr  = _collect_transitions(env, n_lqr, 'lqr', lqr_gain,
                                           action_low, action_high,
                                           init_range=lqr_init_range,
@@ -96,9 +139,11 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
         data_lqr['episode_ids'] += data_rand['episode_ids'].max() + 1
         data = {key: np.concatenate([data_rand[key], data_lqr[key]], axis=0)
                 for key in data_rand}
-        # Optional near-equilibrium sequences: teach predictor f(z*,0)≈z*.
-        # The predictor never sees "stay at rest" otherwise (random init_range > 0).
+
+        # Optional near-equilibrium self-loop block (u=tiny noise, teaches f(z*,0)≈z*)
         if n_equilibrium > 0:
+            print(f'[data] Collecting {n_equilibrium} equilibrium transitions '
+                  f'(init_range={eq_init_range}, noise_std={eq_noise_std})...')
             data_eq = _collect_transitions(env, n_equilibrium, 'lqr', lqr_gain,
                                            action_low, action_high,
                                            init_range=eq_init_range,
@@ -106,8 +151,28 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
             data_eq['episode_ids'] += data['episode_ids'].max() + 1
             data = {key: np.concatenate([data[key], data_eq[key]], axis=0)
                     for key in data}
-            print(f'[data] Added {n_equilibrium} equilibrium transitions '
-                  f'(init_range={eq_init_range}, noise_std={eq_noise_std})')
+
+        # PRBS near-equilibrium block: persistent excitation for L_temp + Gramian
+        if n_pe > 0:
+            print(f'[data] Collecting {n_pe} PRBS transitions '
+                  f'(init_range={pe_init_range}, '
+                  f'amp={pe_action_amplitude}, '
+                  f'p_flip={pe_flip_prob}, '
+                  f'max_ep={pe_max_ep_len})...')
+            data_pe = _collect_transitions(
+                env, n_pe, 'prbs', lqr_gain,
+                action_low, action_high,
+                init_range=pe_init_range,
+                lqr_noise_std=lqr_noise_std,
+                rng=rng,
+                pe_action_amplitude=pe_action_amplitude,
+                pe_flip_prob=pe_flip_prob,
+                pe_max_ep_len=pe_max_ep_len,
+            )
+            data_pe['episode_ids'] += data['episode_ids'].max() + 1
+            data = {key: np.concatenate([data[key], data_pe[key]], axis=0)
+                    for key in data}
+
     else:
         init_r = 0.05 if dataset_type == 'lqr' else init_range
         data = _collect_transitions(env, n_transitions, dataset_type, lqr_gain,
@@ -115,6 +180,7 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                                     init_range=init_r,
                                     lqr_noise_std=lqr_noise_std, rng=rng)
     env.close()
+
     N = data['obs'].shape[0]
     # Shuffle by episode to avoid leaking future info across splits
     ep_ids   = data['episode_ids']
@@ -124,6 +190,7 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
     sort_idx  = np.argsort([ep_order[e] for e in ep_ids], kind='stable')
     for key in data:
         data[key] = data[key][sort_idx]
+
     N     = len(data['obs'])
     n_tr  = int(N * train_frac)
     n_val = int(N * val_frac)
@@ -142,6 +209,8 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
     data['splits'] = splits
     data['action_cov'] = np.atleast_2d(action_cov)
     data['action_cov_condition_number'] = kappa
+    print(f'[data] Total: {N} transitions  '
+          f'(train={n_tr}, val={n_val}, test={N-n_tr-n_val})')
     if save_path is not None:
         _save_hdf5(data, save_path, splits)
     return data
@@ -176,7 +245,6 @@ def load_dataset(path):
     # Backward compat: datasets without episode_ids get a dummy column
     if 'episode_ids' not in data:
         N = len(data['obs'])
-        # Treat each transition as its own episode (no multi-step windows)
         data['episode_ids'] = np.arange(N, dtype=np.int32)
     return data
 
@@ -264,8 +332,6 @@ class TrajectoryDataset(Dataset):
         H  = self.horizon
         ep = self.ep_ids
         N  = len(ep)
-        # A window [i, i+H) is valid iff all steps share the same episode id.
-        # Vectorised: compare ep[i] with ep[i+1..i+H-1].
         valid = []
         for i in range(N - H):
             if np.all(ep[i:i + H] == ep[i]):
@@ -284,18 +350,13 @@ class TrajectoryDataset(Dataset):
             return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0  # (3, h, w)
 
         def _stack_frames(prev_t, curr_t):
-            # prev_t, curr_t: (3, h, w) tensors; returns (3*FS, h, w)
             return torch.cat([prev_t, curr_t], dim=0) if FS > 1 else curr_t
 
-        # Frames: obs[start], obs[start+1], ..., obs[start+H-1], next_obs[start+H-1]
-        # With frame stacking, each position gets [obs_{t-1}, obs_t] channel-wise.
-        # At k=0, prev = curr (duplicate first frame since no prior observation).
         frames = []
         for k in range(H):
             curr_t = _to_tensor(self.obs[start + k])
             prev_t = _to_tensor(self.obs[start + k - 1]) if k > 0 else curr_t
             frames.append(_stack_frames(prev_t, curr_t))
-        # Last frame: prev = obs[start+H-1], curr = next_obs[start+H-1]
         prev_last = _to_tensor(self.obs[start + H - 1])
         curr_last = _to_tensor(self.next_obs[start + H - 1])
         frames.append(_stack_frames(prev_last, curr_last))
@@ -303,7 +364,6 @@ class TrajectoryDataset(Dataset):
 
         actions = torch.from_numpy(self.actions[start:start + H])     # (H, 1)
 
-        # States: state[start..start+H-1] + next_state[start+H-1]
         states_list = [self.states[start + k] for k in range(H)]
         states_list.append(self.next_states[start + H - 1])
         states = torch.from_numpy(np.stack(states_list))               # (H+1, 4)
