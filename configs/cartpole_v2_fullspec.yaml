@@ -68,7 +68,7 @@ training:
   lambda_temp: 0.5           # temporal covariance consistency near equilibrium
   temp_near_eq_radius: 2.0
   lambda_inv: 0.5            # keeps action encoder alive
-  lambda_spec: 0.5           # forces rho(A_jac)→1.0827 (unstable mode recovery)
+  lambda_spec: 0.0           # disabled: dynSIG near-eq should recover spectral structure
 
 probes:
   epsilon_lambda: 0.05
