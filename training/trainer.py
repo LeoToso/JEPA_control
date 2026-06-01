@@ -152,6 +152,7 @@ class Trainer:
         self._rho_buffer: list = []          # near-eq growth rates, reset each epoch
         self._A_jac_cache: Optional[torch.Tensor] = None   # stop-grad, updated every jacobian_every steps
         self._B_jac_cache: Optional[torch.Tensor] = None
+        self._B_eff_cache: Optional[torch.Tensor] = None   # B_eff = B_jac @ W_enc (d×1), scalar action
         # z* anchor: set by set_obs_eq() to encoder(obs_eq); falls back to batch EMA
         self._z_star_ema: Optional[torch.Tensor] = None
         self._obs_eq: Optional[torch.Tensor] = None  # (1,3,h,w) equilibrium image
@@ -449,18 +450,28 @@ class Trainer:
                 A_jac, B_jac = compute_jacobian_torch(
                     self.model, z_star_t, self.device,
                 )
+                # B_eff: effective (d×1) B for raw scalar action, differentiable.
+                # B_jac = ∂f/∂c (d×m); B_eff = B_jac @ W_enc where c = W_enc @ u.
+                # Gradient flows through both B_jac (predictor) and W_enc (action encoder).
+                if hasattr(self.model.action_encoder, 'W'):
+                    B_eff_torch = B_jac @ self.model.action_encoder.W.weight  # (d, 1)
+                else:
+                    B_eff_torch = B_jac  # identity encoder: B_jac already (d, 1)
+
                 # Cache for L_local / L_temp (used every step between Jacobian updates)
                 self._A_jac_cache = A_jac.detach()
                 self._B_jac_cache = B_jac.detach()
+                self._B_eff_cache = B_eff_torch.detach()
 
-                # Update Sigma_target via EMA for L_dynSIG
+                # Update Sigma_target via EMA for L_dynSIG.
+                # Use B_eff (d×1) for the Gramian: correct for scalar-input control.
                 if self.lambda_dynSIG > 0:
                     from losses.dyn_sigreg import (compute_controllability_gramian,
                                                    build_sigma_target)
                     with torch.no_grad():
                         W_T_new = compute_controllability_gramian(
                             self._A_jac_cache.float(),
-                            self._B_jac_cache.float(),
+                            self._B_eff_cache.float(),   # scalar B, not wide B_jac
                             T_g=self.dynSIG_T_g,
                         )
                         Sigma_new = build_sigma_target(W_T_new, alpha=self.dynSIG_alpha)
@@ -515,7 +526,9 @@ class Trainer:
                         total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
                         info['spec_marginal_loss'] = marginal_loss.item()
 
-                # PBH controllability at each GT unstable eigenvalue
+                # PBH stabilisability at each GT unstable eigenvalue.
+                # Uses B_eff (d×1) — the scalar effective B — so gradient flows
+                # through both the predictor (B_jac) and action encoder (W_enc).
                 if (self.lambda_PBH > 0
                         and self.true_unstable_eigs is not None
                         and len(self.true_unstable_eigs) > 0):
@@ -529,7 +542,7 @@ class Trainer:
                         M_S = torch.cat(
                             [lam_r * torch.eye(d_dyn, device=A_jac.device,
                                                dtype=A_jac.dtype) - A_jac,
-                             B_jac], dim=-1,
+                             B_eff_torch.to(dtype=A_jac.dtype)], dim=-1,
                         )
                         sv = torch.linalg.svdvals(M_S)
                         pbh_terms.append(-torch.log(sv[-1] + 1e-6))
