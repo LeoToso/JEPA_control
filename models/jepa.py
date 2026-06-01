@@ -115,6 +115,20 @@ class JEPAModel(nn.Module):
 
         return self.predictor(z_flat, a_flat_cat)          # (B, d)
 
+    def predict_from_encoded(self, z_win: torch.Tensor, c_win: torch.Tensor) -> torch.Tensor:
+        """Like predict() but c_win is already encoded (bypasses action_encoder).
+
+        Parameters
+        ----------
+        z_win : (B, W, d)   — window of W latent states
+        c_win : (B, W, d_a) — window of W action embeddings (already encoded)
+        """
+        B, W, d = z_win.shape
+        d_a = c_win.shape[-1]
+        z_flat = z_win.reshape(B, W * d)
+        c_flat = c_win.reshape(B, W * d_a)
+        return self.predictor(z_flat, c_flat)              # (B, d)
+
     def forward(self, obs, action, next_obs):
         z_t   = self.encoder(obs)
         a_t   = self.action_encoder(action)

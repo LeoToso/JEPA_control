@@ -78,6 +78,14 @@ class Trainer:
         self.lambda_sigreg      = float(self.cfg.get('lambda_sigreg', 0.0))
         self.sigreg_num_slices  = int(self.cfg.get('sigreg_num_slices', 128))
         self.sigreg_num_points  = int(self.cfg.get('sigreg_num_points', 17))
+        # ── Dynamics-aware regularization ─────────────────────────────────────
+        self.lambda_dynSIG  = float(self.cfg.get('lambda_dynSIG', 0.0))
+        self.dynSIG_T_g     = int(  self.cfg.get('dynSIG_T_g',    5))
+        self.dynSIG_alpha   = float(self.cfg.get('dynSIG_alpha',  0.1))
+        self.dynSIG_beta    = float(self.cfg.get('dynSIG_beta',   0.95))
+        self.lambda_temp    = float(self.cfg.get('lambda_temp',   0.0))
+        self.temp_near_eq_radius = float(self.cfg.get('temp_near_eq_radius', 0.5))
+        self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
@@ -179,7 +187,8 @@ class Trainer:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
                  'vicreg', 'state_loss', 'fp_loss', 'local_loss',
-                 'unstable_loss', 'spec_loss', 'pbh_loss'])
+                 'unstable_loss', 'spec_loss', 'pbh_loss',
+                 'dynSIG_loss', 'temp_loss'])
 
     def _log_csv(self, epoch, split, step, info):
         with open(self.log_path, 'a', newline='') as f:
@@ -190,6 +199,7 @@ class Trainer:
                 info.get('fp_loss', ''), info.get('local_loss', ''),
                 info.get('unstable_loss', ''), info.get('spec_loss', ''),
                 info.get('pbh_loss', ''),
+                info.get('dynSIG_loss', ''), info.get('temp_loss', ''),
             ])
 
     # ── Loss computation ──────────────────────────────────────────────────────
@@ -278,6 +288,42 @@ class Trainer:
             )
             total_loss = total_loss + self.lambda_sigreg * sig_loss
             info['sigreg_loss'] = sig_loss.item()
+
+        # L_dynSIG: dynamics-aware SIGreg.
+        # Target covariance = controllability Gramian of local linearization (A, B),
+        # computed from Jacobian cache and updated via EMA every jacobian_every steps.
+        # Applied to all batch samples (global shape prior).
+        if self.lambda_dynSIG > 0 and self._Sigma_target is not None:
+            from losses.dyn_sigreg import dynsigreg_loss
+            dyn_loss = dynsigreg_loss(
+                z_all[:, 0],
+                self._Sigma_target.detach(),
+                num_slices=self.sigreg_num_slices,
+                num_points=self.sigreg_num_points,
+            )
+            total_loss = total_loss + self.lambda_dynSIG * dyn_loss
+            info['dynSIG_loss'] = dyn_loss.item()
+
+        # L_temp: temporal covariance consistency on near-equilibrium samples.
+        # Enforces Sigma_1_res ≈ A Sigma_0 where Sigma_1_res removes B*c_t,
+        # training encoder + predictor to preserve local spectral structure.
+        if (is_train and self.lambda_temp > 0
+                and self._A_jac_cache is not None
+                and self._z_star_ema is not None):
+            from losses.dyn_sigreg import temporal_consistency_loss
+            z_star_d = self._z_star_ema.detach()
+            dz_t   = z_all[:, 0] - z_star_d.unsqueeze(0)   # (B, d)
+            dz_tp1 = z_all[:, 1] - z_star_d.unsqueeze(0)   # (B, d)
+            near_eq = dz_t.norm(dim=1) < self.temp_near_eq_radius
+            if near_eq.sum() >= 4:
+                c_ne = self.model.action_encoder(actions[near_eq, 0])  # (N, m)
+                temp_loss = temporal_consistency_loss(
+                    dz_t[near_eq], dz_tp1[near_eq],
+                    self._A_jac_cache, self._B_jac_cache,
+                    c_t=c_ne,
+                )
+                total_loss = total_loss + self.lambda_temp * temp_loss
+                info['temp_loss'] = temp_loss.item()
 
         # Multi-step inverse dynamics: ψ(z_0, z_H) → mean(u_0…u_{H-1}).
         # Using the full-horizon gap (H steps apart) instead of consecutive pairs
@@ -379,6 +425,8 @@ class Trainer:
         # ── Jacobian regularisation every jacobian_every steps ────────────────
         _needs_jac = (
             self.lambda_unstable > 0
+            or self.lambda_dynSIG > 0
+            or self.lambda_temp > 0
             or (self.lambda_spec > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
@@ -394,9 +442,28 @@ class Trainer:
                 A_jac, B_jac = compute_jacobian_torch(
                     self.model, z_star_t, self.device,
                 )
-                # Cache for L_local (used every step between Jacobian updates)
+                # Cache for L_local / L_temp (used every step between Jacobian updates)
                 self._A_jac_cache = A_jac.detach()
                 self._B_jac_cache = B_jac.detach()
+
+                # Update Sigma_target via EMA for L_dynSIG
+                if self.lambda_dynSIG > 0:
+                    from losses.dyn_sigreg import (compute_controllability_gramian,
+                                                   build_sigma_target)
+                    with torch.no_grad():
+                        W_T_new = compute_controllability_gramian(
+                            self._A_jac_cache.float(),
+                            self._B_jac_cache.float(),
+                            T_g=self.dynSIG_T_g,
+                        )
+                        Sigma_new = build_sigma_target(W_T_new, alpha=self.dynSIG_alpha)
+                        if self._Sigma_target is None:
+                            self._Sigma_target = Sigma_new
+                        else:
+                            self._Sigma_target = (
+                                self.dynSIG_beta * self._Sigma_target
+                                + (1 - self.dynSIG_beta) * Sigma_new
+                            )
 
                 eigvals = torch.linalg.eigvals(A_jac)
 
@@ -622,11 +689,13 @@ class Trainer:
                                if 'spec_marginal_loss' in tr else '')) if 'spec_loss' in tr else ''
             anchor_str   = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'    in tr else ''
             sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
+            dynsig_str   = f"  dynSIG={tr.get('dynSIG_loss', 0):.4f}" if 'dynSIG_loss'   in tr else ''
+            temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{temp_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 

@@ -171,120 +171,12 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # ── Post-training linear state decoder (evaluation metric for encoder comparison) ──
     # Train a simple linear z→state decoder on training data, then evaluate:
-    #   • Encoding MSE: how well encoder(obs) captures state (per-component and total)
-    #   • Prediction MSE: how well predictor(encoder(obs_t), u_t) predicts next state
-    # This standardised metric enables apples-to-apples comparison across experiments.
-    sd_path = ckpt_dir / 'state_decoder.pt'
-    sd_results_path = out_dir / 'state_decoder_results.json'
+    # State decoder disabled: action lifting + dynamics-aware losses make
+    # the latent geometry harder to interpret via a linear probe, and the
+    # downstream evaluation uses Q=I (identity) CEM which doesn't need Q_lat.
+    print('[state_decoder] skipped (disabled)')
     state_decoder_results = {}
-    sd_skip = eval_only and sd_path.exists()
-    state_decoder = nn.Linear(model.config.latent_dim, 4).to(device)
-    if sd_skip:
-        state_decoder.load_state_dict(torch.load(sd_path, map_location=device))
-        print(f'[state_decoder] --eval-only: loaded from {sd_path}')
-    else:
-        print('\n[state_decoder] Training linear state decoder (50 epochs, frozen encoder)...')
-        model.eval()
-        for p in model.parameters():
-            p.requires_grad_(False)
-        dec_opt = torch.optim.Adam(state_decoder.parameters(), lr=1e-3, weight_decay=1e-5)
-        for _ep in range(50):
-            state_decoder.train()
-            for batch in loaders['train']:
-                obs_seq  = batch['obs_seq'].to(device)
-                states_b = batch['states'].to(device).float()
-                _B, _H1, _C, _h, _w = obs_seq.shape
-                with torch.no_grad():
-                    _z = model.encoder(obs_seq.view(_B * _H1, _C, _h, _w))
-                _z_v = _z.view(_B, _H1, -1)
-                _loss = sum(
-                    F.mse_loss(state_decoder(_z_v[:, _k]), states_b[:, _k])
-                    for _k in range(_H1)
-                ) / _H1
-                dec_opt.zero_grad(); _loss.backward(); dec_opt.step()
-            if (_ep + 1) % 10 == 0:
-                print(f'  [state_decoder] epoch {_ep+1}/50  loss={_loss.item():.4f}')
-        for p in model.parameters():
-            p.requires_grad_(True)
-        torch.save(state_decoder.state_dict(), sd_path)
-
-    state_decoder.eval()
-    model.eval()
-    _state_names = ['x', 'x_dot', 'theta', 'theta_dot']
-    _enc_comp  = [[] for _ in range(4)]
-    _pred_comp = [[] for _ in range(4)]
-    _enc_tot, _pred_tot = [], []
-    with torch.no_grad():
-        for batch in loaders['val']:
-            _obs  = batch['obs_seq'].to(device)
-            _st   = batch['states'].to(device).float()
-            _acts = batch['actions'].to(device)
-            _B, _H1, _C, _h, _w = _obs.shape
-            _H = _H1 - 1
-            _z_flat = model.encoder(_obs.view(_B * _H1, _C, _h, _w))
-            _z_v = _z_flat.view(_B, _H1, -1)
-            for _k in range(_H1):
-                _s_hat = state_decoder(_z_v[:, _k])
-                _dsq   = (_s_hat - _st[:, _k]).pow(2)
-                for _j in range(4):
-                    _enc_comp[_j].append(_dsq[:, _j].mean().item())
-                _enc_tot.append(_dsq.mean().item())
-            for _k in range(_H):
-                _pW_sd = model.config.predictor_window
-                _z_win_sd = _z_v[:, max(0, _k - _pW_sd + 1):_k + 1]   # (B, ≤W, d)
-                # Pad front with z_0 repeats if window not full yet
-                _pad_sd = _pW_sd - _z_win_sd.shape[1]
-                if _pad_sd > 0:
-                    _z_win_sd = torch.cat([
-                        _z_v[:, 0:1].expand(-1, _pad_sd, -1), _z_win_sd], dim=1)
-                _u_win_sd = _acts[:, max(0, _k - _pW_sd + 1):_k + 1]  # (B, ≤W, 1)
-                if _u_win_sd.shape[1] < _pW_sd:
-                    _u_win_sd = torch.cat([
-                        torch.zeros(_acts.shape[0], _pad_sd, 1, device=device),
-                        _u_win_sd], dim=1)
-                _z_hat = model.predict(_z_win_sd, _u_win_sd)
-                _s_hat = state_decoder(_z_hat)
-                _dsq   = (_s_hat - _st[:, _k + 1]).pow(2)
-                for _j in range(4):
-                    _pred_comp[_j].append(_dsq[:, _j].mean().item())
-                _pred_tot.append(_dsq.mean().item())
-
-    _enc_mse  = float(np.mean(_enc_tot))
-    _pred_mse = float(np.mean(_pred_tot))
-    _enc_c    = [float(np.mean(c)) for c in _enc_comp]
-    _pred_c   = [float(np.mean(c)) for c in _pred_comp]
-
-    print(f'\n[state_decoder] ── Evaluation (linear decoder ∘ encoder) ──')
-    print(f'  Encoding MSE  (z→state):                  {_enc_mse:.4f}')
-    print(f'  Prediction MSE (predictor(z,u)→state):    {_pred_mse:.4f}')
-    print(f'  Per-component:')
-    for _j, _n in enumerate(_state_names):
-        print(f'    {_n:12s}  enc={_enc_c[_j]:.4f}  pred={_pred_c[_j]:.4f}')
-
-    state_decoder_results = {
-        'encoding_mse':   _enc_mse,
-        'prediction_mse': _pred_mse,
-        'encoding_mse_per_component':   {n: _enc_c[j]  for j, n in enumerate(_state_names)},
-        'prediction_mse_per_component': {n: _pred_c[j] for j, n in enumerate(_state_names)},
-    }
-    import json as _json
-    with open(sd_results_path, 'w') as _f:
-        _json.dump(state_decoder_results, _f, indent=2)
-
-    # ── Q_lat: evaluation diagnostic only — NOT used in any planner ─────────────
-    # Measures how well the encoder's latent geometry aligns with physical cost.
-    # Q_lat = W^T Q_phys W from the state decoder weight matrix.
-    # This is evaluation-only information; the planner uses Q = I (identity).
-    W_dec = state_decoder.weight.detach().cpu().numpy()   # (4, d)
-    _Q_phys_cem = np.diag([50., 0.1, 100., 1.])
-    _Q_lat_raw  = W_dec.T @ _Q_phys_cem @ W_dec
-    _tr_lat     = float(np.trace(_Q_lat_raw))
-    _d          = W_dec.shape[1]
-    Q_lat_diag  = _Q_lat_raw * (_d / max(_tr_lat, 1e-6))  # renamed: never passed to planner
-    np.save(out_dir / 'Q_lat.npy', Q_lat_diag)
-    _eig_lat = np.linalg.eigvalsh(Q_lat_diag)
-    print(f'[eval]    Q_lat alignment: raw trace={_tr_lat:.4f}  '
-          f'eig range [{_eig_lat.min():.3f}, {_eig_lat.max():.3f}]  (diagnostic only)')
+    Q_lat_diag = np.eye(d)   # unused placeholder; CEM uses Q=I
 
     # ── Post-hoc linear state probe (diagnostic only, not used for CEM cost) ──
     # Skipped in --cem-only mode since CEM doesn't use state_head.
@@ -735,27 +627,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
-    # ── CEM sweep ─────────────────────────────────────────────────────────────
-    # Q_lat = W^T Q_phys W focuses cost on physically meaningful latent directions.
-    # Q=I is the pure JEPA cost; Q_lat aligns with the known physical objective.
+    # ── CEM sweep: nonlinear predictor dynamics, Q=I, R=0.1·I ─────────────────
     # Warm-starting (σ_warm=0.5) shifts the previous optimal action sequence to the
     # next step's initialisation — prevents the cold-start bang-bang bias where
     # random σ=3 samples produce saturated elites that lock in ±10 actions.
-    _Q_lat_10 = Q_lat_diag * (10.0 / max(float(np.trace(Q_lat_diag)), 1e-6))
-    _R_hi     = 0.1 * np.eye(B_jac.shape[1])   # stronger action penalty → smoother u
+    _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
     _cem_sweep = [
-        dict(tag='H10_QI_zs_ws',    horizon=10, Q=np.eye(d),    Qf=np.eye(d),
-             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
-             desc='H=10 Q=I z* warm-start'),
-        dict(tag='H10_Qlat_zs_ws',  horizon=10, Q=Q_lat_diag,   Qf=_Q_lat_10,
-             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
-             desc='H=10 Qlat z* warm-start'),
-        dict(tag='H25_Qlat_zs_ws',  horizon=25, Q=Q_lat_diag,   Qf=_Q_lat_10,
-             zs=z_star, std=3.0, ws=0.5, R=R_lqr, ni=20,
-             desc='H=25 Qlat z* warm-start'),
-        dict(tag='H10_Qlat_zs_Rhi', horizon=10, Q=Q_lat_diag,   Qf=_Q_lat_10,
-             zs=z_star, std=3.0, ws=0.5, R=_R_hi, ni=20,
-             desc='H=10 Qlat z* R=0.1 warm-start'),
+        dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
+             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+             desc='H=10 Q=I nonlinear'),
+        dict(tag='H25_QI_nl', horizon=25, Q=np.eye(d), Qf=np.eye(d),
+             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+             desc='H=25 Q=I nonlinear'),
     ]
 
     from control.cem import CEMLatentPlanner
@@ -765,46 +648,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         _desc = _sc['desc'];  _zs   = _sc.get('zs', z_star)
         _std  = _sc.get('std', cem_std)
         _ws   = _sc.get('ws', 0.5)
-        _R_sc = _sc.get('R', R_lqr)
+        _R_sc = _sc.get('R', _R_cem)
         _ni   = _sc.get('ni',  cem_n_iter)
 
-        # — linear (Jacobian) dynamics —
-        print(f'\n[control] --- CEM linear  {_desc} ---')
-        try:
-            _cem_lin = CEMLatentPlanner(
-                A=A_stab, B=B_jac, c_offset=c_drift,
-                Q=_Q, R=_R_sc, Q_f=_Qf,
-                warm_start_sigma=_ws,
-                horizon=_H, chunk_size=cem_chunk,
-                n_samples=cem_n_samp, n_elites=cem_n_elite,
-                n_iter=_ni, init_std=_std,
-                action_lb=action_lb, action_ub=action_ub,
-                device=device,
-            )
-            print(f'[control] {_cem_lin.summary()}')
-            _cr_cl = evaluate_stabilization_mpc(
-                encoder=model.encoder, mpc=_cem_lin, env=env,
-                n_trials=n_trials_cem, T=T_rollout, init_scale=init_scale,
-                seed=seed, device=device, z_star=_zs, vis_trial=0,
-                frame_stack=frame_stack,
-            )
-            _rk_cl = f'cem_linear_{_tag}'
-            ctrl_results[_rk_cl] = {k: v for k, v in _cr_cl.items() if k != 'vis_result'}
-            print(f'[control] {_rk_cl}: success={_cr_cl["success_rate"]:.3f}'
-                  f'  ep_len={_cr_cl["mean_episode_length"]:.1f}'
-                  f'  frac_stable={_cr_cl["mean_fraction_stable"]:.3f}')
-            _vis_cl = _cr_cl.get('vis_result')
-            if _vis_cl:
-                save_rollout_frames(_vis_cl, out_dir / f'{_rk_cl}_frames.png',
-                                    n_frames=8, title=f'{exp_name}  CEM-lin {_desc}')
-                save_rollout_video(_vis_cl, out_dir / f'{_rk_cl}.gif',
-                                   fps=15, title=f'{exp_name}  CEM-lin {_desc}')
-        except Exception as exc:
-            import traceback; traceback.print_exc()
-            print(f'[control] CEM-linear {_tag} failed: {exc}')
-            ctrl_results[f'cem_linear_{_tag}'] = {'error': str(exc)}
-
-        # — nonlinear (predictor) dynamics —
         print(f'\n[control] --- CEM nonlinear  {_desc} ---')
         try:
             _cem_nl = CEMLatentPlanner(
@@ -842,20 +688,21 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             ctrl_results[f'cem_nonlinear_{_tag}'] = {'error': str(exc)}
 
     # ── CEM sweep summary table ───────────────────────────────────────────────
-    print('\n' + '═' * 73)
-    print('CEM SWEEP SUMMARY')
-    print('═' * 73)
-    print(f'  {"Config":<28} {"Lin succ":>9} {"NL succ":>9} {"Lin frac":>9} {"NL frac":>9}')
-    print('  ' + '-' * 69)
+    print('\n' + '═' * 55)
+    print('CEM SWEEP SUMMARY  (nonlinear predictor, Q=I)')
+    print('═' * 55)
+    print(f'  {"Config":<28} {"succ":>7} {"frac_stb":>9} {"ep_len":>8}')
+    print('  ' + '-' * 51)
     for _sc in _cem_sweep:
-        _t = _sc['tag']
-        _cl = ctrl_results.get(f'cem_linear_{_t}',    {})
+        _t  = _sc['tag']
         _cn = ctrl_results.get(f'cem_nonlinear_{_t}', {})
         _f  = lambda d, k: f'{d[k]:.3f}' if k in d else '  err'
+        _fl = lambda d, k: f'{d[k]:.1f}' if k in d else '   err'
         print(f'  {_sc["desc"]:<28} '
-              f'{_f(_cl, "success_rate"):>9} {_f(_cn, "success_rate"):>9} '
-              f'{_f(_cl, "mean_fraction_stable"):>9} {_f(_cn, "mean_fraction_stable"):>9}')
-    print('═' * 73 + '\n')
+              f'{_f(_cn, "success_rate"):>7} '
+              f'{_f(_cn, "mean_fraction_stable"):>9} '
+              f'{_fl(_cn, "mean_episode_length"):>8}')
+    print('═' * 55 + '\n')
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
     if not cem_only: print('\n[control] --- Nonlinear Gradient MPC ---')

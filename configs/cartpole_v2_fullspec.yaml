@@ -11,8 +11,8 @@ environment:
 
 model:
   latent_dim: 32
-  action_latent_dim: 32
-  action_encoder: none
+  action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
+  action_encoder: linear     # linear lifting W in R^{4x1}
   patch_size: 8
   frame_stack: 1
   predictor_window: 3
@@ -32,12 +32,12 @@ training:
   lambda_state: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  lambda_inv: 0.0          # disabled: stuck at 0.359 regardless of weight
+  lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 50.0          # fixed-point: f(z*,0)=z*
-  lambda_spec: 10.0        # spectral: match ρ(A) to GT unstable eigenvalue 1.0827
+  lambda_fp: 50.0            # fixed-point: f(z*,0)=z*
+  lambda_spec: 0.0           # disabled: replaced by L_dynSIG + L_temp
   lambda_spec_marginal: 0.0
-  lambda_PBH: 10.0
+  lambda_PBH: 0.0            # disabled: action lifting makes B wide, PBH trivially satisfied
   lambda_local: 0.0
   lambda_unstable: 0.0
   unstable_eta: 0.05
@@ -46,7 +46,7 @@ training:
   jacobian_every: 10
   use_vicreg: false
   vicreg_lambda: 5.0
-  lambda_sigreg: 5.0
+  lambda_sigreg: 0.0         # replaced by lambda_dynSIG
   sigreg_num_slices: 128
   sigreg_num_points: 17
   vicreg_nu: 1.0
@@ -59,6 +59,13 @@ training:
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
+  # ── Dynamics-aware regularization ──────────────────────────────────────────
+  lambda_dynSIG: 2.0         # dynamics-aware SIGreg (target = controllability Gramian)
+  dynSIG_T_g: 5              # finite horizon for Gramian sum
+  dynSIG_alpha: 0.1          # isotropic floor weight: Sigma = (1-a)*W_bar + a*I
+  dynSIG_beta: 0.95          # EMA momentum for Sigma_target update
+  lambda_temp: 0.5           # temporal covariance consistency: Sigma_1 ≈ A*Sigma_0
+  temp_near_eq_radius: 0.5   # ||z_t - z*|| < r to select near-eq samples for L_temp
 
 probes:
   epsilon_lambda: 0.05

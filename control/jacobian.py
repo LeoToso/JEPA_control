@@ -43,23 +43,25 @@ def compute_jacobian_np(model, z_star: np.ndarray, device) -> tuple:
         A_rows.append(g[0].detach())
     A_jac = torch.stack(A_rows).cpu().numpy()   # (d, d)
 
-    # B_jac: differentiate w.r.t. last u entry; history entries are zeros
-    # u_win: (1, W, 1) with last entry having requires_grad
-    u_hist = torch.zeros(1, W - 1, 1, device=device)
-    u_last = torch.zeros(1, 1, 1, device=device, requires_grad=True)
+    # B_jac: ∂z_{t+1}/∂c_t where c = action_encoder(u).
+    # Differentiating w.r.t. the encoded action (not the raw scalar) gives
+    # B ∈ R^{d × d_a} — wide matrix when d_a > 1 (action lifting).
+    m = model.action_encoder.latent_action_dim
+    c_hist = torch.zeros(1, W - 1, m, device=device)
+    c_last = torch.zeros(1, 1, m, device=device, requires_grad=True)
     if W > 1:
-        u_win_b = torch.cat([u_hist, u_last], dim=1)   # (1, W, 1)
+        c_win_b = torch.cat([c_hist, c_last], dim=1)   # (1, W, m)
     else:
-        u_win_b = u_last                                # (1, 1, 1)
+        c_win_b = c_last                                # (1, 1, m)
 
     z_win_b = z_eq.detach().unsqueeze(1).expand(1, W, d)  # (1, W, d) — all z* detached
-    z_out_b = model.predict(z_win_b, u_win_b)              # (1, d)
+    z_out_b = model.predict_from_encoded(z_win_b, c_win_b)  # (1, d)
 
     B_cols = []
     for i in range(d):
-        g = torch.autograd.grad(z_out_b[0, i], u_last, retain_graph=(i < d - 1))[0]
-        B_cols.append(g[0, 0, 0].detach())
-    B_jac = torch.stack(B_cols).unsqueeze(-1).cpu().numpy()   # (d, 1)
+        g = torch.autograd.grad(z_out_b[0, i], c_last, retain_graph=(i < d - 1))[0]
+        B_cols.append(g[0, 0].detach())   # (m,)
+    B_jac = torch.stack(B_cols).cpu().numpy()   # (d, m)
 
     return A_jac, B_jac
 
@@ -103,24 +105,25 @@ def compute_jacobian_torch(model, z_star_t: torch.Tensor, device) -> tuple:
         A_rows.append(g[0])
     A_jac = torch.stack(A_rows)   # (d, d)
 
-    # B_jac
-    u_hist = torch.zeros(1, W - 1, 1, device=device)
-    u_last = torch.zeros(1, 1, 1, device=device, requires_grad=True)
+    # B_jac: ∂z_{t+1}/∂c_t (encoded action), shape (d, m) for action lifting.
+    m = model.action_encoder.latent_action_dim
+    c_hist = torch.zeros(1, W - 1, m, device=device)
+    c_last = torch.zeros(1, 1, m, device=device, requires_grad=True)
     if W > 1:
-        u_win_b = torch.cat([u_hist, u_last], dim=1)   # (1, W, 1)
+        c_win_b = torch.cat([c_hist, c_last], dim=1)   # (1, W, m)
     else:
-        u_win_b = u_last                                # (1, 1, 1)
+        c_win_b = c_last                                # (1, 1, m)
 
     z_win_b = z_star_t.detach().unsqueeze(0).unsqueeze(1).expand(1, W, d)  # (1, W, d)
-    z_out_b = model.predict(z_win_b, u_win_b)                               # (1, d)
+    z_out_b = model.predict_from_encoded(z_win_b, c_win_b)                  # (1, d)
 
     B_cols = []
     for i in range(d):
         g = torch.autograd.grad(
-            z_out_b[0, i], u_last,
+            z_out_b[0, i], c_last,
             create_graph=True, retain_graph=True
         )[0]
-        B_cols.append(g[0, 0, 0])
-    B_jac = torch.stack(B_cols).unsqueeze(-1)   # (d, 1)
+        B_cols.append(g[0, 0])   # (m,)
+    B_jac = torch.stack(B_cols)   # (d, m)
 
     return A_jac, B_jac
