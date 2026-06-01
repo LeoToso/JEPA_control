@@ -43,18 +43,18 @@ training:
   unstable_eta: 0.05
   rho_max_init: 1.3
   local_state_threshold: 0.05
-  jacobian_every: 10
+  jacobian_every: 50
   use_vicreg: false
   vicreg_lambda: 5.0
   lambda_sigreg: 0.0         # replaced by lambda_dynSIG
-  sigreg_num_slices: 128
-  sigreg_num_points: 17
+  sigreg_num_slices: 32
+  sigreg_num_points: 9
   vicreg_nu: 1.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   predictor_window: 3
-  checkpoint_every: 20
+  checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 9999

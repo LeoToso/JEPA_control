@@ -212,11 +212,15 @@ class Trainer:
         B, H1, C, h, w = obs_seq.shape
         H = H1 - 1
 
-        # Online encoder: z_all used for prediction input, state_head, Jacobian
-        obs_flat = obs_seq.view(B * H1, C, h, w)
-        z_flat   = self.model.encoder(obs_flat)        # (B*(H+1), d)
-        d        = z_flat.shape[-1]
-        z_all    = z_flat.view(B, H1, d)               # (B, H+1, d)
+        # Online encoder: only encode z_0 with gradient (all backward losses use z_0).
+        # Target frames z_{1..H} are stop-gradient targets — encode without grad to
+        # avoid an 11x more expensive backward through all B*(H+1) images at once.
+        z_0 = self.model.encoder(obs_seq[:, 0])   # (B, d) — gradient flows here
+        d   = z_0.shape[-1]
+        with torch.no_grad():
+            obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
+            z_rest   = self.model.encoder(obs_rest).view(B, H, d)
+        z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
         # Using the exact equilibrium image eliminates the train/eval z* mismatch that
