@@ -97,7 +97,7 @@ class Trainer:
         predictor_lr_mult = float(self.cfg.get('predictor_lr_mult', 1.0))
         self.optimizer = torch.optim.Adam([
             {'params': model.encoder.parameters()},
-            {'params': model.action_encoder.parameters()},
+            {'params': model.action_encoder.parameters(), 'weight_decay': 0.0},
             {'params': model.predictor.parameters(),
              'lr': lr * predictor_lr_mult},
         ], lr=lr, weight_decay=weight_decay)

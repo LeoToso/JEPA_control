@@ -60,12 +60,13 @@ training:
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
   # ── Dynamics-aware regularization ──────────────────────────────────────────
-  lambda_dynSIG: 2.0         # dynamics-aware SIGreg (target = controllability Gramian)
+  lambda_dynSIG: 0.5         # reduced: B≈0 early → Gramian rank-deficient; start gentle
   dynSIG_T_g: 5              # finite horizon for Gramian sum
-  dynSIG_alpha: 0.1          # isotropic floor weight: Sigma = (1-a)*W_bar + a*I
+  dynSIG_alpha: 0.3          # raised floor: prevents rank-4 Gramian from dominating 28 dirs
   dynSIG_beta: 0.95          # EMA momentum for Sigma_target update
   lambda_temp: 0.5           # temporal covariance consistency: Sigma_1 ≈ A*Sigma_0
-  temp_near_eq_radius: 0.5   # ||z_t - z*|| < r to select near-eq samples for L_temp
+  temp_near_eq_radius: 2.0   # raised from 0.5: z_star norm≈14, need larger radius for samples
+  lambda_inv: 0.5            # inverse dynamics: encourages predictor to use action input
 
 probes:
   epsilon_lambda: 0.05
