@@ -711,11 +711,12 @@ class Trainer:
             sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
             dynsig_str   = f"  dynSIG={tr.get('dynSIG_loss', 0):.4f}" if 'dynSIG_loss'   in tr else ''
             temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
+            pbh_str      = f"  pbh={tr.get('pbh_loss',       0):.4f}" if 'pbh_loss'       in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{temp_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{temp_str}{pbh_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
