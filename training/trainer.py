@@ -83,6 +83,7 @@ class Trainer:
         self.dynSIG_T_g     = int(  self.cfg.get('dynSIG_T_g',    5))
         self.dynSIG_alpha   = float(self.cfg.get('dynSIG_alpha',  0.1))
         self.dynSIG_beta    = float(self.cfg.get('dynSIG_beta',   0.95))
+        self.dynSIG_near_eq_radius = float(self.cfg.get('dynSIG_near_eq_radius', 0.0))
         self.lambda_temp    = float(self.cfg.get('lambda_temp',   0.0))
         self.temp_near_eq_radius = float(self.cfg.get('temp_near_eq_radius', 0.5))
         self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
@@ -291,18 +292,24 @@ class Trainer:
 
         # L_dynSIG: dynamics-aware SIGreg.
         # Target covariance = controllability Gramian of local linearization (A, B),
-        # computed from Jacobian cache and updated via EMA every jacobian_every steps.
-        # Applied to all batch samples (global shape prior).
+        # valid only where the linearization holds — near equilibrium.
+        # When dynSIG_near_eq_radius > 0, restrict to ||z_t - z*|| < radius.
         if self.lambda_dynSIG > 0 and self._Sigma_target is not None:
             from losses.dyn_sigreg import dynsigreg_loss
-            dyn_loss = dynsigreg_loss(
-                z_all[:, 0],
-                self._Sigma_target.detach(),
-                num_slices=self.sigreg_num_slices,
-                num_points=self.sigreg_num_points,
-            )
-            total_loss = total_loss + self.lambda_dynSIG * dyn_loss
-            info['dynSIG_loss'] = dyn_loss.item()
+            z0_dyn = z_all[:, 0]
+            if self.dynSIG_near_eq_radius > 0 and self._z_star_ema is not None:
+                dz_ne = (z0_dyn - self._z_star_ema.detach()).norm(dim=1)
+                mask_ne = dz_ne < self.dynSIG_near_eq_radius
+                z0_dyn = z0_dyn[mask_ne]
+            if z0_dyn.shape[0] >= 4:
+                dyn_loss = dynsigreg_loss(
+                    z0_dyn,
+                    self._Sigma_target.detach(),
+                    num_slices=self.sigreg_num_slices,
+                    num_points=self.sigreg_num_points,
+                )
+                total_loss = total_loss + self.lambda_dynSIG * dyn_loss
+                info['dynSIG_loss'] = dyn_loss.item()
 
         # L_temp: temporal covariance consistency on near-equilibrium samples.
         # Enforces Sigma_1_res ≈ A Sigma_0 where Sigma_1_res removes B*c_t,

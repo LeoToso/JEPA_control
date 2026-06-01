@@ -60,14 +60,15 @@ training:
   freeze_encoder_epochs: 9999
   encoder_lr_unfreeze_mult: 0.1
   # ── Dynamics-aware regularization ──────────────────────────────────────────
-  lambda_dynSIG: 0.0         # disabled: isotropic target hurts B alignment when B≈0
+  lambda_dynSIG: 2.0         # near-eq only: Gramian target valid where linearization holds
   dynSIG_T_g: 5
-  dynSIG_alpha: 0.3
+  dynSIG_alpha: 0.3          # raised floor: prevents rank-4 Gramian dominating 28 dirs
   dynSIG_beta: 0.95
-  lambda_temp: 0.0           # disabled: not contributing useful signal
+  dynSIG_near_eq_radius: 2.0 # apply dynSIG only to ||z_t - z*|| < 2.0 samples
+  lambda_temp: 0.5           # temporal covariance consistency near equilibrium
   temp_near_eq_radius: 2.0
   lambda_inv: 0.5            # keeps action encoder alive
-  lambda_spec: 0.5           # re-enabled: forces rho(A_jac)→1.0827 (unstable mode recovery)
+  lambda_spec: 0.5           # forces rho(A_jac)→1.0827 (unstable mode recovery)
 
 probes:
   epsilon_lambda: 0.05
