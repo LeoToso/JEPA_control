@@ -123,7 +123,7 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    env_cfg = cfg['env']
+    env_cfg = cfg['environment']
 
     model = load_model(args.checkpoint, cfg, device)
     head  = load_state_head(args.state_head, model.config.latent_dim, device)
