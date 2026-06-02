@@ -552,6 +552,18 @@ class Trainer:
                         )
                         sv = torch.linalg.svdvals(M_S)
                         pbh_terms.append(-torch.log(sv[-1] + 1e-6))
+                    # Also evaluate PBH at the CURRENT dominant eigenvalue to
+                    # prevent B_eff from collapsing while rho < GT target.
+                    # At rho_cur, [rho_cur*I-A] is nearly singular → stronger
+                    # gradient forces B_eff into the dominant eigenspace.
+                    rho_cur = torch.max(torch.abs(eigvals)).real.detach()
+                    M_cur = torch.cat(
+                        [rho_cur * torch.eye(d_dyn, device=A_jac.device,
+                                             dtype=A_jac.dtype) - A_jac,
+                         B_eff_torch.to(dtype=A_jac.dtype)], dim=-1,
+                    )
+                    sv_cur = torch.linalg.svdvals(M_cur)
+                    pbh_terms.append(-torch.log(sv_cur[-1] + 1e-6))
                     pbh_loss = torch.stack(pbh_terms).mean()
                     total_loss = total_loss + self.lambda_PBH * pbh_loss
                     info['pbh_loss'] = pbh_loss.item()
