@@ -78,7 +78,7 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
     d = model.config.latent_dim
 
     # encode first observation
-    z0 = model.encode(obs_t)  # (1, d)
+    z0 = model.encoder(obs_t)  # (1, d)
 
     # build window history (all z0)
     z_window = z0.unsqueeze(1).expand(1, W, d).clone()  # (1, W, d)
