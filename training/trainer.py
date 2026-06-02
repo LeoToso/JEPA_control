@@ -185,6 +185,8 @@ class Trainer:
 
     # ── CSV logging ──────────────────────────────────────────────────────────
     def _init_csv_log(self):
+        if self.log_path.exists():
+            return   # preserve existing log when resuming
         with open(self.log_path, 'w', newline='') as f:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
@@ -604,7 +606,8 @@ class Trainer:
                     metrics.setdefault(k, []).append(v)
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
-    def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10):
+    def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10,
+            resume_from=None):
         if epochs is None:
             epochs = int(self.cfg.get('epochs', 100))
         history = {'train': [], 'val': []}
@@ -612,6 +615,13 @@ class Trainer:
         _best_val_epoch = 0
         _spec_conv_epoch = None   # first epoch where spec_loss < 0.01
         spec_thresh     = float(self.cfg.get('spec_converge_thresh', 0.01))
+
+        # Resume from checkpoint if requested
+        start_epoch = 0
+        if resume_from is not None:
+            self.load_checkpoint(resume_from)
+            start_epoch = self.epoch + 1
+            print(f'[train] Resuming from epoch {start_epoch}')
 
         # Warm-up: encoder-only phase (pred disabled) to seed encoder representation
         # before pred_loss locks the encoder into a dynamics-blind latent space.
@@ -625,7 +635,7 @@ class Trainer:
             self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
         )
 
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             self.epoch = epoch
 
             # Switch lambdas / encoder freeze based on training phase
@@ -772,3 +782,14 @@ class Trainer:
             import shutil
             shutil.copy2(path, latest)
         print(f'[ckpt] saved → {path}')
+
+    def load_checkpoint(self, path):
+        """Load model, optimizer, scheduler state from a checkpoint file."""
+        ckpt = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(ckpt['model_state'])
+        self.optimizer.load_state_dict(ckpt['optimizer_state'])
+        self.scheduler.load_state_dict(ckpt['scheduler_state'])
+        self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        self.epoch       = ckpt.get('epoch', 0)
+        self.global_step = ckpt.get('global_step', 0)
+        print(f'[ckpt] resumed from {path}  (epoch={self.epoch}, step={self.global_step})')

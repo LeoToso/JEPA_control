@@ -14,7 +14,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    seed=42, config_path='configs/cartpole_v2.yaml',
                    data_dir='data', results_dir='results',
                    device=None, skip_if_exists=True, eval_only=False,
-                   epochs_override=None, cem_only=False):
+                   epochs_override=None, cem_only=False, resume_from=None):
 
     t_start = time.time()
 
@@ -170,6 +170,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             loaders['train'], loaders['val'],
             epochs=train_cfg_exp['epochs'],
             checkpoint_every=train_cfg_exp.get('checkpoint_every', 10),
+            resume_from=resume_from,
         )
         # Save immediately so --eval-only works even if probes are interrupted
         torch.save(model.state_dict(), ckpt_dir / 'model_final.pt')
@@ -864,6 +865,8 @@ if __name__ == '__main__':
                    help='Skip all non-CEM controllers during evaluation')
     p.add_argument('--epochs',    type=int, default=None,
                    help='Override training epochs from config')
+    p.add_argument('--resume',    default=None,
+                   help='Path to checkpoint file to resume training from')
     args = p.parse_args()
     run_experiment(
         encoder_variant=args.variant, dataset_name=args.dataset,
@@ -874,4 +877,5 @@ if __name__ == '__main__':
         eval_only=args.eval_only,
         epochs_override=args.epochs,
         cem_only=args.cem_only,
+        resume_from=args.resume,
     )
