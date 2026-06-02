@@ -105,7 +105,14 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
             break
 
     env.close()
-    return np.array(pred_states), np.array(gt_states)
+    K = len(actions)
+    # Pad with NaN if episode terminated early so all runs have shape (K+1, 4)
+    pred_arr = np.full((K + 1, 4), np.nan)
+    gt_arr   = np.full((K + 1, 4), np.nan)
+    n = len(pred_states)
+    pred_arr[:n] = np.array(pred_states)
+    gt_arr[:n]   = np.array(gt_states)
+    return pred_arr, gt_arr
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -159,13 +166,16 @@ def main():
             per_step_norm = np.linalg.norm(abs_err[1:], axis=1)  # (K,)
 
             tag = f'θ={theta:+.2f} θ̇={theta_dot:+.1f}'
-            step_strs = '  '.join(f'{e:.4f}' for e in per_step_norm[:5])
+            step_strs = '  '.join(
+                f'{e:.4f}' if not np.isnan(e) else ' done '
+                for e in per_step_norm[:5]
+            )
             print(f'{tag:30s}  {step_strs}')
 
             n_trials += 1
 
-    all_abs_errs = np.array(all_abs_errs)  # (N_trials, K, 4)
-    mean_abs = all_abs_errs.mean(axis=0)   # (K, 4)
+    all_abs_errs = np.array(all_abs_errs)      # (N_trials, K, 4)
+    mean_abs = np.nanmean(all_abs_errs, axis=0)  # (K, 4)
 
     print(f'\n{"="*70}')
     print('MEAN ABSOLUTE ERROR PER STATE COMPONENT AND STEP')
@@ -175,19 +185,23 @@ def main():
         row = '  '.join(f'{mean_abs[k, i]:8.4f}' for i in range(4))
         print(f'  {k+1:3d}    {row}')
 
+    def safe_norm(v):
+        return float(np.sqrt(np.nansum(v**2)))
+
     print(f'\n{"="*70}')
     print('SUMMARY')
-    print(f'  Mean ||error|| step 1:   {np.linalg.norm(mean_abs[0]):.4f}')
-    print(f'  Mean ||error|| step 5:   {np.linalg.norm(mean_abs[4]):.4f}' if K >= 5 else '')
-    print(f'  Mean ||error|| step {K}:  {np.linalg.norm(mean_abs[-1]):.4f}')
+    print(f'  Mean ||error|| step 1:   {safe_norm(mean_abs[0]):.4f}')
+    if K >= 5:
+        print(f'  Mean ||error|| step 5:   {safe_norm(mean_abs[4]):.4f}')
+    print(f'  Mean ||error|| step {K}: {safe_norm(mean_abs[-1]):.4f}')
 
     # Per-component summary
+    dom1  = int(np.nanargmax(mean_abs[0]))
+    domK  = int(np.nanargmax(mean_abs[-1]))
     print(f'\n  Dominant error source at step 1: '
-          f'{state_names[np.argmax(mean_abs[0])]}  '
-          f'(err={np.max(mean_abs[0]):.4f})')
+          f'{state_names[dom1]}  (err={mean_abs[0, dom1]:.4f})')
     print(f'  Dominant error source at step {K}: '
-          f'{state_names[np.argmax(mean_abs[-1])]}  '
-          f'(err={np.max(mean_abs[-1]):.4f})')
+          f'{state_names[domK]}  (err={mean_abs[-1, domK]:.4f})')
     print(f'{"="*70}')
 
 
