@@ -14,7 +14,7 @@ model:
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
   patch_size: 8
-  frame_stack: 1
+  frame_stack: 2
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4

@@ -53,6 +53,11 @@ def obs_to_tensor(obs: np.ndarray, device: torch.device) -> torch.Tensor:
     return t.permute(2, 0, 1).unsqueeze(0).to(device)  # (1, C, H, W)
 
 
+def stack_obs(prev_t: torch.Tensor, curr_t: torch.Tensor, frame_stack: int) -> torch.Tensor:
+    """Concatenate prev and curr along channel dim if frame_stack > 1."""
+    return torch.cat([prev_t, curr_t], dim=1) if frame_stack > 1 else curr_t
+
+
 @torch.no_grad()
 def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
                   actions: np.ndarray, device: torch.device):
@@ -60,6 +65,8 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
     Roll out the world model for len(actions) steps from init_state.
     Returns predicted states shape (K+1, 4) alongside GT states (K+1, 4).
     """
+    FS = getattr(model.config, 'frame_stack', 1)
+
     env = ContinuousCartpoleVisual(
         frame_skip=1,
         image_size=env_cfg['image_size'],
@@ -72,7 +79,9 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
     )
 
     obs, gt_state, _ = env.reset_to_state(init_state)
-    obs_t = obs_to_tensor(obs, device)
+    curr_t = obs_to_tensor(obs, device)
+    # At episode start prev = curr (same frame duplicated, matching dataset convention)
+    obs_t = stack_obs(curr_t, curr_t, FS)
 
     W = getattr(model.config, 'predictor_window', 1)
     d = model.config.latent_dim
@@ -86,11 +95,12 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
     pred_states = [head(z0).cpu().numpy()[0]]
     gt_states   = [gt_state.copy()]
 
+    prev_t = curr_t  # keep rolling buffer for frame stacking
+
     for u in actions:
         # predictor step
-        u_t = torch.tensor([[[float(u)]]], dtype=torch.float32, device=device)  # (1,1,1)
         u_win = torch.zeros(1, W, 1, device=device)
-        u_win[:, -1, :] = u_t[:, 0, :]
+        u_win[:, -1, 0] = float(u)
 
         z_next = model.predict(z_window, u_win)           # (1, d)
         pred_states.append(head(z_next).cpu().numpy()[0])
@@ -98,8 +108,10 @@ def rollout_model(model, head, env_cfg: dict, init_state: np.ndarray,
         # advance window
         z_window = torch.cat([z_window[:, 1:], z_next.unsqueeze(1)], dim=1)
 
-        # GT step
+        # GT step — also re-encode real next obs for a parallel "teacher-forced" check
         obs, gt_state, _, done, _ = env.step(u)
+        curr_t = obs_to_tensor(obs, device)
+        prev_t = curr_t  # update rolling buffer
         gt_states.append(gt_state.copy())
         if done:
             break
