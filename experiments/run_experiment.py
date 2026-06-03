@@ -113,22 +113,42 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
           f'val={len(loaders["val"].dataset)}  horizon={horizon}'
           + (f'  (+{n_eq_selfloop} eq-selfloops)' if n_eq_selfloop > 0 else ''))
 
-    # Model
+    # Model — use AEWorldModel when lambda_recon > 0 (has pixel decoder)
     from models.jepa import make_jepa, JEPAConfig
-    model = make_jepa(
-        variant=encoder_variant,
-        latent_dim=model_cfg['latent_dim'],
-        action_latent_dim=model_cfg['action_latent_dim'],
-        action_encoder=model_cfg.get('action_encoder', 'none'),
-        image_size=env_cfg['image_size'],
-        patch_size=model_cfg.get('patch_size', 8),
-        frame_stack=frame_stack,
-        vit_embed_dim=model_cfg.get('vit_embed_dim', 128),
-        vit_depth=model_cfg.get('vit_depth', 4),
-        vit_num_heads=model_cfg.get('vit_num_heads', 4),
-        predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
-        predictor_window=int(model_cfg.get('predictor_window', 1)),
-    )
+    _use_decoder = float(train_cfg.get('lambda_recon', 0.0)) > 0
+    if _use_decoder:
+        from models.jepa import JEPAConfig
+        from models.autoencoder import AEWorldModel
+        _jepa_cfg = JEPAConfig(
+            latent_dim=model_cfg['latent_dim'],
+            action_latent_dim=model_cfg['action_latent_dim'],
+            action_encoder=model_cfg.get('action_encoder', 'none'),
+            image_size=env_cfg['image_size'],
+            patch_size=model_cfg.get('patch_size', 8),
+            frame_stack=frame_stack,
+            vit_embed_dim=model_cfg.get('vit_embed_dim', 128),
+            vit_depth=model_cfg.get('vit_depth', 4),
+            vit_num_heads=model_cfg.get('vit_num_heads', 4),
+            predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
+            predictor_window=int(model_cfg.get('predictor_window', 1)),
+        )
+        model = AEWorldModel(_jepa_cfg)
+        print(f'[model] Using AEWorldModel (lambda_recon={train_cfg["lambda_recon"]})')
+    else:
+        model = make_jepa(
+            variant=encoder_variant,
+            latent_dim=model_cfg['latent_dim'],
+            action_latent_dim=model_cfg['action_latent_dim'],
+            action_encoder=model_cfg.get('action_encoder', 'none'),
+            image_size=env_cfg['image_size'],
+            patch_size=model_cfg.get('patch_size', 8),
+            frame_stack=frame_stack,
+            vit_embed_dim=model_cfg.get('vit_embed_dim', 128),
+            vit_depth=model_cfg.get('vit_depth', 4),
+            vit_num_heads=model_cfg.get('vit_num_heads', 4),
+            predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
+            predictor_window=int(model_cfg.get('predictor_window', 1)),
+        )
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'[model] {encoder_variant}  {n_params:,} trainable params')
