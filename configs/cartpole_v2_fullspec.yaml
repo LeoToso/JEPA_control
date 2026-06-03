@@ -44,7 +44,7 @@ training:
   rho_max_init: 1.3
   local_state_threshold: 0.05
   jacobian_every: 10
-  use_vicreg: true
+  use_vicreg: false
   vicreg_lambda: 5.0
   lambda_sigreg: 0.0         # replaced by lambda_dynSIG
   sigreg_num_slices: 32
