@@ -110,6 +110,38 @@ def dynsigreg_loss(
     return ((phi_real - target_cf) ** 2 + phi_imag ** 2).mean()
 
 
+def gramian_varfloor_loss(
+    z: torch.Tensor,
+    Sigma_target: torch.Tensor,
+    eps: float = 1e-4,
+) -> torch.Tensor:
+    """Per-dimension variance floor derived from Gramian diagonal.
+
+    Complements dynsigreg_loss (CF test), which has VANISHING gradients at
+    perfect collapse (all z identical → z_centered ≈ 0 → ∂φ/∂z ≈ 0).
+
+    This loss uses sqrt(var + ε): even at zero variance, the ε floor keeps the
+    denominator bounded, so the gradient ∂L/∂z_j ∝ (z_j − mean_j) / sqrt(ε)
+    is small-but-nonzero and grows as variance increases — breaking the deadlock.
+
+    L = mean_j [ max(0, target_std_j − sqrt(var_j + ε))^2 ]
+
+    where target_std_j = sqrt(Sigma_target[j,j]).
+
+    Args:
+        z:             (B, d) batch of latent vectors.
+        Sigma_target:  (d, d) detached target covariance (from Gramian).
+        eps:           Variance floor for sqrt denominator stability.
+    Returns:
+        Scalar loss >= 0; zero when every dimension has variance >= target.
+    """
+    z_c = z - z.mean(dim=0, keepdim=True)              # (B, d) centered
+    var = (z_c ** 2).mean(dim=0)                        # (d,) per-dim variance
+    actual_std  = (var + eps).sqrt()                    # (d,) non-vanishing denominator
+    target_std  = Sigma_target.diagonal().clamp(min=0).sqrt()  # (d,)
+    return torch.relu(target_std - actual_std).pow(2).mean()
+
+
 def temporal_consistency_loss(
     dz_t: torch.Tensor,
     dz_tp1: torch.Tensor,

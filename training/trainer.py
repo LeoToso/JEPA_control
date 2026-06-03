@@ -84,10 +84,18 @@ class Trainer:
         self.dynSIG_alpha   = float(self.cfg.get('dynSIG_alpha',  0.1))
         self.dynSIG_beta    = float(self.cfg.get('dynSIG_beta',   0.95))
         self.dynSIG_near_eq_radius = float(self.cfg.get('dynSIG_near_eq_radius', 0.0))
+        self.lambda_varfloor = float(self.cfg.get('lambda_varfloor', 0.0))
         self.lambda_temp    = float(self.cfg.get('lambda_temp',   0.0))
         self.temp_near_eq_radius = float(self.cfg.get('temp_near_eq_radius', 0.5))
         self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
+        # EMA target encoder: use target_encoder for z_rest targets instead of
+        # stop-grad online encoder.  Prevents collapse because targets lag behind
+        # the online encoder (via EMA), so pred_loss stays non-zero even when the
+        # online encoder starts to collapse.
+        self.use_target_encoder = bool(self.cfg.get('use_target_encoder', False))
+        self.target_encoder_momentum = float(
+            self.cfg.get('target_encoder_momentum', self.ema_momentum))
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
@@ -96,12 +104,20 @@ class Trainer:
         lr           = float(self.cfg.get('lr', 1e-4))
         weight_decay = float(self.cfg.get('weight_decay', 1e-4))
         predictor_lr_mult = float(self.cfg.get('predictor_lr_mult', 1.0))
-        self.optimizer = torch.optim.Adam([
+        # Reconstruction loss: collapse-proof per-sample signal.
+        # variance-based losses (dynSIG/varfloor) have zero gradient at perfect
+        # collapse; reconstruction does not because decoder(z*)≠obs_i for most i.
+        self.lambda_recon = float(self.cfg.get('lambda_recon', 0.0))
+        param_groups = [
             {'params': model.encoder.parameters()},
             {'params': model.action_encoder.parameters(), 'weight_decay': 0.0},
             {'params': model.predictor.parameters(),
              'lr': lr * predictor_lr_mult},
-        ], lr=lr, weight_decay=weight_decay)
+        ]
+        if self.lambda_recon > 0 and hasattr(model, 'decoder'):
+            param_groups.append({'params': model.decoder.parameters()})
+        self.optimizer = torch.optim.Adam(
+            param_groups, lr=lr, weight_decay=weight_decay)
 
         # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
@@ -190,9 +206,9 @@ class Trainer:
         with open(self.log_path, 'w', newline='') as f:
             csv.writer(f).writerow(
                 ['epoch', 'split', 'step', 'total_loss', 'pred_loss',
-                 'vicreg', 'state_loss', 'fp_loss', 'local_loss',
+                 'recon_loss', 'vicreg', 'state_loss', 'fp_loss', 'local_loss',
                  'unstable_loss', 'spec_loss', 'pbh_loss',
-                 'dynSIG_loss', 'temp_loss'])
+                 'dynSIG_loss', 'varfloor_loss', 'temp_loss'])
 
     def _log_csv(self, epoch, split, step, info):
         with open(self.log_path, 'a', newline='') as f:
@@ -203,7 +219,8 @@ class Trainer:
                 info.get('fp_loss', ''), info.get('local_loss', ''),
                 info.get('unstable_loss', ''), info.get('spec_loss', ''),
                 info.get('pbh_loss', ''),
-                info.get('dynSIG_loss', ''), info.get('temp_loss', ''),
+                info.get('dynSIG_loss', ''), info.get('varfloor_loss', ''),
+                info.get('temp_loss', ''),
             ])
 
     # ── Loss computation ──────────────────────────────────────────────────────
@@ -221,7 +238,13 @@ class Trainer:
         d   = z_0.shape[-1]
         with torch.no_grad():
             obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
-            z_rest   = self.model.encoder(obs_rest).view(B, H, d)
+            # Use EMA target encoder for targets when enabled: provides slowly-
+            # moving targets that remain diverse even if the online encoder begins
+            # to collapse, keeping pred_loss non-zero and its gradient active.
+            _target_enc = (self.model.target_encoder
+                           if self.use_target_encoder
+                           else self.model.encoder)
+            z_rest   = _target_enc(obs_rest).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
@@ -272,6 +295,17 @@ class Trainer:
         total_loss = self.lambda_pred * pred_loss
         info = {'pred_loss': pred_loss.item()}
 
+        # Reconstruction loss: per-sample collapse prevention.
+        # decoder(z_i) vs obs_i has non-zero gradient even at perfect collapse
+        # (all z_i = z*), unlike variance-based losses whose gradient is
+        # proportional to z_centered and thus vanishes when all z are identical.
+        if self.lambda_recon > 0 and hasattr(self.model, 'decoder'):
+            obs_t_float = obs_seq[:, 0]               # (B, C, h, w) in [0, 1]
+            obs_hat     = self.model.decoder(z_0)     # (B, C, h, w)
+            recon_loss  = F.mse_loss(obs_hat, obs_t_float)
+            total_loss  = total_loss + self.lambda_recon * recon_loss
+            info['recon_loss'] = recon_loss.item()
+
         # VICReg collapse prevention on online encoder outputs
         if self.use_vicreg:
             from losses.prediction import vicreg_collapse_loss
@@ -317,6 +351,17 @@ class Trainer:
                 )
                 total_loss = total_loss + self.lambda_dynSIG * dyn_loss
                 info['dynSIG_loss'] = dyn_loss.item()
+
+        # L_varfloor: per-dimension variance floor derived from Gramian diagonal.
+        # Fixes the vanishing-gradient failure mode of the Epps-Pulley CF test:
+        # at perfect collapse (z_centered ≈ 0) the CF gradient is zero, but the
+        # sqrt(var + eps) formulation keeps the gradient finite and growing.
+        if self.lambda_varfloor > 0 and self._Sigma_target is not None:
+            from losses.dyn_sigreg import gramian_varfloor_loss
+            vf_loss = gramian_varfloor_loss(
+                z_all[:, 0], self._Sigma_target.detach())
+            total_loss = total_loss + self.lambda_varfloor * vf_loss
+            info['varfloor_loss'] = vf_loss.item()
 
         # L_temp: temporal covariance consistency on near-equilibrium samples.
         # Enforces Sigma_1_res ≈ A Sigma_0 where Sigma_1_res removes B*c_t,
@@ -600,6 +645,8 @@ class Trainer:
                 params += list(self.state_head.parameters())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             self.optimizer.step()
+            if self.use_target_encoder:
+                self.model.update_target_encoder(self.target_encoder_momentum)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)
@@ -727,6 +774,7 @@ class Trainer:
             state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
+            recon_str    = f"  recon={tr.get('recon_loss',     0):.4f}" if 'recon_loss'     in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
             local_str    = f"  local={tr.get('local_loss',   0):.4f}" if 'local_loss'     in tr else ''
             unstable_str = f"  ρ={tr.get('unstable_loss',   0):.4f}" if 'unstable_loss'  in tr else ''
@@ -736,13 +784,14 @@ class Trainer:
             anchor_str   = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'    in tr else ''
             sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
             dynsig_str   = f"  dynSIG={tr.get('dynSIG_loss', 0):.4f}" if 'dynSIG_loss'   in tr else ''
+            varfloor_str = f"  vf={tr.get('varfloor_loss',  0):.4f}" if 'varfloor_loss'  in tr else ''
             temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
             pbh_str      = f"  pbh={tr.get('pbh_loss',       0):.4f}" if 'pbh_loss'       in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{temp_str}{pbh_str}'
+                  f'{recon_str}{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 

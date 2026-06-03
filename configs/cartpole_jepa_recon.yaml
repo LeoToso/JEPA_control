@@ -29,6 +29,7 @@ training:
   epochs: 200
   horizon: 10
   lambda_pred: 1.0
+  lambda_recon: 0.1             # reconstruction bootstrap: prevents collapse, then dynSIG shapes structure
   lambda_state: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
