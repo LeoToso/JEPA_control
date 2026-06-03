@@ -662,6 +662,24 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             print(f'[control] Linear MPC failed: {exc}')
             ctrl_results['linear_mpc'] = {'error': str(exc)}
 
+    # ── Encoder sensitivity diagnostic ───────────────────────────────────────
+    # Measures whether the encoder maps physical perturbations to z vectors
+    # that project onto the unstable eigenvector v_u.  If V_u^T(z-z*) ≈ 0
+    # for all tested angles, CEM sees no cost signal and will always plan u=0.
+    print('[control] Encoder sensitivity (physical θ → latent projection onto v_u):')
+    for _th in [0.02, 0.05, 0.10, 0.20]:
+        _x_s = np.array([0.0, 0.0, _th, 0.0], dtype=np.float32)
+        _obs_s, _, _ = env.reset_to_state(_x_s)
+        _obs_s_t = _make_obs_t(_obs_s)
+        with torch.no_grad():
+            _z_s = model.encoder(_obs_s_t).cpu().numpy()[0]
+        _dz_s     = _z_s - z_star
+        _Vu_proj  = float(_V_u.T @ _dz_s)          # V_u^T (z-z*) — key signal
+        _dz_norm  = float(np.linalg.norm(_dz_s))
+        _cos_s    = abs(_Vu_proj) / (_dz_norm + 1e-9)
+        print(f'  θ={_th:+.2f} rad: ||z-z*||={_dz_norm:.4f}  '
+              f'V_u^T(z-z*)={_Vu_proj:+.4f}  cos={_cos_s:.3f}')
+
     # ── CEM setup ─────────────────────────────────────────────────────────────
     cem_cfg      = cfg.get('cem', {})
     cem_horizon  = int(cem_cfg.get('horizon',   mpc_horizon))
