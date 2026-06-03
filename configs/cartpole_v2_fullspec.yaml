@@ -1,7 +1,7 @@
 environment:
   name: cartpole
   frame_skip: 1
-  image_size: 64
+  image_size: 128
   mass_cart: 1.0
   mass_pole: 0.1
   pole_length: 0.5
@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 8
+  patch_size: 16   # 128/16 = 64 patches — same token count as 64px/patch8
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
