@@ -54,6 +54,7 @@ training:
   ema_momentum: 0.996
   use_target_encoder: true        # use EMA target encoder for z_rest targets
   target_encoder_momentum: 0.99  # slower than ema_momentum so targets lag online encoder
+  aug_noise_std: 0.05            # online encoder sees noisy obs; EMA target sees clean obs
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   predictor_window: 3
