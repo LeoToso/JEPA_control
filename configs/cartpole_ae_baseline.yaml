@@ -1,0 +1,102 @@
+environment:
+  name: cartpole
+  frame_skip: 1
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 32
+  action_latent_dim: 4
+  action_encoder: linear
+  patch_size: 8
+  frame_stack: 1
+  predictor_window: 3
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_hidden_dim: 256
+  predictor_n_layers: 2
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 200
+  horizon: 10
+  lambda_pred: 1.0
+  lambda_recon: 1.0            # reconstruction loss weight (AE-specific)
+  lambda_fp: 50.0              # fixed-point: f(z*,0)=z*
+  # All dynamics-structure losses disabled (clean baseline)
+  lambda_state: 0.0
+  lambda_anchor: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_temp: 0.0
+  use_vicreg: false
+  lambda_sigreg: 0.0
+  ema_momentum: 0.996
+  state_encoder_grad_scale: 1.0
+  predictor_lr_mult: 1.0
+  predictor_window: 3
+  checkpoint_every: 10
+  warmup_epochs: 0
+  freeze_encoder_epochs: 0
+  encoder_lr_unfreeze_mult: 0.1
+  jacobian_every: 10
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+mpc:
+  horizon: 10
+  chunk_size: 1
+  Q_f_multiplier: 10.0
+  grad_lr: 0.05
+  grad_n_iter: 100
+
+cem:
+  horizon: 25
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 3.0
+  n_trials: 50
+
+data:
+  n_random: 100000
+  train_frac: 0.8
+  val_frac: 0.1
+  random_init_range: 0.40
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.25
+  n_equilibrium: 1000
+  n_eq_selfloop: 500
+  eq_init_range: 0.002
+  eq_noise_std: 0.001
+  n_pe: 25000
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  pe_max_ep_len: 40
