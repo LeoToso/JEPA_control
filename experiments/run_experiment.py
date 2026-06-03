@@ -249,6 +249,16 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] rho(A_jac)={rho_jac:.4f}')
 
+    # Unstable-subspace cost matrix: Q = V_u @ V_u^T
+    # Only penalises deviation along eigenvectors where |λ| ≥ 0.95 (unstable/near-unit-circle)
+    _eigvals_jac, _eigvecs_jac = np.linalg.eig(A_jac)
+    _unstable_mask = np.abs(_eigvals_jac) >= 0.95
+    _n_unstable = int(_unstable_mask.sum())
+    _V_u = _eigvecs_jac[:, _unstable_mask].real   # (d, n_unstable)
+    Q_unstable = _V_u @ _V_u.T                    # (d, d)  rank n_unstable
+    print(f'[control] unstable subspace: {_n_unstable}/{d} eigenvectors  '
+          f'(|λ|≥0.95)  ||Q_unstable||_F={np.linalg.norm(Q_unstable):.3f}')
+
     # Effective B for raw scalar action: B_eff = B_jac @ W_enc  (d×1)
     # B_jac = ∂f/∂c (d×m) where c = W_enc @ u is the lifted action.
     # For linear controllers and diagnostics we need df/du = B_jac @ W_enc.
@@ -319,14 +329,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                   f' {x_eq[2]:.3f}, {x_eq[3]:.3f}]  (ideal: [0,0,0,0])')
 
     # Probes
-    print('\n[probes] Running probes ...')
-    from probes.suite import run_all_probes
-    probe_results = run_all_probes(
-        A_jac=A_jac, B_jac=B_jac, gt=gt,
-        model=model, env=env, z_star=z_star,
-        device=device, config=probe_cfg,
-        frame_stack=frame_stack, B_eff=B_eff,
-    )
+    if cem_only:
+        print('[probes] --cem-only: skipping probes suite')
+        probe_results = {}
+    else:
+        print('\n[probes] Running probes ...')
+        from probes.suite import run_all_probes
+        probe_results = run_all_probes(
+            A_jac=A_jac, B_jac=B_jac, gt=gt,
+            model=model, env=env, z_star=z_star,
+            device=device, config=probe_cfg,
+            frame_stack=frame_stack, B_eff=B_eff,
+        )
 
     # MPC setup
     action_lb = float(env_cfg.get('action_range', [-10, 10])[0])
@@ -641,18 +655,19 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     cem_std      = float(cem_cfg.get('init_std',  3.0))
     n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
-    # ── CEM sweep: nonlinear predictor dynamics, Q=I, R=0.1·I ─────────────────
-    # Warm-starting (σ_warm=0.5) shifts the previous optimal action sequence to the
-    # next step's initialisation — prevents the cold-start bang-bang bias where
-    # random σ=3 samples produce saturated elites that lock in ±10 actions.
+    # ── CEM sweep: nonlinear predictor dynamics, Q=V_u@V_u^T, R=0.1·I ──────────
+    # Q_unstable focuses cost only on the unstable subspace of A_jac, so CEM
+    # minimises deviation along the direction that actually matters (|λ|≥0.95)
+    # rather than spreading equally across all 32 latent dims.
+    # Warm-starting (σ_warm=0.5) prevents cold-start bang-bang bias.
     _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
     _cem_sweep = [
-        dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
+        dict(tag='H10_Qu_nl', horizon=10, Q=Q_unstable, Qf=Q_unstable,
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc='H=10 Q=I nonlinear'),
-        dict(tag='H25_QI_nl', horizon=25, Q=np.eye(d), Qf=np.eye(d),
+             desc='H=10 Q=Vu nonlinear'),
+        dict(tag='H25_Qu_nl', horizon=25, Q=Q_unstable, Qf=Q_unstable,
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc='H=25 Q=I nonlinear'),
+             desc='H=25 Q=Vu nonlinear'),
     ]
 
     from control.cem import CEMLatentPlanner
@@ -703,7 +718,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
 
     # ── CEM sweep summary table ───────────────────────────────────────────────
     print('\n' + '═' * 55)
-    print('CEM SWEEP SUMMARY  (nonlinear predictor, Q=I)')
+    print('CEM SWEEP SUMMARY  (nonlinear predictor, Q=V_u@V_u^T)')
     print('═' * 55)
     print(f'  {"Config":<28} {"succ":>7} {"frac_stb":>9} {"ep_len":>8}')
     print('  ' + '-' * 51)
