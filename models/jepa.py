@@ -144,11 +144,14 @@ class JEPAModel(nn.Module):
         return {
             'variant': c.variant, 'latent_dim': c.latent_dim,
             'action_dim': c.action_dim, 'action_latent_dim': c.action_latent_dim,
+            'action_encoder': c.action_encoder,
             'image_size': c.image_size, 'patch_size': c.patch_size,
             'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,
             'vit_num_heads': c.vit_num_heads,
             'predictor_window': c.predictor_window,
+            'predictor_hidden_dim': c.predictor_hidden_dim,
+            'predictor_n_layers': c.predictor_n_layers,
         }
 
 

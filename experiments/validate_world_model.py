@@ -37,6 +37,10 @@ def load_model(ckpt_path: str, cfg: dict, device: torch.device) -> JEPAModel:
     else:
         model_cfg = cfg['model']
         print('[model] no embedded config in checkpoint — using config file')
+    # action_encoder type was not saved in get_config_dict(); fall back to yaml.
+    if 'action_encoder' not in model_cfg:
+        model_cfg['action_encoder'] = cfg['model'].get('action_encoder', 'none')
+        print(f'[model] action_encoder not in checkpoint; using yaml: {model_cfg["action_encoder"]}')
     model = JEPAModel(JEPAConfig.from_dict(model_cfg)).to(device)
     state = ckpt.get('model_state', ckpt)
     model.load_state_dict(state, strict=True)
