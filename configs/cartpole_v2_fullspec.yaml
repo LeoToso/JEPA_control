@@ -64,7 +64,9 @@ training:
   dynSIG_T_g: 5
   dynSIG_alpha: 0.3          # raised floor: prevents rank-4 Gramian dominating 28 dirs
   dynSIG_beta: 0.95
-  dynSIG_near_eq_radius: 2.0 # apply dynSIG only to ||z_t - z*|| < 2.0 samples
+  dynSIG_near_eq_radius: 0.0 # 0 = no filter, apply to all samples (near-eq filter was
+                              # self-defeating: once large-θ imgs exit the radius, only
+                              # visually-identical near-eq imgs remain → gradient vanishes)
   lambda_temp: 0.5           # temporal covariance consistency near equilibrium
   temp_near_eq_radius: 2.0
   lambda_inv: 0.0            # disabled: PBH with B_eff now handles action encoder alignment
