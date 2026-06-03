@@ -276,6 +276,17 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     print(f'[control] B_jac norm: {np.linalg.norm(B_jac):.4f}  '
           f'B_eff (scalar) norm: {np.linalg.norm(B_eff):.4f}')
 
+    # Key controllability diagnostic in the unstable subspace:
+    # If |V_u^T B_eff| is tiny, actions have negligible leverage on the unstable mode
+    # and no controller can stabilize — even with the right cost.
+    _b_eff_col = B_eff[:, 0]                                     # (d,)
+    _Vu_Beff   = float(_V_u.T @ _b_eff_col)                      # scalar (rank-1 case)
+    _cos_angle  = float(np.abs(_Vu_Beff) /
+                        (np.linalg.norm(_V_u) * np.linalg.norm(_b_eff_col) + 1e-9))
+    print(f'[control] V_u^T B_eff = {_Vu_Beff:.4f}  '
+          f'(cos_angle={_cos_angle:.3f},  '
+          f'u=10 moves unstable component by {abs(_Vu_Beff)*10:.4f})')
+
     # Fixed-point diagnostic: does f(z*, 0) ≈ z*?
     _W = model.config.predictor_window
     with torch.no_grad():
@@ -668,6 +679,9 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Warm-starting (σ_warm=0.5) prevents cold-start bang-bang bias.
     _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
     _cem_sweep = [
+        dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
+             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+             desc='H=10 Q=I  nonlinear'),
         dict(tag='H10_Qu_nl', horizon=10, Q=Q_unstable, Qf=Q_unstable,
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
              desc='H=10 Q=Vu nonlinear'),
