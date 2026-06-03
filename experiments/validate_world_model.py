@@ -28,11 +28,18 @@ from envs.cartpole_visual import ContinuousCartpoleVisual
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def load_model(ckpt_path: str, cfg: dict, device: torch.device) -> JEPAModel:
-    model = JEPAModel(JEPAConfig.from_dict(cfg['model'])).to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
-    # accept both full checkpoints and bare state-dicts
+    # Prefer the architecture config stored inside the checkpoint so the model
+    # shape always matches the weights, regardless of the current config file.
+    if 'config' in ckpt:
+        model_cfg = ckpt['config']
+        print(f'[model] using embedded config: frame_stack={model_cfg.get("frame_stack", 1)}')
+    else:
+        model_cfg = cfg['model']
+        print('[model] no embedded config in checkpoint — using config file')
+    model = JEPAModel(JEPAConfig.from_dict(model_cfg)).to(device)
     state = ckpt.get('model_state', ckpt)
-    model.load_state_dict(state, strict=False)
+    model.load_state_dict(state, strict=True)
     model.eval()
     ep = ckpt.get('epoch', '?')
     print(f'[model] loaded  epoch={ep}  path={ckpt_path}')
