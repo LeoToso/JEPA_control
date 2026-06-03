@@ -14,7 +14,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    seed=42, config_path='configs/cartpole_v2.yaml',
                    data_dir='data', results_dir='results',
                    device=None, skip_if_exists=True, eval_only=False,
-                   epochs_override=None, cem_only=False, resume_from=None):
+                   epochs_override=None, cem_only=False, resume_from=None,
+                   checkpoint_path=None):
 
     t_start = time.time()
 
@@ -160,9 +161,13 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     obs_eq_t = _make_obs_t(_obs_eq)   # (1, 3*FS, h, w) — used for z* throughout
 
     saved_model = ckpt_dir / 'model_final.pt'
-    if eval_only and saved_model.exists():
-        print(f'[train] --eval-only: loading {saved_model}')
-        model.load_state_dict(torch.load(saved_model, map_location=device), strict=False)
+    if eval_only and (checkpoint_path or saved_model.exists()):
+        _load_path = checkpoint_path or str(saved_model)
+        print(f'[train] --eval-only: loading {_load_path}')
+        _ckpt = torch.load(_load_path, map_location=device)
+        # Support both bare state_dict and wrapped checkpoint (has 'model_state' key)
+        _state = _ckpt.get('model_state', _ckpt) if isinstance(_ckpt, dict) and 'model_state' in _ckpt else _ckpt
+        model.load_state_dict(_state, strict=False)
         history = {'train': [], 'val': []}
     else:
         print(f'[train] training for {train_cfg_exp["epochs"]} epochs ...')
@@ -880,8 +885,11 @@ if __name__ == '__main__':
                    help='Skip all non-CEM controllers during evaluation')
     p.add_argument('--epochs',    type=int, default=None,
                    help='Override training epochs from config')
-    p.add_argument('--resume',    default=None,
+    p.add_argument('--resume',      default=None,
                    help='Path to checkpoint file to resume training from')
+    p.add_argument('--checkpoint',  default=None,
+                   help='Path to checkpoint file to load for --eval-only '
+                        '(supports both bare state_dict and wrapped checkpoints)')
     args = p.parse_args()
     run_experiment(
         encoder_variant=args.variant, dataset_name=args.dataset,
@@ -893,4 +901,5 @@ if __name__ == '__main__':
         epochs_override=args.epochs,
         cem_only=args.cem_only,
         resume_from=args.resume,
+        checkpoint_path=args.checkpoint,
     )
