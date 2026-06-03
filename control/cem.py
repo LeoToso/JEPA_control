@@ -166,12 +166,17 @@ class CEMLatentPlanner:
 
         # For windowed nonlinear mode, initialize a window buffer per trajectory
         if not self._linear_mode and W > 1:
-            # Build initial z window: if history available, use it; else repeat z0
+            # Build initial z window: W-1 history entries + current z0 as last entry.
+            # _z_hist stores W entries ending at the PREVIOUS z, so we must replace the
+            # last slot with z0 (actual current state) so the first prediction computes
+            # f([z_{t-W+2},...,z_t, z_{t+1}], u_0) = z_{t+2}  (correct next state).
+            # Without this, the first prediction gives z_{t+1} (already known), making
+            # u_0 effectively unconstrained and the plan one step stale.
             if self._z_hist is not None:
-                # _z_hist is a list of W tensors each (1, d); expand to (N, d)
-                z_win_list = [h.expand(N, -1) for h in self._z_hist]
+                z_win_list = ([h.expand(N, -1) for h in self._z_hist[-(W-1):]]
+                              + [z])          # (W-1) history + current z0
             else:
-                z_win_list = [z] * W  # list of W (N, d) tensors
+                z_win_list = [z] * W  # cold start: all z0
 
             if self._u_hist is not None:
                 # _u_hist is a list of W-1 tensors each (1, 1)
@@ -258,9 +263,10 @@ class CEMLatentPlanner:
             z = z0.clone()
             traj = [z_t.copy()]
             if not self._linear_mode and W > 1:
-                # Use history for trajectory collection too
+                # Same window fix as _rollout_cost: W-1 history + current z0
                 if self._z_hist is not None:
-                    z_win_list = [h.clone() for h in self._z_hist]
+                    z_win_list = ([h.clone() for h in self._z_hist[-(W-1):]]
+                                  + [z.clone()])
                 else:
                     z_win_list = [z.clone()] * W
                 if self._u_hist is not None:
