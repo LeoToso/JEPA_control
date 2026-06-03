@@ -29,7 +29,7 @@ training:
   epochs: 200
   horizon: 10
   lambda_pred: 1.0
-  lambda_state: 0.0
+  lambda_state: 0.1          # state supervision: forces encoder to encode physical state
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
@@ -57,7 +57,7 @@ training:
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
-  freeze_encoder_epochs: 9999
+  freeze_encoder_epochs: 0    # train encoder from epoch 0 (was 9999 = frozen forever)
   encoder_lr_unfreeze_mult: 0.1
   # ── Dynamics-aware regularization ──────────────────────────────────────────
   lambda_dynSIG: 2.0         # near-eq only: Gramian target valid where linearization holds
