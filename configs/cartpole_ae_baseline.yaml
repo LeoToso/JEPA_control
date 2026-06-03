@@ -31,7 +31,12 @@ training:
   lambda_pred: 1.0
   lambda_recon: 1.0            # reconstruction loss weight (AE-specific)
   lambda_fp: 5.0               # fixed-point: f(z*,0)=z*
-  target_encoder_momentum: 0.99  # EMA target encoder for z_rest targets
+  # EMA target encoder: momentum must be HIGH relative to batches/epoch.
+  # With 180 batches/epoch: lag ≈ 1/((1-m)*180) epochs.
+  # 0.99  → lag=0.56 ep (target collapses with online by ep 3) ← was broken
+  # 0.9995 → lag=11 ep (diverse targets through first ~30 epochs) ← correct
+  target_encoder_momentum: 0.9995
+  aug_noise_std: 0.05          # denoising AE: online encoder sees obs+noise, decoder reconstructs clean
   # All dynamics-structure losses disabled (clean baseline)
   lambda_state: 0.0
   lambda_anchor: 0.0

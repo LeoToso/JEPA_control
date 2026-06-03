@@ -62,7 +62,7 @@ def _make_obs_tensor(obs_np, device):
 def train_one_epoch(model, target_encoder, loader, optimizer, device,
                     lambda_pred, lambda_recon, lambda_fp,
                     predictor_window, z_star_ema, obs_eq_t,
-                    target_momentum=0.99):
+                    target_momentum=0.9995, aug_noise_std=0.05):
     model.train()
     total, n_batches = 0.0, 0
     pred_acc, recon_acc, fp_acc = 0.0, 0.0, 0.0
@@ -74,7 +74,17 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
         H = H1 - 1
 
         # ── encode ────────────────────────────────────────────────────────
-        z_0 = model.encoder(obs_seq[:, 0])      # (B, d) — gradient flows
+        # Online encoder: augmented view (denoising AE).
+        # Noise prevents trivial collapse: even if encoder maps clean obs → z*,
+        # encoder(obs + ε) ≠ z* for ε ~ N(0, σ²), keeping the prediction and
+        # reconstruction tasks non-trivial.  Decoder target stays CLEAN (denoising).
+        obs_0_clean = obs_seq[:, 0]
+        if aug_noise_std > 0:
+            obs_0_aug = (obs_0_clean
+                         + aug_noise_std * torch.randn_like(obs_0_clean)).clamp(0., 1.)
+        else:
+            obs_0_aug = obs_0_clean
+        z_0 = model.encoder(obs_0_aug)          # (B, d) — gradient flows
         d   = z_0.shape[-1]
         with torch.no_grad():
             obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
@@ -101,10 +111,9 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
             u_win_buf.append(u_k)
         pred_loss = pred_loss / H
 
-        # ── reconstruction loss ────────────────────────────────────────────
-        obs_t_float = obs_seq[:, 0]             # (B, C, h, w) already float
-        obs_hat = model.decode(z_0)             # (B, C, h, w) in [0, 1]
-        recon_loss = F.mse_loss(obs_hat, obs_t_float)
+        # ── reconstruction loss (denoising: predict clean from noisy encoding) ──
+        obs_hat    = model.decode(z_0)          # (B, C, h, w) in [0, 1]
+        recon_loss = F.mse_loss(obs_hat, obs_0_clean)  # target is always CLEAN
 
         # ── fixed-point loss ───────────────────────────────────────────────
         if z_star_ema is not None:
@@ -415,16 +424,25 @@ def main():
         for p in target_encoder.parameters():
             p.requires_grad_(False)
         target_encoder.eval()
-        target_momentum = float(train_cfg.get('target_encoder_momentum', 0.99))
+        target_momentum = float(train_cfg.get('target_encoder_momentum', 0.9995))
+        aug_noise_std   = float(train_cfg.get('aug_noise_std', 0.05))
 
+        # With N batches/epoch, EMA lag in epochs ≈ 1 / ((1-m) * N).
+        # At m=0.99, N=180: lag = 0.56 epochs — target tracks online too fast.
+        # At m=0.9995, N=180: lag = 11 epochs — diverse targets for first ~30 epochs.
+        n_batches_per_epoch = len(loaders['train'])
+        lag_epochs = 1.0 / ((1 - target_momentum) * n_batches_per_epoch)
         print(f'\n[train] Starting AE training for {epochs} epochs...')
-        print(f'[train] EMA target encoder momentum={target_momentum}')
+        print(f'[train] EMA target encoder: momentum={target_momentum}  '
+              f'effective_lag≈{lag_epochs:.1f} epochs')
+        print(f'[train] Augmentation noise std={aug_noise_std} '
+              f'(denoising AE: online sees noisy obs, decoder reconstructs clean)')
         for epoch in range(1, epochs + 1):
             t0 = time.time()
             train_info, z_star_ema = train_one_epoch(
                 model, target_encoder, loaders['train'], optimizer, device,
                 lp, lr_recon, lf, W, z_star_ema, obs_eq_t,
-                target_momentum=target_momentum)
+                target_momentum=target_momentum, aug_noise_std=aug_noise_std)
             val_loss = val_one_epoch(
                 model, loaders['val'], device, lp, lr_recon, lf, W, z_star_ema)
             scheduler.step()
