@@ -71,7 +71,7 @@ training:
   dynSIG_near_eq_radius: 0.0 # 0 = no filter, apply to all samples (near-eq filter was
                               # self-defeating: once large-θ imgs exit the radius, only
                               # visually-identical near-eq imgs remain → gradient vanishes)
-  lambda_temp: 0.5           # temporal covariance consistency near equilibrium
+  lambda_temp: 0.0           # disabled: dz_t (online) and dz_tp1 (EMA target) use different encoder distributions
   temp_near_eq_radius: 2.0
   lambda_inv: 0.0            # disabled: PBH with B_eff now handles action encoder alignment
   lambda_spec: 5.0           # forces rho(A_jac)→1.0827 (unstable mode recovery)

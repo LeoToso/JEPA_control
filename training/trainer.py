@@ -230,18 +230,22 @@ class Trainer:
         B, H1, C, h, w = obs_seq.shape
         H = H1 - 1
 
-        # Online encoder: only encode z_0 with gradient (all backward losses use z_0).
-        # Target frames z_{1..H} are stop-gradient targets — encode without grad to
-        # avoid an 11x more expensive backward through all B*(H+1) images at once.
-        # Augmentation: perturb the online encoder's input so that even near-equilibrium
-        # observations (obs_t ≈ obs_{t+1} ≈ obs_eq) produce distinct online embeddings
-        # from the EMA target encoder's clean-observation embeddings.  This keeps the
-        # prediction task non-trivial and prevents the collapsed z* trivial solution
-        # (same mechanism as BYOL and I-JEPA).
+        # Clean z_0 for predictor input: encoder sees unmodified pixels, matching
+        # the eval-time distribution exactly (no train/eval mismatch for dynamics).
+        # Gradient from pred_loss flows back through this clean path into the encoder.
         obs_0 = obs_seq[:, 0]
+        z_0   = self.model.encoder(obs_0)   # (B, d) — clean, gradient flows here
+
+        # Augmented z_0 for collapse-prevention losses (varfloor, dynSIG) only.
+        # Adding pixel noise to the collapse-prevention path keeps those gradients
+        # non-trivial even near equilibrium, without polluting the predictor's
+        # training distribution.  At eval (is_train=False) z_0_aug == z_0.
         if self.aug_noise_std > 0 and is_train:
-            obs_0 = (obs_0 + self.aug_noise_std * torch.randn_like(obs_0)).clamp(0.0, 1.0)
-        z_0 = self.model.encoder(obs_0)   # (B, d) — gradient flows here
+            z_0_aug = self.model.encoder(
+                (obs_0 + self.aug_noise_std * torch.randn_like(obs_0)).clamp(0., 1.)
+            )
+        else:
+            z_0_aug = z_0
         d   = z_0.shape[-1]
         with torch.no_grad():
             obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
@@ -276,27 +280,26 @@ class Trainer:
                 else:
                     self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
-        # Stop-gradient targets from the online encoder.
-        # Using the same encoder for inputs (z_t) and targets (z_{t+1}) keeps
-        # predictor(z*, 0) ≈ z* at equilibrium, minimising fp_error and thus
-        # the constant offset that inflates linearisation residual near z*.
+        # Stop-gradient targets (from EMA target encoder for z_{1..H}).
+        # Detach so backward only updates via z_0 (online encoder).
         z_targets = z_all[:, 1:].detach()              # (B, H, d)
 
-        # Multi-step unrolled prediction loss with optional window context
+        # Multi-step unrolled prediction loss with optional window context.
+        # Convention (matches CEM): window = [z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]
+        # where u_t is the action APPLIED at z_t to produce z_{t+1}.
         W = self.predictor_window
-        # Initialize window: pad with z_0 repeated (W copies)
-        z_win_buf = [z_all[:, 0]] * W          # list of (B, d) tensors
-        u_win_buf = [torch.zeros(B, 1, device=self.device)] * W
+        z_win_buf = [z_0] * W                                             # W copies of z_0
+        u_win_buf = [torch.zeros(B, 1, device=self.device)] * (W - 1)    # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)
         for k in range(H):
-            u_k = actions[:, k]               # (B, 1)
-            z_stack = torch.stack(z_win_buf[-W:], dim=1)   # (B, W, d)
-            u_stack = torch.stack(u_win_buf[-W:], dim=1)   # (B, W, 1)
-            z_hat = self.model.predict(z_stack, u_stack)   # (B, d)
+            u_k = actions[:, k]                                # (B, 1)
+            u_win_buf.append(u_k)                              # current action into window first
+            z_stack = torch.stack(z_win_buf[-W:], dim=1)      # (B, W, d)
+            u_stack = torch.stack(u_win_buf[-W:], dim=1)      # (B, W, 1)
+            z_hat = self.model.predict(z_stack, u_stack)       # (B, d)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
             z_win_buf.append(z_hat)
-            u_win_buf.append(u_k)
         pred_loss = pred_loss / H
 
         total_loss = self.lambda_pred * pred_loss
@@ -331,9 +334,11 @@ class Trainer:
         # Target covariance = controllability Gramian of local linearization (A, B),
         # valid only where the linearization holds — near equilibrium.
         # When dynSIG_near_eq_radius > 0, restrict to ||z_t - z*|| < radius.
+        # Uses z_0_aug so the collapse-prevention gradient is non-trivial even when
+        # online and target encoder embeddings coincide at equilibrium.
         if self.lambda_dynSIG > 0 and self._Sigma_target is not None:
             from losses.dyn_sigreg import dynsigreg_loss
-            z0_dyn = z_all[:, 0]
+            z0_dyn = z_0_aug
             if self.dynSIG_near_eq_radius > 0 and self._z_star_ema is not None:
                 dz_ne = (z0_dyn - self._z_star_ema.detach()).norm(dim=1)
                 mask_ne = dz_ne < self.dynSIG_near_eq_radius
@@ -352,10 +357,12 @@ class Trainer:
         # Fixes the vanishing-gradient failure mode of the Epps-Pulley CF test:
         # at perfect collapse (z_centered ≈ 0) the CF gradient is zero, but the
         # sqrt(var + eps) formulation keeps the gradient finite and growing.
+        # Uses z_0_aug (augmented) so the variance floor applies to the slightly
+        # perturbed distribution — same path as dynSIG for consistency.
         if self.lambda_varfloor > 0 and self._Sigma_target is not None:
             from losses.dyn_sigreg import gramian_varfloor_loss
             vf_loss = gramian_varfloor_loss(
-                z_all[:, 0], self._Sigma_target.detach())
+                z_0_aug, self._Sigma_target.detach())
             total_loss = total_loss + self.lambda_varfloor * vf_loss
             info['varfloor_loss'] = vf_loss.item()
 
