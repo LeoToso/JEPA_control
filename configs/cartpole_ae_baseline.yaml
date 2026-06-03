@@ -94,7 +94,7 @@ data:
   n_random: 100000
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 0.40
+  random_init_range: 1.0    # wider exploration: pole up to ±57° prevents AE collapse
   lqr_init_range: 0.10
   lqr_noise_std: 0.25
   n_equilibrium: 1000
