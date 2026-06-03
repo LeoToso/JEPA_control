@@ -16,7 +16,7 @@ Usage:
         --data-dir data --results-dir results/ae --epochs 200
 """
 from __future__ import annotations
-import argparse, os, sys, json, time, random
+import argparse, copy, os, sys, json, time, random
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -59,9 +59,10 @@ def _make_obs_tensor(obs_np, device):
 
 # ── training loop ────────────────────────────────────────────────────────────
 
-def train_one_epoch(model, loader, optimizer, device,
+def train_one_epoch(model, target_encoder, loader, optimizer, device,
                     lambda_pred, lambda_recon, lambda_fp,
-                    predictor_window, z_star_ema, obs_eq_t):
+                    predictor_window, z_star_ema, obs_eq_t,
+                    target_momentum=0.99):
     model.train()
     total, n_batches = 0.0, 0
     pred_acc, recon_acc, fp_acc = 0.0, 0.0, 0.0
@@ -77,7 +78,10 @@ def train_one_epoch(model, loader, optimizer, device,
         d   = z_0.shape[-1]
         with torch.no_grad():
             obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
-            z_rest   = model.encoder(obs_rest).view(B, H, d)
+            # EMA target encoder: slower-moving copy of online encoder provides
+            # diverse targets even when the online encoder begins to collapse,
+            # keeping pred_loss non-trivial (same mechanism as BYOL/JEPA).
+            z_rest   = target_encoder(obs_rest).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
         # ── prediction loss (multi-step unrolled) ─────────────────────────
@@ -118,6 +122,13 @@ def train_one_epoch(model, loader, optimizer, device,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        # EMA update of target encoder
+        with torch.no_grad():
+            for p_online, p_target in zip(model.encoder.parameters(),
+                                          target_encoder.parameters()):
+                p_target.data.mul_(target_momentum).add_(
+                    p_online.data, alpha=1.0 - target_momentum)
 
         total    += loss.item()
         pred_acc += pred_loss.item()
@@ -399,12 +410,21 @@ def main():
         with torch.no_grad():
             z_star_ema = model.encoder(obs_eq_t).squeeze(0)
 
+        # EMA target encoder: separate slow-moving copy for prediction targets.
+        target_encoder = copy.deepcopy(model.encoder)
+        for p in target_encoder.parameters():
+            p.requires_grad_(False)
+        target_encoder.eval()
+        target_momentum = float(train_cfg.get('target_encoder_momentum', 0.99))
+
         print(f'\n[train] Starting AE training for {epochs} epochs...')
+        print(f'[train] EMA target encoder momentum={target_momentum}')
         for epoch in range(1, epochs + 1):
             t0 = time.time()
             train_info, z_star_ema = train_one_epoch(
-                model, loaders['train'], optimizer, device,
-                lp, lr_recon, lf, W, z_star_ema, obs_eq_t)
+                model, target_encoder, loaders['train'], optimizer, device,
+                lp, lr_recon, lf, W, z_star_ema, obs_eq_t,
+                target_momentum=target_momentum)
             val_loss = val_one_epoch(
                 model, loaders['val'], device, lp, lr_recon, lf, W, z_star_ema)
             scheduler.step()
@@ -455,7 +475,9 @@ def main():
     print(f'  mean_fraction_stable:{cem_results["mean_fraction_stable"]:.3f}')
     print(f'  mean_cost:          {cem_results["mean_cost"]:.1f}')
 
-    results_out = {'cem_eval': cem_results, 'z_star': z_star_np.tolist()}
+    # Exclude vis_result (contains numpy arrays) — keep only scalar metrics
+    cem_scalars = {k: v for k, v in cem_results.items() if k != 'vis_result'}
+    results_out = {'cem_eval': cem_scalars, 'z_star': z_star_np.tolist()}
     with open(out_dir / 'results.json', 'w') as f:
         json.dump(results_out, f, indent=2)
     print(f'[done] Results saved to {out_dir}/results.json')

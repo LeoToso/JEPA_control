@@ -30,7 +30,8 @@ training:
   horizon: 10
   lambda_pred: 1.0
   lambda_recon: 1.0            # reconstruction loss weight (AE-specific)
-  lambda_fp: 50.0              # fixed-point: f(z*,0)=z*
+  lambda_fp: 5.0               # fixed-point: f(z*,0)=z*
+  target_encoder_momentum: 0.99  # EMA target encoder for z_rest targets
   # All dynamics-structure losses disabled (clean baseline)
   lambda_state: 0.0
   lambda_anchor: 0.0
