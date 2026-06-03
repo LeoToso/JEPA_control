@@ -259,9 +259,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     _eigvals_jac, _eigvecs_jac = np.linalg.eig(A_jac)
     _unstable_mask = np.abs(_eigvals_jac) >= 0.95
     _n_unstable = int(_unstable_mask.sum())
+    _d_jac = A_jac.shape[0]
     _V_u = _eigvecs_jac[:, _unstable_mask].real   # (d, n_unstable)
     Q_unstable = _V_u @ _V_u.T                    # (d, d)  rank n_unstable
-    print(f'[control] unstable subspace: {_n_unstable}/{d} eigenvectors  '
+    print(f'[control] unstable subspace: {_n_unstable}/{_d_jac} eigenvectors  '
           f'(|λ|≥0.95)  ||Q_unstable||_F={np.linalg.norm(Q_unstable):.3f}')
 
     # Effective B for raw scalar action: B_eff = B_jac @ W_enc  (d×1)
