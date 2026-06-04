@@ -673,18 +673,22 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # that project onto the unstable eigenvector v_u.  If V_u^T(z-z*) ≈ 0
     # for all tested angles, CEM sees no cost signal and will always plan u=0.
     print('[control] Encoder sensitivity (physical θ → latent projection onto v_u):')
-    for _th in [0.02, 0.05, 0.10, 0.20]:
-        _x_s = np.array([0.0, 0.0, _th, 0.0], dtype=np.float32)
-        _obs_s, _, _ = env.reset_to_state(_x_s)
-        _obs_s_t = _make_obs_t(_obs_s)
-        with torch.no_grad():
-            _z_s = model.encoder(_obs_s_t).cpu().numpy()[0]
-        _dz_s     = _z_s - z_star
-        _Vu_proj  = float(_V_u.T @ _dz_s)          # V_u^T (z-z*) — key signal
-        _dz_norm  = float(np.linalg.norm(_dz_s))
-        _cos_s    = abs(_Vu_proj) / (_dz_norm + 1e-9)
-        print(f'  θ={_th:+.2f} rad: ||z-z*||={_dz_norm:.4f}  '
-              f'V_u^T(z-z*)={_Vu_proj:+.4f}  cos={_cos_s:.3f}')
+    if _n_unstable == 0:
+        print('[control]   (skipped — no unstable eigenvectors, V_u is empty)')
+    else:
+        for _th in [0.02, 0.05, 0.10, 0.20]:
+            _x_s = np.array([0.0, 0.0, _th, 0.0], dtype=np.float32)
+            _obs_s, _, _ = env.reset_to_state(_x_s)
+            _obs_s_t = _make_obs_t(_obs_s)
+            with torch.no_grad():
+                _z_s = model.encoder(_obs_s_t).cpu().numpy()[0]
+            _dz_s     = _z_s - z_star
+            _Vu_proj_vec = _V_u.T @ _dz_s          # shape (n_unstable,)
+            _Vu_proj  = float(np.linalg.norm(_Vu_proj_vec))
+            _dz_norm  = float(np.linalg.norm(_dz_s))
+            _cos_s    = _Vu_proj / (_dz_norm + 1e-9)
+            print(f'  θ={_th:+.2f} rad: ||z-z*||={_dz_norm:.4f}  '
+                  f'||V_u^T(z-z*)||={_Vu_proj:.4f}  cos={_cos_s:.3f}')
 
     # ── CEM setup ─────────────────────────────────────────────────────────────
     cem_cfg      = cfg.get('cem', {})
@@ -700,18 +704,21 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Q_unstable focuses cost only on the unstable subspace of A_jac, so CEM
     # minimises deviation along the direction that actually matters (|λ|≥0.95)
     # rather than spreading equally across all 32 latent dims.
+    # When there are no unstable eigenvectors, fall back to Q=I.
     # Warm-starting (σ_warm=0.5) prevents cold-start bang-bang bias.
     _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
+    _Q_qu     = Q_unstable if _n_unstable > 0 else np.eye(d)
+    _Q_qu_tag = 'Vu' if _n_unstable > 0 else 'I(fallback)'
     _cem_sweep = [
         dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
              desc='H=10 Q=I  nonlinear'),
-        dict(tag='H10_Qu_nl', horizon=10, Q=Q_unstable, Qf=Q_unstable,
+        dict(tag='H10_Qu_nl', horizon=10, Q=_Q_qu, Qf=_Q_qu,
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc='H=10 Q=Vu nonlinear'),
-        dict(tag='H25_Qu_nl', horizon=25, Q=Q_unstable, Qf=Q_unstable,
+             desc=f'H=10 Q={_Q_qu_tag} nonlinear'),
+        dict(tag='H25_Qu_nl', horizon=25, Q=_Q_qu, Qf=_Q_qu,
              zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc='H=25 Q=Vu nonlinear'),
+             desc=f'H=25 Q={_Q_qu_tag} nonlinear'),
     ]
 
     from control.cem import CEMLatentPlanner
