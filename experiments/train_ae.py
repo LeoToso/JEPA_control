@@ -162,10 +162,10 @@ def train_one_epoch(model, loader, optimizer, device,
         obs_tgt   = obs_curr[:, m+1:].reshape(-1, C, h, w)                 # (B*n_pred, 3, h, w)
         dmd_pixel_loss = F.mse_loss(obs_hat, obs_tgt)
 
-        # ── Reconstruction loss (frame 0 only) ───────────────────────────
-        z_0       = z_ctx[:, 0]                    # (B, d)
-        obs_hat_0 = model.decode(z_0)              # (B, 3, h, w)
-        recon_loss = F.mse_loss(obs_hat_0, obs_curr[:, 0])
+        # ── Reconstruction loss (all context frames, Bounou eq. 12) ─────
+        obs_hat_ctx = model.decode(z_ctx_flat)                          # (B*(m+1), 3, h, w)
+        obs_ctx_tgt = obs_curr[:, :m+1].reshape(-1, C, h, w)           # (B*(m+1), 3, h, w)
+        recon_loss  = F.mse_loss(obs_hat_ctx, obs_ctx_tgt)
 
         # ── Latent predictor loss (for CEM) — trained on context window ──
         # Encode H+1 frames for predictor targets (detached: predictor trains
@@ -271,7 +271,8 @@ def val_one_epoch(model, loader, device,
             model.decode(z_pred.reshape(-1, d)),
             obs_curr[:, m+1:].reshape(-1, C, h, w))
 
-        recon_loss = F.mse_loss(model.decode(z_ctx[:, 0]), obs_curr[:, 0])
+        obs_hat_ctx_v = model.decode(z_ctx.reshape(-1, d))
+        recon_loss    = F.mse_loss(obs_hat_ctx_v, obs_curr[:, :m+1].reshape(-1, C, h, w))
 
         all_flat = obs_seq.reshape(-1, C_fs, h, w)
         z_all    = model.encoder(all_flat).reshape(B, H+1, d)
