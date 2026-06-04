@@ -425,36 +425,40 @@ def main():
     # ── dataset ───────────────────────────────────────────────────────────
     from data.dataset import load_dataset, make_dataloaders, generate_dataset
     data_cfg = cfg['data']
-    h5_path  = Path(args.data_dir) / f'cartpole_ae_seed{args.seed}.h5'
+    h5_path  = Path(args.data_dir) / f'cartpole_ae_ep_seed{args.seed}.h5'
     if h5_path.exists():
         print(f'[data] Loading {h5_path}')
         data = load_dataset(str(h5_path))
     else:
-        print(f'[data] Generating dataset...')
+        print(f'[data] Generating dataset (episode-centric)...')
         data = generate_dataset(
-            dataset_type='mixed',
-            n_transitions=int(data_cfg['n_random']),
-            frame_skip=int(env_cfg.get('frame_skip', 1)),
-            save_path=str(h5_path),
-            seed=args.seed,
-            image_size=int(env_cfg['image_size']),
-            action_range=tuple(env_cfg['action_range']),
-            init_range=float(data_cfg.get('random_init_range', 1.0)),
+            n_random_episodes=int(data_cfg.get('n_random_episodes', 50)),
+            random_ep_len=int(data_cfg.get('random_ep_len', 200)),
+            random_init_range=float(data_cfg.get('random_init_range', 1.0)),
+            n_lqr_episodes=int(data_cfg.get('n_lqr_episodes', 50)),
+            lqr_ep_len=int(data_cfg.get('lqr_ep_len', 200)),
             lqr_init_range=float(data_cfg.get('lqr_init_range', 0.30)),
             lqr_noise_std=float(data_cfg.get('lqr_noise_std', 0.25)),
             n_equilibrium=int(data_cfg.get('n_equilibrium', 500)),
+            eq_ep_len=int(data_cfg.get('eq_ep_len', 50)),
+            n_eq_selfloop=int(data_cfg.get('n_eq_selfloop', 200)),
             eq_init_range=float(data_cfg.get('eq_init_range', 0.002)),
             eq_noise_std=float(data_cfg.get('eq_noise_std', 0.001)),
-            n_pe=int(data_cfg.get('n_pe', 2000)),
+            n_pe_episodes=int(data_cfg.get('n_pe_episodes', 0)),
+            pe_ep_len=int(data_cfg.get('pe_ep_len', 40)),
             pe_init_range=float(data_cfg.get('pe_init_range', 0.05)),
             pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
             pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
-            pe_max_ep_len=int(data_cfg.get('pe_max_ep_len', 40)),
-            n_passive=int(data_cfg.get('n_passive', 0)),
+            n_passive_episodes=int(data_cfg.get('n_passive_episodes', 0)),
+            passive_ep_len=int(data_cfg.get('passive_ep_len', 50)),
             passive_init_range=float(data_cfg.get('passive_init_range', 0.05)),
-            passive_max_ep_len=int(data_cfg.get('passive_max_ep_len', 15)),
-            random_no_done=bool(data_cfg.get('random_no_done', True)),
-            passive_no_done=bool(data_cfg.get('passive_no_done', True)),
+            train_frac=float(data_cfg.get('train_frac', 0.8)),
+            val_frac=float(data_cfg.get('val_frac', 0.1)),
+            frame_skip=int(env_cfg.get('frame_skip', 1)),
+            image_size=int(env_cfg['image_size']),
+            action_range=tuple(env_cfg['action_range']),
+            save_path=str(h5_path),
+            seed=args.seed,
         )
 
     loaders = make_dataloaders(

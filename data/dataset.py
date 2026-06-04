@@ -1,5 +1,6 @@
 """Dataset generation and loading for JEPA cartpole experiments."""
 from __future__ import annotations
+import math
 import os, warnings
 from pathlib import Path
 from typing import Dict, Optional
@@ -25,41 +26,32 @@ def _compute_lqr_gain():
     return K
 
 
-def _collect_transitions(env, n_transitions, mode, lqr_gain,
-                         action_low, action_high, init_range,
-                         lqr_noise_std, rng,
-                         pe_action_amplitude=3.0, pe_flip_prob=0.15,
-                         pe_max_ep_len=40, passive_max_ep_len=15,
-                         no_done=False):
-    """Collect n_transitions single-step transitions.
+def _collect_episode(env, episode_length, mode, lqr_gain,
+                     action_low, action_high, init_range,
+                     lqr_noise_std, rng,
+                     pe_action_amplitude=3.0, pe_flip_prob=0.15):
+    """Collect exactly one episode of episode_length consecutive steps.
+
+    No mid-episode resets — the done signal from gym is ignored so trajectories
+    show the pole falling freely past the gym threshold (12° / 0.21 rad).
 
     mode:
         'random'  — uniform random actions over full action range
-        'lqr'     — LQR + Gaussian noise (lqr_noise_std)
+        'lqr'     — LQR + Gaussian noise
         'prbs'    — Pseudo-Random Binary Sequence near equilibrium:
                     hold ±pe_action_amplitude, flip sign with probability
-                    pe_flip_prob each step, reset every pe_max_ep_len steps.
-                    Provides persistent excitation with temporal structure.
-        'passive' — u=0 near equilibrium (init_range small): captures the
-                    natural unstable divergence so DMD/predictor can recover
-                    the unstable eigenvalue from data rather than a loss.
+                    pe_flip_prob each step.  Provides persistent excitation
+                    with temporal structure for the windowed predictor.
+        'passive' — u=0 near equilibrium: captures natural unstable divergence
+                    so predictor/DMD can recover rho(A)>1 from data.
     """
-    obs_list, state_list, action_list = [], [], []
-    next_obs_list, next_state_list, ep_id_list = [], [], []
     obs, state, _ = env.reset(init_range=init_range)
-    steps_since_reset = 0
-    collected = 0
-    episode_id = 0
+    obs_list, state_list, action_list = [], [], []
+    next_obs_list, next_state_list = [], []
+
     current_prbs = float(rng.choice([-1, 1])) * pe_action_amplitude
 
-    if mode == 'prbs':
-        max_ep_len = pe_max_ep_len
-    elif mode == 'passive':
-        max_ep_len = passive_max_ep_len
-    else:
-        max_ep_len = 200
-
-    while collected < n_transitions:
+    for step in range(episode_length):
         if mode == 'random':
             u = float(rng.uniform(action_low, action_high))
         elif mode == 'lqr':
@@ -67,7 +59,7 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
             u = float(np.clip(u_lqr + float(rng.normal(0.0, lqr_noise_std)),
                               action_low, action_high))
         elif mode == 'prbs':
-            if steps_since_reset == 0:
+            if step == 0:
                 current_prbs = float(rng.choice([-1, 1])) * pe_action_amplitude
             elif rng.random() < pe_flip_prob:
                 current_prbs = -current_prbs
@@ -77,22 +69,13 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
         else:
             raise ValueError(f'Unknown mode: {mode}')
 
-        next_obs, next_state, _, done, _ = env.step(u)
+        next_obs, next_state, _, _, _ = env.step(u)
         obs_list.append(obs.copy())
         state_list.append(state.copy())
         action_list.append(np.array([u], dtype=np.float32))
         next_obs_list.append(next_obs.copy())
         next_state_list.append(next_state.copy())
-        ep_id_list.append(episode_id)
-        collected += 1
-        steps_since_reset += 1
-
-        if (done and not no_done) or steps_since_reset >= max_ep_len:
-            obs, state, _ = env.reset(init_range=init_range)
-            steps_since_reset = 0
-            episode_id += 1
-        else:
-            obs, state = next_obs, next_state
+        obs, state = next_obs, next_state
 
     return {
         'obs':         np.stack(obs_list).astype(np.uint8),
@@ -100,130 +83,171 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
         'actions':     np.stack(action_list).astype(np.float32),
         'next_obs':    np.stack(next_obs_list).astype(np.uint8),
         'next_states': np.stack(next_state_list).astype(np.float32),
-        'episode_ids': np.array(ep_id_list, dtype=np.int32),
     }
 
 
-def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
-                     save_path=None, seed=42, train_frac=0.8, val_frac=0.1,
-                     action_range=(-5.0, 5.0), init_range=0.1,
-                     lqr_init_range=None, lqr_noise_std=0.1, image_size=64,
-                     n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001,
-                     n_pe=0, pe_init_range=0.05, pe_action_amplitude=3.0,
-                     pe_flip_prob=0.15, pe_max_ep_len=40,
-                     n_passive=0, passive_init_range=0.05, passive_max_ep_len=15,
-                     random_no_done=True, passive_no_done=True):
-    """Generate a dataset of cartpole transitions.
+def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
+                      action_low, action_high, init_range,
+                      lqr_noise_std, rng, ep_id_offset=0,
+                      pe_action_amplitude=3.0, pe_flip_prob=0.15):
+    """Collect n_episodes episodes of episode_length steps each.
 
-    dataset_type='mixed': n_transitions//2 random + n_transitions//2 LQR,
-    plus optional near-equilibrium blocks (n_equilibrium, n_pe, n_passive).
+    Returns flat arrays with episode_ids so the windowed DataLoader can
+    extract horizon+1 windows without crossing episode boundaries.
+    """
+    obs_l, states_l, actions_l = [], [], []
+    next_obs_l, next_states_l, ep_ids_l = [], [], []
 
-    PRBS (n_pe > 0): starts near equilibrium (pe_init_range), applies a
-    Pseudo-Random Binary Sequence of ±pe_action_amplitude to maximise
-    persistent excitation in the linear regime around z*. Temporal structure
-    (average hold = 1/pe_flip_prob steps) is important for the windowed
-    predictor and the temporal covariance consistency loss (L_temp).
+    for ep_idx in range(n_episodes):
+        ep = _collect_episode(
+            env, episode_length, mode, lqr_gain,
+            action_low, action_high, init_range,
+            lqr_noise_std, rng,
+            pe_action_amplitude=pe_action_amplitude,
+            pe_flip_prob=pe_flip_prob,
+        )
+        obs_l.append(ep['obs'])
+        states_l.append(ep['states'])
+        actions_l.append(ep['actions'])
+        next_obs_l.append(ep['next_obs'])
+        next_states_l.append(ep['next_states'])
+        ep_ids_l.append(np.full(episode_length, ep_id_offset + ep_idx, dtype=np.int32))
 
-    Passive (n_passive > 0): starts from small perturbations of equilibrium
-    (passive_init_range) and applies u=0 for passive_max_ep_len steps. These
-    trajectories show the pole naturally diverging under gravity — providing
-    the training signal needed for DMD/predictor to recover rho(A)>1 directly
-    from data, without requiring a spectral loss.
+    return {
+        'obs':         np.concatenate(obs_l),
+        'states':      np.concatenate(states_l),
+        'actions':     np.concatenate(actions_l),
+        'next_obs':    np.concatenate(next_obs_l),
+        'next_states': np.concatenate(next_states_l),
+        'episode_ids': np.concatenate(ep_ids_l),
+    }
+
+
+def generate_dataset(
+    # Random action episodes
+    n_random_episodes=50, random_ep_len=200,
+    random_init_range=1.0,
+    # LQR episodes
+    n_lqr_episodes=50, lqr_ep_len=200,
+    lqr_init_range=0.30, lqr_noise_std=0.25,
+    # Near-equilibrium LQR (teaches fp: f(z*,0)≈z*)
+    n_equilibrium=500, eq_ep_len=50,
+    n_eq_selfloop=200,
+    eq_init_range=0.002, eq_noise_std=0.001,
+    # PRBS persistent excitation near equilibrium
+    n_pe_episodes=0, pe_ep_len=40,
+    pe_init_range=0.05, pe_action_amplitude=3.0, pe_flip_prob=0.15,
+    # Passive divergence: u=0 near eq → pole falls, teaches rho(A)>1 from data
+    n_passive_episodes=0, passive_ep_len=50,
+    passive_init_range=0.05,
+    # Train/val/test split
+    train_frac=0.8, val_frac=0.1,
+    # Environment
+    frame_skip=1, image_size=64, action_range=(-10.0, 10.0),
+    save_path=None, seed=42,
+):
+    """Generate an episode-centric dataset of cartpole trajectories.
+
+    Each data type is specified as (n_episodes × episode_length) rather than
+    a flat transition count.  All episodes run for their full length with no
+    mid-episode resets — the gym done signal is ignored so trajectories show
+    the pole falling freely past the 12° (0.21 rad) threshold.
+
+    Train/val/test splits are done by shuffling whole episodes before slicing,
+    so no episode ever spans two splits.
     """
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng = np.random.RandomState(seed)
-    lqr_gain = _compute_lqr_gain() if dataset_type in ('lqr', 'mixed') or n_pe > 0 else None
+    needs_lqr = (n_lqr_episodes > 0 or n_equilibrium > 0 or n_pe_episodes > 0)
+    lqr_gain  = _compute_lqr_gain() if needs_lqr else None
     env = ContinuousCartpoleVisual(frame_skip=frame_skip, image_size=image_size,
                                    action_range=(-10.0, 10.0), seed=seed)
     action_low, action_high = action_range
-    if lqr_init_range is None:
-        lqr_init_range = max(0.05, init_range * 0.5)
 
-    if dataset_type == 'mixed':
-        n_random = n_transitions // 2
-        n_lqr    = n_transitions - n_random
-        print(f'[data] Collecting {n_random} random transitions '
-              f'(init_range={init_range})...')
-        data_rand = _collect_transitions(env, n_random, 'random', lqr_gain,
-                                         action_low, action_high,
-                                         init_range=init_range,
-                                         lqr_noise_std=lqr_noise_std, rng=rng,
-                                         no_done=random_no_done)
-        print(f'[data] Collecting {n_lqr} LQR+noise transitions '
-              f'(init_range={lqr_init_range}, noise_std={lqr_noise_std})...')
-        data_lqr  = _collect_transitions(env, n_lqr, 'lqr', lqr_gain,
-                                          action_low, action_high,
-                                          init_range=lqr_init_range,
-                                          lqr_noise_std=lqr_noise_std, rng=rng)
-        # Offset episode IDs in the second segment so they are globally unique
-        data_lqr['episode_ids'] += data_rand['episode_ids'].max() + 1
-        data = {key: np.concatenate([data_rand[key], data_lqr[key]], axis=0)
-                for key in data_rand}
+    all_segments = []
+    next_ep_id   = 0
 
-        # Optional near-equilibrium self-loop block (u=tiny noise, teaches f(z*,0)≈z*)
-        if n_equilibrium > 0:
-            print(f'[data] Collecting {n_equilibrium} equilibrium transitions '
-                  f'(init_range={eq_init_range}, noise_std={eq_noise_std})...')
-            data_eq = _collect_transitions(env, n_equilibrium, 'lqr', lqr_gain,
-                                           action_low, action_high,
-                                           init_range=eq_init_range,
-                                           lqr_noise_std=eq_noise_std, rng=rng)
-            data_eq['episode_ids'] += data['episode_ids'].max() + 1
-            data = {key: np.concatenate([data[key], data_eq[key]], axis=0)
-                    for key in data}
+    # ── Random ────────────────────────────────────────────────────────────
+    if n_random_episodes > 0:
+        n_trans = n_random_episodes * random_ep_len
+        print(f'[data] Random:  {n_random_episodes} ep × {random_ep_len} steps'
+              f' = {n_trans:,} transitions  (init_range={random_init_range})')
+        seg = _collect_episodes(
+            env, n_random_episodes, random_ep_len, 'random', lqr_gain,
+            action_low, action_high, init_range=random_init_range,
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+        all_segments.append(seg)
+        next_ep_id += n_random_episodes
 
-        # PRBS near-equilibrium block: persistent excitation for L_temp + Gramian
-        if n_pe > 0:
-            print(f'[data] Collecting {n_pe} PRBS transitions '
-                  f'(init_range={pe_init_range}, '
-                  f'amp={pe_action_amplitude}, '
-                  f'p_flip={pe_flip_prob}, '
-                  f'max_ep={pe_max_ep_len})...')
-            data_pe = _collect_transitions(
-                env, n_pe, 'prbs', lqr_gain,
-                action_low, action_high,
-                init_range=pe_init_range,
-                lqr_noise_std=lqr_noise_std,
-                rng=rng,
-                pe_action_amplitude=pe_action_amplitude,
-                pe_flip_prob=pe_flip_prob,
-                pe_max_ep_len=pe_max_ep_len,
-            )
-            data_pe['episode_ids'] += data['episode_ids'].max() + 1
-            data = {key: np.concatenate([data[key], data_pe[key]], axis=0)
-                    for key in data}
+    # ── LQR ───────────────────────────────────────────────────────────────
+    if n_lqr_episodes > 0:
+        n_trans = n_lqr_episodes * lqr_ep_len
+        print(f'[data] LQR:     {n_lqr_episodes} ep × {lqr_ep_len} steps'
+              f' = {n_trans:,} transitions  '
+              f'(init_range={lqr_init_range}, noise_std={lqr_noise_std})')
+        seg = _collect_episodes(
+            env, n_lqr_episodes, lqr_ep_len, 'lqr', lqr_gain,
+            action_low, action_high, init_range=lqr_init_range,
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+        all_segments.append(seg)
+        next_ep_id += n_lqr_episodes
 
-        # Passive near-equilibrium block: u=0 divergence shows unstable eigenvalue
-        if n_passive > 0:
-            print(f'[data] Collecting {n_passive} passive (u=0) divergence transitions '
-                  f'(init_range={passive_init_range}, max_ep={passive_max_ep_len})...')
-            data_passive = _collect_transitions(
-                env, n_passive, 'passive', lqr_gain,
-                action_low, action_high,
-                init_range=passive_init_range,
-                lqr_noise_std=lqr_noise_std,
-                rng=rng,
-                passive_max_ep_len=passive_max_ep_len,
-                no_done=passive_no_done,
-            )
-            data_passive['episode_ids'] += data['episode_ids'].max() + 1
-            data = {key: np.concatenate([data[key], data_passive[key]], axis=0)
-                    for key in data}
+    # ── Near-equilibrium LQR ─────────────────────────────────────────────
+    if n_equilibrium > 0:
+        n_eq_episodes = max(1, n_equilibrium // eq_ep_len)
+        n_trans = n_eq_episodes * eq_ep_len
+        print(f'[data] Eq-LQR:  {n_eq_episodes} ep × {eq_ep_len} steps'
+              f' = {n_trans:,} transitions  '
+              f'(init_range={eq_init_range}, noise_std={eq_noise_std})')
+        seg = _collect_episodes(
+            env, n_eq_episodes, eq_ep_len, 'lqr', lqr_gain,
+            action_low, action_high, init_range=eq_init_range,
+            lqr_noise_std=eq_noise_std, rng=rng, ep_id_offset=next_ep_id)
+        all_segments.append(seg)
+        next_ep_id += n_eq_episodes
 
-    else:
-        init_r = 0.05 if dataset_type == 'lqr' else init_range
-        data = _collect_transitions(env, n_transitions, dataset_type, lqr_gain,
-                                    action_low, action_high,
-                                    init_range=init_r,
-                                    lqr_noise_std=lqr_noise_std, rng=rng)
+    # ── PRBS ─────────────────────────────────────────────────────────────
+    if n_pe_episodes > 0:
+        n_trans = n_pe_episodes * pe_ep_len
+        print(f'[data] PRBS:    {n_pe_episodes} ep × {pe_ep_len} steps'
+              f' = {n_trans:,} transitions  '
+              f'(init_range={pe_init_range}, amp={pe_action_amplitude},'
+              f' p_flip={pe_flip_prob})')
+        seg = _collect_episodes(
+            env, n_pe_episodes, pe_ep_len, 'prbs', lqr_gain,
+            action_low, action_high, init_range=pe_init_range,
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            pe_action_amplitude=pe_action_amplitude, pe_flip_prob=pe_flip_prob)
+        all_segments.append(seg)
+        next_ep_id += n_pe_episodes
+
+    # ── Passive ──────────────────────────────────────────────────────────
+    if n_passive_episodes > 0:
+        n_trans = n_passive_episodes * passive_ep_len
+        print(f'[data] Passive: {n_passive_episodes} ep × {passive_ep_len} steps'
+              f' = {n_trans:,} transitions  '
+              f'(init_range={passive_init_range}, u=0 divergence)')
+        seg = _collect_episodes(
+            env, n_passive_episodes, passive_ep_len, 'passive', lqr_gain,
+            action_low, action_high, init_range=passive_init_range,
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+        all_segments.append(seg)
+        next_ep_id += n_passive_episodes
+
     env.close()
 
+    if not all_segments:
+        raise ValueError('No data segments generated — check n_*_episodes parameters.')
+
+    data = {key: np.concatenate([seg[key] for seg in all_segments], axis=0)
+            for key in all_segments[0]}
+
     N = data['obs'].shape[0]
-    # Shuffle by episode to avoid leaking future info across splits
-    ep_ids   = data['episode_ids']
+    # Shuffle whole episodes before splitting so no episode straddles two splits
+    ep_ids    = data['episode_ids']
     unique_ep = np.unique(ep_ids)
     rng.shuffle(unique_ep)
-    ep_order = {ep: i for i, ep in enumerate(unique_ep)}
+    ep_order  = {ep: i for i, ep in enumerate(unique_ep)}
     sort_idx  = np.argsort([ep_order[e] for e in ep_ids], kind='stable')
     for key in data:
         data[key] = data[key][sort_idx]
@@ -236,18 +260,21 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
         'val':   np.arange(n_tr, n_tr + n_val),
         'test':  np.arange(n_tr + n_val, N),
     }
-    actions = data['actions']
+    actions    = data['actions']
     action_cov = np.cov(actions.T)
     if action_cov.ndim == 0:
         action_cov = float(action_cov); kappa = 1.0
     else:
-        ev = np.maximum(np.linalg.eigvalsh(action_cov), 1e-12)
+        ev    = np.maximum(np.linalg.eigvalsh(action_cov), 1e-12)
         kappa = float(ev.max() / ev.min())
-    data['splits'] = splits
-    data['action_cov'] = np.atleast_2d(action_cov)
+    data['splits']                      = splits
+    data['action_cov']                  = np.atleast_2d(action_cov)
     data['action_cov_condition_number'] = kappa
-    print(f'[data] Total: {N} transitions  '
-          f'(train={n_tr}, val={n_val}, test={N-n_tr-n_val})')
+
+    total_eps = next_ep_id
+    print(f'[data] Total: {N:,} transitions  '
+          f'(train={n_tr:,}, val={n_val:,}, test={N-n_tr-n_val:,})  '
+          f'{total_eps} episodes  avg_ep_len={N/total_eps:.0f}')
     if save_path is not None:
         _save_hdf5(data, save_path, splits)
     return data
@@ -279,7 +306,6 @@ def load_dataset(path):
             for split_name in f['splits']:
                 splits[split_name] = f['splits'][split_name][:]
         data['splits'] = splits
-    # Backward compat: datasets without episode_ids get a dummy column
     if 'episode_ids' not in data:
         N = len(data['obs'])
         data['episode_ids'] = np.arange(N, dtype=np.int32)

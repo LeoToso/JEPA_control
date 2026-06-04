@@ -114,27 +114,30 @@ cem:
   n_trials: 50
 
 data:
-  n_random: 20000          # proof of concept: 10k random + 10k LQR (mixed splits 50/50)
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 1.0    # wider exploration: pole up to ±57°
-  lqr_init_range: 0.30      # LQR starts up to ±17°: more diverse success trajectories
+  # Random: 50 ep × 200 steps = 10,000 transitions (wide exploration, ±57°)
+  n_random_episodes: 50
+  random_ep_len: 200
+  random_init_range: 1.0
+  # LQR: 100 ep × 100 steps = 10,000 transitions (starts up to ±17°)
+  n_lqr_episodes: 100
+  lqr_ep_len: 100
+  lqr_init_range: 0.30
   lqr_noise_std: 0.25
+  # Equilibrium: 10 ep × 50 steps = 500 transitions (near z*, tiny u)
   n_equilibrium: 500
+  eq_ep_len: 50
   n_eq_selfloop: 200
   eq_init_range: 0.002
   eq_noise_std: 0.001
-  n_pe: 5000               # reduced for proof of concept
+  # PRBS: 125 ep × 40 steps = 5,000 transitions (persistent excitation)
+  n_pe_episodes: 125
+  pe_ep_len: 40
   pe_init_range: 0.05
   pe_action_amplitude: 3.0
   pe_flip_prob: 0.15
-  pe_max_ep_len: 40
-  # ── no_done: don't reset on gym's theta/x threshold — let pole fall freely ──
-  # random_no_done: episodes run full max_ep_len (200 steps) even when |θ|>12°
-  # passive_no_done: u=0 episodes run for 50 steps; pole falls from 0.05 → ~1.5 rad
-  random_no_done: true
-  passive_no_done: true
-  # ── Passive divergence: u=0 near eq, pole falls naturally ─────────────────
-  n_passive: 2000
+  # Passive: 40 ep × 50 steps = 2,000 transitions (u=0; 0.05 → ~1 rad in 1s)
+  n_passive_episodes: 40
+  passive_ep_len: 50
   passive_init_range: 0.05
-  passive_max_ep_len: 50      # 50 steps × 0.02s = 1s; pole falls from ~0.05 to ~1 rad
