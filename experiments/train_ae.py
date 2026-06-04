@@ -341,7 +341,7 @@ def main():
     # ── dataset ───────────────────────────────────────────────────────────
     from data.dataset import load_dataset, make_dataloaders, generate_dataset
     data_cfg = cfg['data']
-    h5_path  = Path(args.data_dir) / f'cartpole_v2_mixed_fs1_seed{args.seed}.h5'
+    h5_path  = Path(args.data_dir) / f'cartpole_ae_seed{args.seed}.h5'
     if h5_path.exists():
         print(f'[data] Loading {h5_path}')
         data = load_dataset(str(h5_path))
