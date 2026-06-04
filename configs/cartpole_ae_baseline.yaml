@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4
   action_encoder: linear
-  patch_size: 16   # 128/16 = 64 patches — same token count as 64px/patch8
+  patch_size: 8    # 128/8 = 256 patches — 4× more spatial tokens, reduces pixel dead zone
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
@@ -49,7 +49,9 @@ training:
   lambda_unstable: 0.0
   lambda_dynSIG: 0.0
   lambda_temp: 0.0
-  use_vicreg: false
+  use_vicreg: true           # prevents encoder collapse: variance floor + covariance decorrelation
+  vicreg_lambda: 25.0        # std(z_i) ≥ 1 constraint per dimension (default 25.0)
+  vicreg_nu: 1.0             # covariance off-diagonal penalty
   lambda_sigreg: 0.0
   ema_momentum: 0.996
   state_encoder_grad_scale: 1.0

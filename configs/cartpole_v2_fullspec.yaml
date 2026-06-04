@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 16   # 128/16 = 64 patches — same token count as 64px/patch8
+  patch_size: 8    # 128/8 = 256 patches — 4× more spatial tokens, reduces pixel dead zone from ~0.05 to ~0.01 rad
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
@@ -34,7 +34,7 @@ training:
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 5.0             # fixed-point: f(z*,0)=z*  (reduced from 50 — was dominating early training)
+  lambda_fp: 50.0            # fixed-point: f(z*,0)=z*  (10× increase — fp_err=0.22 at λ=5 swamps latent signal)
   lambda_spec: 0.0           # disabled: replaced by L_dynSIG + L_temp
   lambda_spec_marginal: 0.0
   lambda_PBH: 1.0            # re-enabled: now uses B_eff (d×1), forces scalar stabilisability
