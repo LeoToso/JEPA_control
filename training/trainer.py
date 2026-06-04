@@ -539,7 +539,7 @@ class Trainer:
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
             or (self.lambda_spec_eig > 0 and self._obs_v_u is not None
-                and epoch >= self.spec_eig_warmup_epochs)
+                and self.epoch >= self.spec_eig_warmup_epochs)
             or (self.lambda_PBH > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
@@ -633,7 +633,7 @@ class Trainer:
                 # latent image of the physical unstable direction (no grad through
                 # encoder — v̂_u is treated as a fixed target direction each step).
                 if (self.lambda_spec_eig > 0
-                        and epoch >= self.spec_eig_warmup_epochs
+                        and self.epoch >= self.spec_eig_warmup_epochs
                         and self.gt is not None
                         and self._obs_v_u is not None
                         and self._z_star_ema is not None):
