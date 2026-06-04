@@ -29,13 +29,13 @@ training:
   epochs: 200
   horizon: 10
   lambda_pred: 1.0
-  lambda_state: 0.0             # disabled: replaced by mirror antisymmetry loss
-  lambda_mirror: 1.0           # mirror antisym: encoder(flip(obs)) + encoder(obs) ≈ 2·z* (no state labels)
+  lambda_state: 0.1             # direction alignment: forces θ encoding into V_u direction
+  lambda_mirror: 1.0           # sign alignment: encoder(flip(obs)) + encoder(obs) ≈ 2·z* (no state labels)
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 10.0              # was 50 → dominated 90% of epoch-1 loss → encoder collapsed to z*
+  lambda_fp: 25.0              # increased from 10: fp_err=0.844 was too large (linearization broken)
   lambda_spec: 0.0             # disabled: replaced by L_dynSIG + L_temp
   lambda_spec_marginal: 0.0
   lambda_PBH: 1.0              # uses B_eff (d×1), forces scalar stabilisability
