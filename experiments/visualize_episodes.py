@@ -5,14 +5,10 @@ For each data type (random, lqr, prbs, passive):
   LEFT  — filmstrip: N equally-spaced frames from one sample episode
   RIGHT — theta (pole angle) over time for multiple episodes
 
-The dashed red lines mark ±12° (0.21 rad), the gym done threshold that
-previously caused mid-episode resets.  With the new episode-centric
-generation, trajectories freely cross this boundary.
-
 Usage (run from repo root):
     python experiments/visualize_episodes.py
     python experiments/visualize_episodes.py --config configs/cartpole_v2_fullspec.yaml
-    python experiments/visualize_episodes.py --n-episodes 5 --n-strip 10
+    python experiments/visualize_episodes.py --n-episodes 5 --n-strip 10 --vis-size 128
 """
 from __future__ import annotations
 import sys, argparse
@@ -34,6 +30,8 @@ def main():
                    help='Episodes per type shown in trajectory plot')
     p.add_argument('--n-strip',    type=int, default=10,
                    help='Frames shown in each filmstrip row')
+    p.add_argument('--vis-size',   type=int, default=128,
+                   help='Image resolution for filmstrip frames (training uses config value)')
     p.add_argument('--seed',       type=int, default=42)
     p.add_argument('--out',        default='results/episode_viz.png')
     args = p.parse_args()
@@ -48,9 +46,10 @@ def main():
     from envs.cartpole_visual import ContinuousCartpoleVisual
     from data.dataset import _compute_lqr_gain, _collect_episode
 
+    # Higher-resolution environment just for the filmstrip — training still uses config image_size
     env = ContinuousCartpoleVisual(
         frame_skip=int(env_cfg.get('frame_skip', 1)),
-        image_size=int(env_cfg.get('image_size', 64)),
+        image_size=args.vis_size,
         mass_cart=float(env_cfg.get('mass_cart', 1.0)),
         mass_pole=float(env_cfg.get('mass_pole', 0.1)),
         pole_length=float(env_cfg.get('pole_length', 0.5)),
@@ -62,25 +61,34 @@ def main():
     lqr_gain = _compute_lqr_gain()
     a_lo, a_hi = float(env_cfg['action_range'][0]), float(env_cfg['action_range'][1])
 
-    # (label, mode, ep_len, init_range, hex-color)
+    # Random episodes are capped at ep_len=50 for the filmstrip so the pole doesn't
+    # spin multiple rotations (which looks physically unrealistic at large angles).
+    # The trajectory plot still uses the full configured length.
+    RANDOM_VIZ_EP_LEN = 50
+
+    # (label, mode, filmstrip_ep_len, traj_ep_len, init_range, hex-color)
     types = [
         ('Random  (u ~ Uniform[-10, 10])',
          'random',
+         RANDOM_VIZ_EP_LEN,
          int(data_cfg.get('random_ep_len', 200)),
          float(data_cfg.get('random_init_range', 1.0)),
          '#e74c3c'),
         ('LQR  (pure, no noise)',
          'lqr',
          int(data_cfg.get('lqr_ep_len', 100)),
+         int(data_cfg.get('lqr_ep_len', 100)),
          float(data_cfg.get('lqr_init_range', 0.10)),
          '#2ecc71'),
         ('PRBS  (persistent excitation near eq)',
          'prbs',
          int(data_cfg.get('pe_ep_len', 40)),
+         int(data_cfg.get('pe_ep_len', 40)),
          float(data_cfg.get('pe_init_range', 0.05)),
          '#9b59b6'),
         ('Passive  (u = 0, natural divergence)',
          'passive',
+         int(data_cfg.get('passive_ep_len', 50)),
          int(data_cfg.get('passive_ep_len', 50)),
          float(data_cfg.get('passive_init_range', 0.05)),
          '#f39c12'),
@@ -91,43 +99,58 @@ def main():
     N_STRIP = args.n_strip
 
     # ── Collect episodes ──────────────────────────────────────────────────
+    print(f'[viz] Rendering at {args.vis_size}×{args.vis_size}  '
+          f'(training uses {env_cfg.get("image_size", 64)}×{env_cfg.get("image_size", 64)})')
     print('[viz] Collecting episodes...')
-    collected: dict[str, list[dict]] = {}
-    for label, mode, ep_len, init_range, color in types:
-        print(f'  [{mode}]  {N_EP} ep × {ep_len} steps  '
-              f'(init_range={init_range})')
-        eps = []
-        for _ in range(N_EP):
-            ep = _collect_episode(
-                env, ep_len, mode, lqr_gain,
-                a_lo, a_hi, init_range,
-                lqr_noise_std=float(data_cfg.get('lqr_noise_std', 0.25)),
-                rng=rng,
-                pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
-                pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
-            )
-            eps.append(ep)
-        collected[mode] = eps
+
+    collected: dict[str, dict] = {}
+    for label, mode, strip_ep_len, traj_ep_len, init_range, color in types:
+        print(f'  [{mode}]  filmstrip={strip_ep_len} steps  '
+              f'traj={traj_ep_len} steps  init_range=±{init_range}')
+
+        # Filmstrip episode (shorter for random to avoid multi-rotation)
+        strip_ep = _collect_episode(
+            env, strip_ep_len, mode, lqr_gain,
+            a_lo, a_hi, init_range,
+            lqr_noise_std=float(data_cfg.get('lqr_noise_std', 0.0)),
+            rng=rng,
+            pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
+            pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
+        )
+
+        # Trajectory episodes (full length, N_EP of them)
+        traj_eps = [_collect_episode(
+            env, traj_ep_len, mode, lqr_gain,
+            a_lo, a_hi, init_range,
+            lqr_noise_std=float(data_cfg.get('lqr_noise_std', 0.0)),
+            rng=rng,
+            pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
+            pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
+        ) for _ in range(N_EP)]
+
+        collected[mode] = {'strip': strip_ep, 'trajs': traj_eps,
+                           'traj_ep_len': traj_ep_len}
+
     env.close()
 
     # Print summary statistics
     print('\n[viz] Trajectory statistics:')
-    for label, mode, ep_len, init_range, color in types:
-        thetas = np.concatenate([ep['states'][:, 2] for ep in collected[mode]])
-        print(f'  {mode:<10}  ep_len={ep_len}  '
+    for label, mode, strip_ep_len, traj_ep_len, init_range, color in types:
+        thetas = np.concatenate([ep['states'][:, 2]
+                                 for ep in collected[mode]['trajs']])
+        print(f'  {mode:<10}  traj_len={traj_ep_len}  '
               f'max|θ|={np.abs(thetas).max():.3f} rad  '
               f'(gym limit: 0.21 rad)')
 
     # ── Figure layout ─────────────────────────────────────────────────────
-    # Each episode type gets one row split into filmstrip (left) + trajectory (right)
-    FIG_W = 2.5 + N_STRIP * 1.15 + 4.5   # filmstrip + traj col
+    FIG_W = 2.5 + N_STRIP * 1.4 + 4.5
     FIG_H = 3.8 * N_TYPES
 
-    BG      = '#0f0f1e'
-    PANEL   = '#1a1a30'
-    GRID_C  = '#2a2a4a'
-    TICK_C  = '#8888aa'
-    DONE_C  = '#ff4444'
+    BG     = '#0f0f1e'
+    PANEL  = '#1a1a30'
+    GRID_C = '#2a2a4a'
+    TICK_C = '#8888aa'
+    DONE_C = '#ff4444'
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
     fig.patch.set_facecolor(BG)
@@ -138,10 +161,10 @@ def main():
                               left=0.02, right=0.98,
                               top=0.95, bottom=0.04)
 
-    for row, (label, mode, ep_len, init_range, color) in enumerate(types):
-        eps = collected[mode]
-        ep0 = eps[0]
-        obs = ep0['obs']         # (T, H, W, 3) uint8
+    for row, (label, mode, strip_ep_len, traj_ep_len, init_range, color) in enumerate(types):
+        strip_ep = collected[mode]['strip']
+        traj_eps = collected[mode]['trajs']
+        obs = strip_ep['obs']        # (T, H, W, 3) uint8  — at vis_size resolution
         T   = len(obs)
 
         # ── Filmstrip ─────────────────────────────────────────────────────
@@ -152,30 +175,29 @@ def main():
         for col, fi in enumerate(frame_indices):
             ax_f = fig.add_subplot(inner[0, col])
             ax_f.set_facecolor(PANEL)
-            ax_f.imshow(obs[fi], interpolation='nearest')
+            ax_f.imshow(obs[fi], interpolation='bilinear')
             ax_f.axis('off')
             t_s = fi * dt
-            ax_f.set_title(f'{t_s:.1f}s', fontsize=7.5,
-                           color=TICK_C, pad=2)
-            # Theta annotation on frame
-            th_val = ep0['states'][fi, 2]
+            ax_f.set_title(f'{t_s:.1f}s', fontsize=7.5, color=TICK_C, pad=2)
+            th_val = strip_ep['states'][fi, 2]
             ax_f.text(0.5, 0.02, f'θ={th_val:+.2f}',
                       transform=ax_f.transAxes,
                       fontsize=6.5, color='white', ha='center', va='bottom',
                       bbox=dict(facecolor='black', alpha=0.55, pad=1.5,
                                 edgecolor='none'))
 
-        # Episode-type label above the filmstrip row
+        # Episode-type label above the row
         ax_label = fig.add_subplot(outer[row, 0])
         ax_label.axis('off')
         ax_label.set_facecolor('none')
         ax_label.text(0.0, 1.07, label,
                       transform=ax_label.transAxes,
-                      fontsize=11, fontweight='bold',
-                      color=color, va='bottom', ha='left')
+                      fontsize=11, fontweight='bold', color=color,
+                      va='bottom', ha='left')
+        note = f'  (filmstrip: {strip_ep_len} steps)' if strip_ep_len != traj_ep_len else ''
         ax_label.text(0.0, 1.02,
-                      f'{N_EP} episodes  ·  {ep_len} steps each  ·  '
-                      f'init_range = ±{init_range:.2f} rad',
+                      f'{N_EP} episodes  ·  {traj_ep_len} steps each  ·  '
+                      f'init_range = ±{init_range:.2f} rad{note}',
                       transform=ax_label.transAxes,
                       fontsize=8, color=TICK_C, va='bottom', ha='left')
 
@@ -183,26 +205,22 @@ def main():
         ax_t = fig.add_subplot(outer[row, 1])
         ax_t.set_facecolor(PANEL)
 
-        for ep_i, ep in enumerate(eps):
+        for ep_i, ep in enumerate(traj_eps):
             th = ep['states'][:, 2]
             t  = np.arange(len(th)) * dt
             alpha = max(0.35, 1.0 - ep_i * 0.12)
-            ax_t.plot(t, th, color=color, alpha=alpha,
-                      linewidth=1.6, label=f'ep {ep_i}' if ep_i == 0 else None)
-            # Mark start
-            ax_t.scatter([0], [th[0]], color=color, s=25, zorder=5,
-                         alpha=alpha)
+            ax_t.plot(t, th, color=color, alpha=alpha, linewidth=1.6)
+            ax_t.scatter([0], [th[0]], color=color, s=25, zorder=5, alpha=alpha)
 
-        # Gym done threshold
         ax_t.axhline( 0.21, color=DONE_C, lw=1.3, ls='--', alpha=0.75,
                       label='±12° gym limit')
         ax_t.axhline(-0.21, color=DONE_C, lw=1.3, ls='--', alpha=0.75)
         ax_t.axhline(0, color='white', lw=0.6, alpha=0.25)
 
-        max_th = max(np.abs(ep['states'][:, 2]).max() for ep in eps)
+        max_th = max(np.abs(ep['states'][:, 2]).max() for ep in traj_eps)
         ylim   = max(np.pi * 0.7, max_th * 1.2)
         ax_t.set_ylim(-ylim, ylim)
-        ax_t.set_xlim(0, (T - 1) * dt)
+        ax_t.set_xlim(0, (traj_ep_len - 1) * dt)
 
         ax_t.set_xlabel('time  (s)', fontsize=8.5, color=TICK_C)
         ax_t.set_ylabel('θ  (rad)',  fontsize=8.5, color=TICK_C)
@@ -214,8 +232,7 @@ def main():
                     facecolor='#0d0d1e', labelcolor='#cccccc',
                     edgecolor=GRID_C, framealpha=0.85)
 
-        # Stats in corner
-        max_th_all = max(np.abs(ep['states'][:, 2]).max() for ep in eps)
+        max_th_all = max(np.abs(ep['states'][:, 2]).max() for ep in traj_eps)
         ax_t.text(0.02, 0.97,
                   f'max |θ| = {max_th_all:.2f} rad  '
                   f'({np.degrees(max_th_all):.0f}°)',
@@ -224,8 +241,10 @@ def main():
                   bbox=dict(facecolor='black', alpha=0.4, pad=2,
                             edgecolor='none'))
 
-    fig.suptitle('Episode-Centric Dataset  —  Trajectories by Data Type',
-                 fontsize=14, fontweight='bold', color='white', y=0.98)
+    fig.suptitle(
+        f'Episode-Centric Dataset  —  Trajectories by Type  '
+        f'[vis@{args.vis_size}px · train@{env_cfg.get("image_size", 64)}px]',
+        fontsize=13, fontweight='bold', color='white', y=0.98)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
