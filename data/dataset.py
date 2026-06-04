@@ -23,7 +23,8 @@ def _compute_lqr_gain():
     except Exception:
         warnings.warn('DARE failed; falling back to pole-placement gain.')
         K = np.array([[0.0, 0.0, 10.0, 0.0]])
-    return K
+    # Standard LQR: u* = -K @ x.  Return -K so callers can write u = gain @ x.
+    return -K
 
 
 def _collect_episode(env, episode_length, mode, lqr_gain,

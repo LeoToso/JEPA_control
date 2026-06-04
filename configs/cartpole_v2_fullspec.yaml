@@ -123,8 +123,8 @@ data:
   # LQR: 100 ep × 100 steps = 10,000 transitions (starts up to ±17°)
   n_lqr_episodes: 100
   lqr_ep_len: 100
-  lqr_init_range: 0.30
-  lqr_noise_std: 0.25
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.0
   # Equilibrium: 10 ep × 50 steps = 500 transitions (near z*, tiny u)
   n_equilibrium: 500
   eq_ep_len: 50
