@@ -86,7 +86,7 @@ class ViTEncoder(nn.Module):
         tokens = torch.cat([cls, p], dim=1)        # (B, N+1, embed_dim)
         tokens = self.blocks(tokens)
         tokens = self.norm(tokens)
-        z = self.proj(tokens[:, 0])                # CLS token -> (B, latent_dim)
+        z = self.proj(tokens[:, 1:].mean(dim=1))   # mean of patch tokens -> (B, latent_dim)
         return z
 
     @torch.no_grad()

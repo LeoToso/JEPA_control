@@ -13,8 +13,8 @@ model:
   latent_dim: 32
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 8    # 64/8 = 64 patches (same token count as 128/16)
-  frame_stack: 1
+  patch_size: 16   # 64/16 = 16 patches — fewer tokens, faster attention
+  frame_stack: 2   # stack consecutive frames so encoder sees velocity (Δposition)
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
@@ -129,7 +129,12 @@ data:
   pe_action_amplitude: 3.0
   pe_flip_prob: 0.15
   pe_max_ep_len: 40
+  # ── no_done: don't reset on gym's theta/x threshold — let pole fall freely ──
+  # random_no_done: episodes run full max_ep_len (200 steps) even when |θ|>12°
+  # passive_no_done: u=0 episodes run for 50 steps; pole falls from 0.05 → ~1.5 rad
+  random_no_done: true
+  passive_no_done: true
   # ── Passive divergence: u=0 near eq, pole falls naturally ─────────────────
   n_passive: 2000
   passive_init_range: 0.05
-  passive_max_ep_len: 15
+  passive_max_ep_len: 50      # 50 steps × 0.02s = 1s; pole falls from ~0.05 to ~1 rad

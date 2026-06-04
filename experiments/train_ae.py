@@ -453,6 +453,8 @@ def main():
             n_passive=int(data_cfg.get('n_passive', 0)),
             passive_init_range=float(data_cfg.get('passive_init_range', 0.05)),
             passive_max_ep_len=int(data_cfg.get('passive_max_ep_len', 15)),
+            random_no_done=bool(data_cfg.get('random_no_done', True)),
+            passive_no_done=bool(data_cfg.get('passive_no_done', True)),
         )
 
     loaders = make_dataloaders(

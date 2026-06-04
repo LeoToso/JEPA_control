@@ -29,7 +29,8 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
                          action_low, action_high, init_range,
                          lqr_noise_std, rng,
                          pe_action_amplitude=3.0, pe_flip_prob=0.15,
-                         pe_max_ep_len=40, passive_max_ep_len=15):
+                         pe_max_ep_len=40, passive_max_ep_len=15,
+                         no_done=False):
     """Collect n_transitions single-step transitions.
 
     mode:
@@ -86,7 +87,7 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
         collected += 1
         steps_since_reset += 1
 
-        if done or steps_since_reset >= max_ep_len:
+        if (done and not no_done) or steps_since_reset >= max_ep_len:
             obs, state, _ = env.reset(init_range=init_range)
             steps_since_reset = 0
             episode_id += 1
@@ -110,7 +111,8 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                      n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001,
                      n_pe=0, pe_init_range=0.05, pe_action_amplitude=3.0,
                      pe_flip_prob=0.15, pe_max_ep_len=40,
-                     n_passive=0, passive_init_range=0.05, passive_max_ep_len=15):
+                     n_passive=0, passive_init_range=0.05, passive_max_ep_len=15,
+                     random_no_done=True, passive_no_done=True):
     """Generate a dataset of cartpole transitions.
 
     dataset_type='mixed': n_transitions//2 random + n_transitions//2 LQR,
@@ -145,7 +147,8 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
         data_rand = _collect_transitions(env, n_random, 'random', lqr_gain,
                                          action_low, action_high,
                                          init_range=init_range,
-                                         lqr_noise_std=lqr_noise_std, rng=rng)
+                                         lqr_noise_std=lqr_noise_std, rng=rng,
+                                         no_done=random_no_done)
         print(f'[data] Collecting {n_lqr} LQR+noise transitions '
               f'(init_range={lqr_init_range}, noise_std={lqr_noise_std})...')
         data_lqr  = _collect_transitions(env, n_lqr, 'lqr', lqr_gain,
@@ -201,6 +204,7 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                 lqr_noise_std=lqr_noise_std,
                 rng=rng,
                 passive_max_ep_len=passive_max_ep_len,
+                no_done=passive_no_done,
             )
             data_passive['episode_ids'] += data['episode_ids'].max() + 1
             data = {key: np.concatenate([data[key], data_passive[key]], axis=0)

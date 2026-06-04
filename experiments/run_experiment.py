@@ -108,6 +108,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             n_passive=int(cfg['data'].get('n_passive', 0)),
             passive_init_range=float(cfg['data'].get('passive_init_range', 0.05)),
             passive_max_ep_len=int(cfg['data'].get('passive_max_ep_len', 15)),
+            random_no_done=bool(cfg['data'].get('random_no_done', True)),
+            passive_no_done=bool(cfg['data'].get('passive_no_done', True)),
         )
     loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
                                horizon=horizon, frame_stack=frame_stack,
