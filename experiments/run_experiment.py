@@ -280,12 +280,18 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # If |V_u^T B_eff| is tiny, actions have negligible leverage on the unstable mode
     # and no controller can stabilize — even with the right cost.
     _b_eff_col = B_eff[:, 0]                                     # (d,)
-    _Vu_Beff   = float(_V_u.T @ _b_eff_col)                      # scalar (rank-1 case)
-    _cos_angle  = float(np.abs(_Vu_Beff) /
-                        (np.linalg.norm(_V_u) * np.linalg.norm(_b_eff_col) + 1e-9))
-    print(f'[control] V_u^T B_eff = {_Vu_Beff:.4f}  '
-          f'(cos_angle={_cos_angle:.3f},  '
-          f'u=10 moves unstable component by {abs(_Vu_Beff)*10:.4f})')
+    if _n_unstable > 0:
+        _Vu_Beff_vec = _V_u.T @ _b_eff_col                          # (n_unstable,)
+        _Vu_Beff     = float(np.linalg.norm(_Vu_Beff_vec))          # scalar norm
+        _cos_angle   = float(_Vu_Beff /
+                            (np.linalg.norm(_V_u) * np.linalg.norm(_b_eff_col) + 1e-9))
+        print(f'[control] V_u^T B_eff = {_Vu_Beff:.4f}  '
+              f'(cos_angle={_cos_angle:.3f},  '
+              f'u=10 moves unstable component by {_Vu_Beff*10:.4f})')
+    else:
+        _Vu_Beff   = 0.0
+        _cos_angle = 0.0
+        print('[control] V_u^T B_eff = N/A  (no unstable eigenvectors — latent dynamics fully stable)')
 
     # Fixed-point diagnostic: does f(z*, 0) ≈ z*?
     _W = model.config.predictor_window
