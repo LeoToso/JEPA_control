@@ -88,8 +88,8 @@ data:
   pe_flip_prob: 0.15
   pe_max_ep_len: 40
   # ── Passive divergence: u=0 near eq, pole falls naturally ─────────────────
-  # These transitions show ||z_{t+1}-z*|| > ||z_t-z*|| under zero action,
-  # providing the training signal for DMD to recover rho(A)>1 from data.
-  n_passive: 2000
-  passive_init_range: 0.05   # start within ±0.05 rad of upright
-  passive_max_ep_len: 15     # 15 steps ≈ 0.3s: pole visibly diverges but doesn't hit boundary
+  # Near-parity with LQR (10k): gives DMD equal convergent vs divergent signal
+  # so least-squares can separate A (unstable) from B*u (stabilising action).
+  n_passive: 10000
+  passive_init_range: 0.05
+  passive_max_ep_len: 20     # slightly longer: more divergence per episode
