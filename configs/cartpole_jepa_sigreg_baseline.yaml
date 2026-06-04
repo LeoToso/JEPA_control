@@ -30,7 +30,7 @@ training:
   horizon: 10
   # ── Active losses ────────────────────────────────────────────────────────
   lambda_pred: 1.0          # JEPA prediction loss (main objective)
-  lambda_fp: 5.0            # fixed-point: z* = f(z*, 0)
+  lambda_fp: 0.0            # disabled: let predictor learn dynamics freely
   lambda_sigreg: 1.0        # SIGreg: isotropic N(0,I) collapse prevention
   sigreg_num_slices: 32
   sigreg_num_points: 9
