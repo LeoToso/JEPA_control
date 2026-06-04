@@ -1,7 +1,7 @@
 environment:
   name: cartpole
   frame_skip: 1
-  image_size: 128
+  image_size: 64
   mass_cart: 1.0
   mass_pole: 0.1
   pole_length: 0.5
@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 16   # 128/16 = 64 patches
+  patch_size: 8    # 64/8 = 64 patches (same token count as 128/16)
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
@@ -35,47 +35,44 @@ training:
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 50.0            # fixed-point: f(z*,0)=z*  (10× increase — fp_err=0.22 at λ=5 swamps latent signal)
-  lambda_spec: 0.0           # disabled: replaced by L_dynSIG + L_temp
+  lambda_fp: 10.0              # was 50 → dominated 90% of epoch-1 loss → encoder collapsed to z*
+  lambda_spec: 0.0             # disabled: replaced by L_dynSIG + L_temp
   lambda_spec_marginal: 0.0
-  lambda_PBH: 1.0            # re-enabled: now uses B_eff (d×1), forces scalar stabilisability
+  lambda_PBH: 1.0              # uses B_eff (d×1), forces scalar stabilisability
   lambda_local: 0.0
   lambda_unstable: 0.0
   unstable_eta: 0.05
   rho_max_init: 1.3
   local_state_threshold: 0.05
   jacobian_every: 10
-  use_vicreg: false
-  vicreg_lambda: 5.0
-  lambda_sigreg: 0.0         # replaced by lambda_dynSIG
-  lambda_varfloor: 0.5       # variance floor: non-vanishing gradient fix for dynSIG collapse
+  use_vicreg: true             # anti-collapse: variance + covariance regularization on z_0
+  vicreg_lambda: 25.0          # std(z_i) ≥ 1 per dimension
+  lambda_sigreg: 0.0           # replaced by lambda_dynSIG
+  lambda_varfloor: 0.5         # variance floor for dynSIG
   sigreg_num_slices: 32
   sigreg_num_points: 9
   vicreg_nu: 1.0
   ema_momentum: 0.996
   use_target_encoder: true        # use EMA target encoder for z_rest targets
-  target_encoder_momentum: 0.99  # slower than ema_momentum so targets lag online encoder
-  aug_noise_std: 0.05            # online encoder sees noisy obs; EMA target sees clean obs
+  target_encoder_momentum: 0.99
+  aug_noise_std: 0.0              # disabled: saves one encoder pass/batch; VICReg handles collapse
   state_encoder_grad_scale: 0.50
   predictor_lr_mult: 1.0
   predictor_window: 3
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
-  freeze_encoder_epochs: 0    # train encoder from epoch 0 (was 9999 = frozen forever)
+  freeze_encoder_epochs: 0
   encoder_lr_unfreeze_mult: 0.1
   # ── Dynamics-aware regularization ──────────────────────────────────────────
-  lambda_dynSIG: 2.0         # near-eq only: Gramian target valid where linearization holds
+  lambda_dynSIG: 2.0
   dynSIG_T_g: 5
-  dynSIG_alpha: 0.3          # raised floor: prevents rank-4 Gramian dominating 28 dirs
+  dynSIG_alpha: 0.3
   dynSIG_beta: 0.95
-  dynSIG_near_eq_radius: 0.0 # 0 = no filter, apply to all samples (near-eq filter was
-                              # self-defeating: once large-θ imgs exit the radius, only
-                              # visually-identical near-eq imgs remain → gradient vanishes)
-  lambda_temp: 0.0           # disabled: dz_t (online) and dz_tp1 (EMA target) use different encoder distributions
+  dynSIG_near_eq_radius: 0.0
+  lambda_temp: 0.0
   temp_near_eq_radius: 2.0
-  lambda_inv: 0.0            # disabled: PBH with B_eff now handles action encoder alignment
-  lambda_spec: 5.0           # forces rho(A_jac)→1.0827 (unstable mode recovery)
+  lambda_spec: 5.0             # forces rho(A_jac)→1.0827 (unstable mode recovery)
 
 probes:
   epsilon_lambda: 0.05
@@ -107,19 +104,18 @@ cem:
   n_trials: 50
 
 data:
-  n_random: 100000         # 50k random + 50k LQR (mixed mode splits 50/50)
+  n_random: 20000          # proof of concept: 10k random + 10k LQR (mixed splits 50/50)
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 1.0    # wider exploration: pole up to ±57° for richer encoder signal
-  lqr_init_range: 0.10
-  lqr_noise_std: 0.25      # increased from 0.1: more action diversity near eq
-  n_equilibrium: 1000      # increased from 500
-  n_eq_selfloop: 500
+  random_init_range: 1.0    # wider exploration: pole up to ±57°
+  lqr_init_range: 0.30      # LQR starts up to ±17°: more diverse success trajectories
+  lqr_noise_std: 0.25
+  n_equilibrium: 500
+  n_eq_selfloop: 200
   eq_init_range: 0.002
   eq_noise_std: 0.001
-  # ── PRBS persistent excitation block ───────────────────────────────────────
-  n_pe: 25000              # PRBS near-eq transitions for L_temp + Gramian PE
-  pe_init_range: 0.05      # start close to upright (linear regime)
-  pe_action_amplitude: 3.0 # ±3N: excites without instantly destabilizing
-  pe_flip_prob: 0.15       # average hold = ~7 steps (temporal structure for W=3)
-  pe_max_ep_len: 40        # reset before pole falls far from equilibrium
+  n_pe: 5000               # reduced for proof of concept
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  pe_max_ep_len: 40
