@@ -450,6 +450,9 @@ def main():
             pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
             pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
             pe_max_ep_len=int(data_cfg.get('pe_max_ep_len', 40)),
+            n_passive=int(data_cfg.get('n_passive', 0)),
+            passive_init_range=float(data_cfg.get('passive_init_range', 0.05)),
+            passive_max_ep_len=int(data_cfg.get('passive_max_ep_len', 15)),
         )
 
     loaders = make_dataloaders(

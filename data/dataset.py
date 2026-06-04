@@ -29,16 +29,19 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
                          action_low, action_high, init_range,
                          lqr_noise_std, rng,
                          pe_action_amplitude=3.0, pe_flip_prob=0.15,
-                         pe_max_ep_len=40):
+                         pe_max_ep_len=40, passive_max_ep_len=15):
     """Collect n_transitions single-step transitions.
 
     mode:
-        'random' — uniform random actions over full action range
-        'lqr'    — LQR + Gaussian noise (lqr_noise_std)
-        'prbs'   — Pseudo-Random Binary Sequence near equilibrium:
-                   hold ±pe_action_amplitude, flip sign with probability
-                   pe_flip_prob each step, reset every pe_max_ep_len steps.
-                   Provides persistent excitation with temporal structure.
+        'random'  — uniform random actions over full action range
+        'lqr'     — LQR + Gaussian noise (lqr_noise_std)
+        'prbs'    — Pseudo-Random Binary Sequence near equilibrium:
+                    hold ±pe_action_amplitude, flip sign with probability
+                    pe_flip_prob each step, reset every pe_max_ep_len steps.
+                    Provides persistent excitation with temporal structure.
+        'passive' — u=0 near equilibrium (init_range small): captures the
+                    natural unstable divergence so DMD/predictor can recover
+                    the unstable eigenvalue from data rather than a loss.
     """
     obs_list, state_list, action_list = [], [], []
     next_obs_list, next_state_list, ep_id_list = [], [], []
@@ -48,7 +51,12 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
     episode_id = 0
     current_prbs = float(rng.choice([-1, 1])) * pe_action_amplitude
 
-    max_ep_len = pe_max_ep_len if mode == 'prbs' else 200
+    if mode == 'prbs':
+        max_ep_len = pe_max_ep_len
+    elif mode == 'passive':
+        max_ep_len = passive_max_ep_len
+    else:
+        max_ep_len = 200
 
     while collected < n_transitions:
         if mode == 'random':
@@ -63,6 +71,8 @@ def _collect_transitions(env, n_transitions, mode, lqr_gain,
             elif rng.random() < pe_flip_prob:
                 current_prbs = -current_prbs
             u = current_prbs
+        elif mode == 'passive':
+            u = 0.0
         else:
             raise ValueError(f'Unknown mode: {mode}')
 
@@ -99,17 +109,24 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
                      lqr_init_range=None, lqr_noise_std=0.1, image_size=64,
                      n_equilibrium=0, eq_init_range=0.002, eq_noise_std=0.001,
                      n_pe=0, pe_init_range=0.05, pe_action_amplitude=3.0,
-                     pe_flip_prob=0.15, pe_max_ep_len=40):
+                     pe_flip_prob=0.15, pe_max_ep_len=40,
+                     n_passive=0, passive_init_range=0.05, passive_max_ep_len=15):
     """Generate a dataset of cartpole transitions.
 
     dataset_type='mixed': n_transitions//2 random + n_transitions//2 LQR,
-    plus optional near-equilibrium blocks (n_equilibrium, n_pe).
+    plus optional near-equilibrium blocks (n_equilibrium, n_pe, n_passive).
 
     PRBS (n_pe > 0): starts near equilibrium (pe_init_range), applies a
     Pseudo-Random Binary Sequence of ±pe_action_amplitude to maximise
     persistent excitation in the linear regime around z*. Temporal structure
     (average hold = 1/pe_flip_prob steps) is important for the windowed
     predictor and the temporal covariance consistency loss (L_temp).
+
+    Passive (n_passive > 0): starts from small perturbations of equilibrium
+    (passive_init_range) and applies u=0 for passive_max_ep_len steps. These
+    trajectories show the pole naturally diverging under gravity — providing
+    the training signal needed for DMD/predictor to recover rho(A)>1 directly
+    from data, without requiring a spectral loss.
     """
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng = np.random.RandomState(seed)
@@ -171,6 +188,22 @@ def generate_dataset(dataset_type='random', n_transitions=50000, frame_skip=1,
             )
             data_pe['episode_ids'] += data['episode_ids'].max() + 1
             data = {key: np.concatenate([data[key], data_pe[key]], axis=0)
+                    for key in data}
+
+        # Passive near-equilibrium block: u=0 divergence shows unstable eigenvalue
+        if n_passive > 0:
+            print(f'[data] Collecting {n_passive} passive (u=0) divergence transitions '
+                  f'(init_range={passive_init_range}, max_ep={passive_max_ep_len})...')
+            data_passive = _collect_transitions(
+                env, n_passive, 'passive', lqr_gain,
+                action_low, action_high,
+                init_range=passive_init_range,
+                lqr_noise_std=lqr_noise_std,
+                rng=rng,
+                passive_max_ep_len=passive_max_ep_len,
+            )
+            data_passive['episode_ids'] += data['episode_ids'].max() + 1
+            data = {key: np.concatenate([data[key], data_passive[key]], axis=0)
                     for key in data}
 
     else:

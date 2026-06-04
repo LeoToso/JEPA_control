@@ -129,3 +129,7 @@ data:
   pe_action_amplitude: 3.0
   pe_flip_prob: 0.15
   pe_max_ep_len: 40
+  # ── Passive divergence: u=0 near eq, pole falls naturally ─────────────────
+  n_passive: 2000
+  passive_init_range: 0.05
+  passive_max_ep_len: 15
