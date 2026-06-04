@@ -62,10 +62,11 @@ def _make_obs_tensor(obs_np, device):
 def train_one_epoch(model, target_encoder, loader, optimizer, device,
                     lambda_pred, lambda_recon, lambda_fp,
                     predictor_window, z_star_ema, obs_eq_t,
-                    target_momentum=0.9995, aug_noise_std=0.05):
+                    target_momentum=0.9995, aug_noise_std=0.05,
+                    lambda_vicreg=0.0, vicreg_nu=1.0):
     model.train()
     total, n_batches = 0.0, 0
-    pred_acc, recon_acc, fp_acc = 0.0, 0.0, 0.0
+    pred_acc, recon_acc, fp_acc, vicreg_acc = 0.0, 0.0, 0.0, 0.0
 
     for batch in loader:
         obs_seq = batch['obs_seq'].to(device)   # (B, H+1, C, h, w)
@@ -124,9 +125,18 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
         else:
             fp_loss = torch.zeros(1, device=device)
 
-        loss = (lambda_pred * pred_loss
+        # ── VICReg collapse prevention ────────────────────────────────────
+        if lambda_vicreg > 0:
+            from losses.prediction import vicreg_collapse_loss
+            vic_loss, _ = vicreg_collapse_loss(z_0, lambda_var=lambda_vicreg,
+                                               nu_cov=vicreg_nu)
+        else:
+            vic_loss = torch.zeros(1, device=device)
+
+        loss = (lambda_pred  * pred_loss
                 + lambda_recon * recon_loss
-                + lambda_fp    * fp_loss)
+                + lambda_fp    * fp_loss
+                + vic_loss)
 
         optimizer.zero_grad()
         loss.backward()
@@ -139,11 +149,12 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
                 p_target.data.mul_(target_momentum).add_(
                     p_online.data, alpha=1.0 - target_momentum)
 
-        total    += loss.item()
-        pred_acc += pred_loss.item()
-        recon_acc+= recon_loss.item()
-        fp_acc   += fp_loss.item()
-        n_batches+= 1
+        total      += loss.item()
+        pred_acc   += pred_loss.item()
+        vicreg_acc += vic_loss.item()
+        recon_acc  += recon_loss.item()
+        fp_acc     += fp_loss.item()
+        n_batches  += 1
 
         # Update z* EMA from near-equilibrium samples
         if 'states' in batch:
@@ -157,10 +168,11 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
                     z_star_ema = 0.99 * z_star_ema + 0.01 * z0_eq
 
     return {
-        'total':  total  / n_batches,
-        'pred':   pred_acc / n_batches,
-        'recon':  recon_acc / n_batches,
-        'fp':     fp_acc   / n_batches,
+        'total':   total      / n_batches,
+        'pred':    pred_acc   / n_batches,
+        'recon':   recon_acc  / n_batches,
+        'fp':      fp_acc     / n_batches,
+        'vicreg':  vicreg_acc / n_batches,
     }, z_star_ema
 
 
@@ -427,6 +439,8 @@ def main():
         target_encoder.eval()
         target_momentum = float(train_cfg.get('target_encoder_momentum', 0.9995))
         aug_noise_std   = float(train_cfg.get('aug_noise_std', 0.05))
+        lambda_vicreg   = float(train_cfg.get('vicreg_lambda', 0.0)) if train_cfg.get('use_vicreg', False) else 0.0
+        vicreg_nu       = float(train_cfg.get('vicreg_nu', 1.0))
 
         # With N batches/epoch, EMA lag in epochs ≈ 1 / ((1-m) * N).
         # At m=0.99, N=180: lag = 0.56 epochs — target tracks online too fast.
@@ -443,16 +457,19 @@ def main():
             train_info, z_star_ema = train_one_epoch(
                 model, target_encoder, loaders['train'], optimizer, device,
                 lp, lr_recon, lf, W, z_star_ema, obs_eq_t,
-                target_momentum=target_momentum, aug_noise_std=aug_noise_std)
+                target_momentum=target_momentum, aug_noise_std=aug_noise_std,
+                lambda_vicreg=lambda_vicreg, vicreg_nu=vicreg_nu)
             val_loss = val_one_epoch(
                 model, loaders['val'], device, lp, lr_recon, lf, W, z_star_ema)
             scheduler.step()
 
+            vic_str = f'  vic={train_info["vicreg"]:.4f}' if lambda_vicreg > 0 else ''
             print(f'[Epoch {epoch:3d}/{epochs}]  '
                   f'train={train_info["total"]:.4f}  val={val_loss:.4f}  '
                   f'pred={train_info["pred"]:.4f}  '
                   f'recon={train_info["recon"]:.4f}  '
-                  f'fp={train_info["fp"]:.4f}  '
+                  f'fp={train_info["fp"]:.4f}'
+                  f'{vic_str}  '
                   f'({time.time()-t0:.1f}s)')
 
             if epoch % ckpt_every == 0:
