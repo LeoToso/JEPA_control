@@ -167,6 +167,14 @@ class Trainer:
         self.n_marginal_modes    = int(gt.n_marginal)       if gt is not None else 0
         self.lambda_spec_marginal = float(self.cfg.get('lambda_spec_marginal', 0.0))
 
+        # ── Eigenvector-equation spec loss (L_spec_eig) ──────────────────────
+        # Directly enforces A_jac v̂_u ≈ λ* v̂_u where v̂_u is the latent image
+        # of the GT dominant unstable eigenvector (estimated from encoder sensitivity).
+        # More targeted than L_spec (which hunts over all 32 eigenvalues).
+        self.lambda_spec_eig  = float(self.cfg.get('lambda_spec_eig',  0.0))
+        self.spec_eig_epsilon = float(self.cfg.get('spec_eig_epsilon', 0.15))
+        self._obs_v_u: Optional[torch.Tensor] = None  # obs at x* + ε·v_u_physical
+
         # ── Data-driven local linearization + instability losses ──────────────
         # Replaces GT-eigenvalue spectral matching with two observation-only terms:
         #   L_local:    f(z_t,u_t) ≈ z*+A(z_t-z*)+Bu_t  on self-loop samples
@@ -202,6 +210,19 @@ class Trainer:
         if frame_stack > 1:
             obs = obs.repeat(1, frame_stack, 1, 1)   # (1, 3*FS, h, w)
         self._obs_eq = obs.to(self.device)
+
+    def set_obs_unstable_dir(self, obs_np: 'np.ndarray') -> None:
+        """Set the observation at x* + ε·v_u_physical for L_spec_eig.
+
+        The image is rendered at the perturbed state (position part of the GT
+        dominant unstable eigenvector only — velocities are not visible in a
+        single frame).  Called once before training, alongside set_obs_eq().
+        """
+        obs = torch.from_numpy(obs_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        frame_stack = getattr(self.model.config, 'frame_stack', 1)
+        if frame_stack > 1:
+            obs = obs.repeat(1, frame_stack, 1, 1)
+        self._obs_v_u = obs.to(self.device)
 
     def _get_z_star_exact(self) -> Optional[torch.Tensor]:
         """Return encoder(obs_eq).detach() if obs_eq is available, else None."""
@@ -516,6 +537,7 @@ class Trainer:
             or (self.lambda_spec > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
+            or (self.lambda_spec_eig > 0 and self._obs_v_u is not None)
             or (self.lambda_PBH > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
@@ -603,6 +625,29 @@ class Trainer:
                         marginal_loss = dist_to_one[sorted_idx[:k]].sum()
                         total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
                         info['spec_marginal_loss'] = marginal_loss.item()
+
+                # L_spec_eig: eigenvector equation for the GT dominant unstable mode.
+                # Directly enforces A_jac @ v̂_u = λ* @ v̂_u where v̂_u is the
+                # latent image of the physical unstable direction (no grad through
+                # encoder — v̂_u is treated as a fixed target direction each step).
+                if (self.lambda_spec_eig > 0
+                        and self.gt is not None
+                        and self._obs_v_u is not None
+                        and self._z_star_ema is not None):
+                    with torch.no_grad():
+                        z_pert  = self.model.encoder(self._obs_v_u).squeeze(0)  # (d,)
+                        v_u_lat = z_pert - self._z_star_ema.detach()             # (d,)
+                        v_norm  = v_u_lat.norm()
+                    if v_norm > 1e-4:
+                        v_u_hat = (v_u_lat / v_norm).to(dtype=A_jac.dtype)      # (d,), no grad
+                        lam_gt  = torch.tensor(
+                            float(np.real(self.gt.dominant_unstable_eigenvalue)),
+                            dtype=A_jac.dtype, device=A_jac.device)
+                        Av             = A_jac @ v_u_hat          # (d,) — grad flows through A_jac
+                        residual       = Av - lam_gt * v_u_hat    # should be 0 at optimum
+                        spec_eig_loss  = (residual ** 2).sum()
+                        total_loss     = total_loss + self.lambda_spec_eig * spec_eig_loss
+                        info['spec_eig_loss'] = spec_eig_loss.item()
 
                 # PBH stabilisability at each GT unstable eigenvalue.
                 # Uses B_eff (d×1) — the scalar effective B — so gradient flows
@@ -807,6 +852,7 @@ class Trainer:
             spec_str     = (f"  spec={tr.get('spec_loss', 0):.4f}"
                             + (f"+m{tr.get('spec_marginal_loss', 0):.4f}"
                                if 'spec_marginal_loss' in tr else '')) if 'spec_loss' in tr else ''
+            spec_eig_str = f"  spec_eig={tr.get('spec_eig_loss', 0):.4f}" if 'spec_eig_loss' in tr else ''
             anchor_str   = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'    in tr else ''
             sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
             dynsig_str   = f"  dynSIG={tr.get('dynSIG_loss', 0):.4f}" if 'dynSIG_loss'   in tr else ''
@@ -818,7 +864,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 

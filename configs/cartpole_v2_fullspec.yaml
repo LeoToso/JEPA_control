@@ -36,8 +36,14 @@ training:
   lambda_inv: 0.0
   inv_action_scale: 10.0
   lambda_fp: 10.0              # reduced from 25: z* fixed point, but not so dominant it crowds pred
-  lambda_spec: 2.0             # spectral reg: pull nearest eigenvalue → GT λ*=1.0827, match ρ
+  lambda_spec: 0.0             # legacy eigenvalue-matching loss (off — replaced by spec_eig)
   lambda_spec_marginal: 0.0
+  # ── Eigenvector-equation spectral loss ─────────────────────────────────────
+  # A_jac @ v̂_u = λ* @ v̂_u where v̂_u = latent image of the GT dominant
+  # unstable eigenvector (θ-direction).  One targeted equation rather than
+  # hunting over all 32 eigenvalues for any eigenvalue near λ*.
+  lambda_spec_eig: 2.0
+  spec_eig_epsilon: 0.15      # perturbation size (rad) for rendering the ε·v_u image
   lambda_PBH: 0.0              # NOT needed for CEM (LQR stabilizability only, causes Jacobian conflicts)
   lambda_local: 0.0
   lambda_unstable: 0.0
@@ -76,7 +82,6 @@ training:
   dynSIG_near_eq_radius: 0.0
   lambda_temp: 0.0
   temp_near_eq_radius: 2.0
-  lambda_spec: 2.0             # duplicate entry removed — value above is the active one
 
 probes:
   epsilon_lambda: 0.05

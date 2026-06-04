@@ -147,6 +147,27 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     trainer.set_obs_eq(_obs_eq)
     print('[train] z* anchor: using exact equilibrium observation for fp loss')
 
+    # Set the perturbed observation for L_spec_eig: render the image at
+    # x* + ε·v_u_pos, where v_u_pos is the position part of the GT dominant
+    # unstable right eigenvector (velocities zeroed — not visible in one frame).
+    if float(train_cfg.get('lambda_spec_eig', 0.0)) > 0.0:
+        from envs.cartpole_visual import ContinuousCartpoleVisual as _CV
+        _v_u = gt.dominant_right_eigenvector.real.copy()   # (4,) in [x, ẋ, θ, θ̇]
+        _v_u[1] = 0.0; _v_u[3] = 0.0                       # zero out velocities
+        _v_u_norm = np.linalg.norm(_v_u)
+        if _v_u_norm > 1e-8:
+            _v_u /= _v_u_norm
+        _eps_eig = float(train_cfg.get('spec_eig_epsilon', 0.15))
+        _x_vu = (_eps_eig * _v_u).astype(np.float32)
+        _vu_env = _CV(frame_skip=env_cfg['frame_skip'], image_size=env_cfg['image_size'],
+                      mass_cart=env_cfg['mass_cart'], mass_pole=env_cfg['mass_pole'],
+                      pole_length=env_cfg['pole_length'], gravity=env_cfg['gravity'],
+                      action_range=tuple(env_cfg['action_range']))
+        _obs_vu, _, _ = _vu_env.reset_to_state(_x_vu)
+        _vu_env.close()
+        trainer.set_obs_unstable_dir(_obs_vu)
+        print(f'[train] spec_eig dir: x={_x_vu[0]:.3f}  θ={_x_vu[2]:.3f} rad  ε={_eps_eig}')
+
     # Pre-compute stacked equilibrium tensor — used throughout for z* and encoder calls.
     # With frame_stack > 1, duplicate the same frame (prev=curr at episode start).
     def _make_obs_t(obs_np, prev_obs_np=None):
