@@ -171,8 +171,9 @@ class Trainer:
         # Directly enforces A_jac v̂_u ≈ λ* v̂_u where v̂_u is the latent image
         # of the GT dominant unstable eigenvector (estimated from encoder sensitivity).
         # More targeted than L_spec (which hunts over all 32 eigenvalues).
-        self.lambda_spec_eig  = float(self.cfg.get('lambda_spec_eig',  0.0))
-        self.spec_eig_epsilon = float(self.cfg.get('spec_eig_epsilon', 0.15))
+        self.lambda_spec_eig         = float(self.cfg.get('lambda_spec_eig',         0.0))
+        self.spec_eig_epsilon        = float(self.cfg.get('spec_eig_epsilon',        0.15))
+        self.spec_eig_warmup_epochs  = int(  self.cfg.get('spec_eig_warmup_epochs',  0))
         self._obs_v_u: Optional[torch.Tensor] = None  # obs at x* + ε·v_u_physical
 
         # ── Data-driven local linearization + instability losses ──────────────
@@ -537,7 +538,8 @@ class Trainer:
             or (self.lambda_spec > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
-            or (self.lambda_spec_eig > 0 and self._obs_v_u is not None)
+            or (self.lambda_spec_eig > 0 and self._obs_v_u is not None
+                and epoch >= self.spec_eig_warmup_epochs)
             or (self.lambda_PBH > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
@@ -631,6 +633,7 @@ class Trainer:
                 # latent image of the physical unstable direction (no grad through
                 # encoder — v̂_u is treated as a fixed target direction each step).
                 if (self.lambda_spec_eig > 0
+                        and epoch >= self.spec_eig_warmup_epochs
                         and self.gt is not None
                         and self._obs_v_u is not None
                         and self._z_star_ema is not None):
