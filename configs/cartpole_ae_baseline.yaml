@@ -14,7 +14,7 @@ model:
   action_latent_dim: 1      # scalar action, no lifting at d=8
   action_encoder: linear
   patch_size: 8
-  frame_stack: 2            # 2 consecutive frames → encoder sees [obs_{t-1}, obs_t] → velocity info
+  frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4

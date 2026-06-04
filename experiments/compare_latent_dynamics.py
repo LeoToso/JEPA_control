@@ -123,9 +123,15 @@ def _stack_obs(curr_hwc, prev_hwc, frame_stack: int, device) -> torch.Tensor:
 
 def collect_rollouts(env, model, frame_stack: int, device,
                      n_rollouts: int = 60, rollout_len: int = 50,
-                     theta_range: float = 0.6) -> tuple[np.ndarray, np.ndarray]:
-    """Return (z_array, state_array) from random rollouts with varied θ."""
-    zs, states = [], []
+                     theta_range: float = 0.6):
+    """Return (zs, zs_vel, states, states_vel).
+
+    zs:         (N, d)   single-frame encodings  — used for phase portrait
+    zs_vel:     (M, 2d)  [z_t | z_t - z_{t-1}]  — used for Pearson (captures velocity)
+    states:     (N, 4)   physical states for zs
+    states_vel: (M, 4)   physical states at time t for zs_vel
+    """
+    zs, zs_vel, states, states_vel = [], [], [], []
     rng = np.random.RandomState(0)
 
     for _ in range(n_rollouts):
@@ -133,22 +139,33 @@ def collect_rollouts(env, model, frame_stack: int, device,
         x0 = np.array([rng.uniform(-0.3, 0.3), 0.0, theta0, 0.0], dtype=np.float32)
         obs, state, _ = env.reset_to_state(x0)
         prev_obs = obs.copy()
+        prev_z = None
 
         for _ in range(rollout_len):
             obs_t = _stack_obs(obs, prev_obs, frame_stack, device)
             with torch.no_grad():
                 z = model.encoder(obs_t).cpu().numpy()[0]
+
             zs.append(z)
             states.append(state.copy())
 
+            if prev_z is not None:
+                zs_vel.append(np.concatenate([z, z - prev_z]))
+                states_vel.append(state.copy())
+
+            prev_z = z
             action = env.sample_action()
             obs_next, state_next, _, done, _ = env.step(action)
             prev_obs = obs.copy()
             obs, state = obs_next, state_next
             if done:
+                prev_z = None  # no valid Δz across episode boundary
                 break
 
-    return np.array(zs), np.array(states)
+    zs_arr = np.array(zs)
+    d = zs_arr.shape[1]
+    zs_vel_arr = np.array(zs_vel) if zs_vel else np.empty((0, 2 * d))
+    return zs_arr, zs_vel_arr, np.array(states), np.array(states_vel) if states_vel else np.empty((0, 4))
 
 
 # ── Panel 1: Pearson r ────────────────────────────────────────────────────────
@@ -169,16 +186,19 @@ def compute_pearson_matrix(z: np.ndarray, states: np.ndarray) -> np.ndarray:
 
 
 def plot_pearson(ax, R: np.ndarray, title: str):
-    """Heatmap of Pearson r. Latent dims sorted by max |r| across state vars."""
+    """Heatmap of Pearson r. Feature dims sorted by max |r| across state vars.
+
+    R is expected to be (4, 2d) where the feature is [z_t | z_t - z_{t-1}]:
+    the first d columns probe position encoding; the next d probe velocity encoding.
+    """
     sort_idx = np.argsort(-np.max(np.abs(R), axis=0))
     R_sorted = R[:, sort_idx]
     im = ax.imshow(R_sorted, aspect='auto', cmap='RdBu_r', vmin=-1, vmax=1)
     ax.set_yticks(range(4))
     ax.set_yticklabels(['x', 'ẋ', 'θ', 'θ̇'], fontsize=9)
-    ax.set_xlabel('Latent dim (sorted by |r|)', fontsize=8)
+    ax.set_xlabel('Feature dim (sorted by |r|)  [z_t | Δz_t]', fontsize=8)
     ax.set_title(title, fontsize=9)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    # Mark the max |r| per state var
     for j in range(4):
         best = int(np.argmax(np.abs(R_sorted[j])))
         ax.add_patch(plt.Rectangle((best - 0.5, j - 0.5), 1, 1,
@@ -335,12 +355,13 @@ def main():
     all_data = []
     for (model, frame_stack, cfg_p), label in zip(models, labels):
         print(f'  {label} ...')
-        zs, states = collect_rollouts(
+        zs, zs_vel, states, states_vel = collect_rollouts(
             env, model, frame_stack, device,
             n_rollouts=args.n_rollouts, rollout_len=args.rollout_len)
-        print(f'    collected {len(zs)} points')
+        print(f'    collected {len(zs)} steps, {len(zs_vel)} paired steps')
 
-        R = compute_pearson_matrix(zs, states)
+        # Pearson on [z_t | Δz_t] feature — captures both position and velocity
+        R = compute_pearson_matrix(zs_vel, states_vel)
         max_r_per_state = np.max(np.abs(R), axis=1)
         print(f'    max |r|: x={max_r_per_state[0]:.3f}  ẋ={max_r_per_state[1]:.3f}  '
               f'θ={max_r_per_state[2]:.3f}  θ̇={max_r_per_state[3]:.3f}')
@@ -363,7 +384,8 @@ def main():
             gramian_eigvals = None
 
         all_data.append({
-            'label': label, 'zs': zs, 'states': states,
+            'label': label, 'zs': zs, 'zs_vel': zs_vel,
+            'states': states, 'states_vel': states_vel,
             'R': R, 'gramian_eigvals': gramian_eigvals,
             'model': model, 'frame_stack': frame_stack, 'z_star': z_star,
         })

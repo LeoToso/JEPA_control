@@ -10,16 +10,16 @@ environment:
   action_range: [-10, 10]
 
 model:
-  latent_dim: 32
-  action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
-  action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 16   # 64/16 = 16 patches — fewer tokens, faster attention
-  frame_stack: 2   # stack consecutive frames so encoder sees velocity (Δposition)
+  latent_dim: 8
+  action_latent_dim: 1
+  action_encoder: linear
+  patch_size: 8
+  frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
-  predictor_hidden_dim: 256
+  predictor_hidden_dim: 64
   predictor_n_layers: 2
 
 training:
