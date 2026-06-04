@@ -29,7 +29,8 @@ training:
   epochs: 200
   horizon: 10
   lambda_pred: 1.0
-  lambda_state: 0.1             # breaks sign degeneracy: encoder(+θ)≠encoder(-θ) along V_u
+  lambda_state: 0.0             # disabled: replaced by mirror antisymmetry loss
+  lambda_mirror: 1.0           # mirror antisym: encoder(flip(obs)) + encoder(obs) ≈ 2·z* (no state labels)
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0

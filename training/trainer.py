@@ -87,6 +87,10 @@ class Trainer:
         self.lambda_varfloor = float(self.cfg.get('lambda_varfloor', 0.0))
         self.lambda_temp    = float(self.cfg.get('lambda_temp',   0.0))
         self.temp_near_eq_radius = float(self.cfg.get('temp_near_eq_radius', 0.5))
+        # Mirror antisymmetry: encoder(flip(obs)) + encoder(obs) ≈ 2·z*
+        # Cartpole horizontal flip = negate all state components (x,ẋ,θ,θ̇→-x,-ẋ,-θ,-θ̇).
+        # Purely self-supervised — no state labels needed.
+        self.lambda_mirror  = float(self.cfg.get('lambda_mirror', 0.0))
         self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
         # EMA target encoder: use target_encoder for z_rest targets instead of
@@ -458,6 +462,18 @@ class Trainer:
             total_loss = total_loss + self.lambda_fp * fp_loss
             info['fp_loss'] = fp_loss.item()
 
+        # Mirror antisymmetry loss: encoder(flip(obs)) + encoder(obs) ≈ 2·z*
+        # Horizontal flip of the cartpole image negates all state components
+        # (x,ẋ,θ,θ̇) → (-x,-ẋ,-θ,-θ̇). Enforcing this antisymmetry around z*
+        # breaks the |θ| vs θ sign degeneracy without any state labels.
+        if is_train and self.lambda_mirror > 0 and self._z_star_ema is not None:
+            obs_0_flip = torch.flip(obs_0, dims=[-1])          # flip width axis
+            z_flip = self.model.encoder(obs_0_flip)            # (B, d)
+            target = 2.0 * self._z_star_ema.detach().unsqueeze(0).expand(B, -1)
+            mirror_loss = F.mse_loss(z_0 + z_flip, target)
+            total_loss = total_loss + self.lambda_mirror * mirror_loss
+            info['mirror_loss'] = mirror_loss.item()
+
         # ── Local linearization loss (L_local) ───────────────────────────────
         # Applied every step to self-loop (near-equilibrium) samples.
         # Forces f(z_t,u_t) ≈ z* + A(z_t-z*) + B·u_t using stop-grad A, B.
@@ -789,11 +805,12 @@ class Trainer:
             varfloor_str = f"  vf={tr.get('varfloor_loss',  0):.4f}" if 'varfloor_loss'  in tr else ''
             temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
             pbh_str      = f"  pbh={tr.get('pbh_loss',       0):.4f}" if 'pbh_loss'       in tr else ''
+            mirror_str   = f"  mir={tr.get('mirror_loss',    0):.4f}" if 'mirror_loss'    in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
