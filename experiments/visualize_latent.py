@@ -318,6 +318,8 @@ def main():
     p.add_argument('--config',      default='configs/cartpole_v2_fullspec.yaml')
     p.add_argument('--config2',     default=None,
                    help='Config for second checkpoint (defaults to --config)')
+    p.add_argument('--label',       default=None, help='Label for first model')
+    p.add_argument('--label2',      default=None, help='Label for second model')
     p.add_argument('--output',      default='latent_viz.png')
     p.add_argument('--n-theta',     type=int, default=40,
                    help='Number of θ values to sweep')
@@ -335,7 +337,7 @@ def main():
     with open(args.config) as f:
         cfg1 = yaml.safe_load(f)
 
-    label1 = Path(args.checkpoint).stem
+    label1 = args.label or Path(args.checkpoint).parent.name
 
     if args.checkpoint2 is None:
         # Single checkpoint: 1×3 figure
@@ -351,7 +353,7 @@ def main():
         cfg2_path = args.config2 or args.config
         with open(cfg2_path) as f:
             cfg2 = yaml.safe_load(f)
-        label2 = Path(args.checkpoint2).stem
+        label2 = args.label2 or Path(args.checkpoint2).parent.name
 
         print(f'[viz] Loading model 1: {args.checkpoint}')
         model1 = _load_model(args.checkpoint, cfg1, device)
