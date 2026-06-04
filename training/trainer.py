@@ -97,7 +97,7 @@ class Trainer:
         # jacobian_every epochs (Sigma_target is None) → no collapse prevention.
         _d = model.encoder.latent_dim
         if self.lambda_dynSIG > 0 or self.lambda_varfloor > 0:
-            self._Sigma_target: Optional[torch.Tensor] = torch.eye(_d)
+            self._Sigma_target: Optional[torch.Tensor] = torch.eye(_d, device=self.device)
         else:
             self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
