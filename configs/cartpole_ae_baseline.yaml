@@ -36,8 +36,13 @@ training:
   # ── DMD parameters ────────────────────────────────────────────────────────
   dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
   dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
-  # ── No collapse prevention needed: reconstruction loss anchors encoder ────
-  use_vicreg: false
+  # ── Collapse prevention: VICReg variance+covariance on encoder outputs ───
+  # Reconstruction alone doesn't prevent collapse: batch DMD admits z≈z* as
+  # a trivial solution (A≈I, B≈0) when the decoder learns the mean frame.
+  # VICReg forces std(z_i)≥1 per dimension, preventing the degenerate solution.
+  use_vicreg: true
+  vicreg_lambda: 25.0   # variance term weight (γ in original paper)
+  vicreg_nu: 1.0        # covariance decorrelation weight
   # ── No EMA target encoder: pixel targets are stable, no moving-target issue ─
   target_encoder_momentum: 0.9995   # kept for backwards-compat but not used
   aug_noise_std: 0.0

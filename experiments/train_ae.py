@@ -125,9 +125,10 @@ def _dmd_rollout(z_init: torch.Tensor, A: torch.Tensor, B: torch.Tensor,
 def train_one_epoch(model, loader, optimizer, device,
                     lambda_dmd_pixel, lambda_recon, lambda_pred, lambda_fp,
                     dmd_context_len, dmd_ridge, predictor_window,
-                    z_star_ema, frame_stack):
+                    z_star_ema, frame_stack,
+                    use_vicreg=False, vicreg_lambda=25.0, vicreg_nu=1.0):
     model.train()
-    total_acc = dmd_acc = recon_acc = pred_acc = fp_acc = 0.0
+    total_acc = dmd_acc = recon_acc = pred_acc = fp_acc = vic_acc = 0.0
     n_batches = 0
 
     for batch in loader:
@@ -196,10 +197,18 @@ def train_one_epoch(model, loader, optimizer, device,
             z_sp = model.predict(z_sw, torch.zeros(1, W, 1, device=device))
             fp_loss = F.mse_loss(z_sp, z_star_ema.unsqueeze(0).detach())
 
+        # ── VICReg collapse prevention on encoder outputs ─────────────────
+        vic_loss = torch.zeros(1, device=device)
+        if use_vicreg:
+            from losses.prediction import vicreg_collapse_loss
+            vic_loss, _ = vicreg_collapse_loss(
+                z_ctx_flat, lambda_var=vicreg_lambda, nu_cov=vicreg_nu)
+
         loss = (lambda_dmd_pixel * dmd_pixel_loss
                 + lambda_recon   * recon_loss
                 + lambda_pred    * pred_loss
-                + lambda_fp      * fp_loss)
+                + lambda_fp      * fp_loss
+                + vic_loss)
 
         optimizer.zero_grad()
         loss.backward()
@@ -220,6 +229,7 @@ def train_one_epoch(model, loader, optimizer, device,
         recon_acc += recon_loss.item()
         pred_acc  += pred_loss.item()
         fp_acc    += fp_loss.item()
+        vic_acc   += vic_loss.item()
         n_batches += 1
 
     return {
@@ -228,6 +238,7 @@ def train_one_epoch(model, loader, optimizer, device,
         'recon': recon_acc / n_batches,
         'pred':  pred_acc  / n_batches,
         'fp':    fp_acc    / n_batches,
+        'vic':   vic_acc   / n_batches,
     }, z_star_ema
 
 
@@ -382,6 +393,9 @@ def main():
     lambda_fp       = float(train_cfg.get('lambda_fp', 5.0))
     dmd_context_len = int(train_cfg.get('dmd_context_len', 5))
     dmd_ridge       = float(train_cfg.get('dmd_ridge', 1e-4))
+    use_vicreg      = bool(train_cfg.get('use_vicreg', False))
+    vicreg_lambda   = float(train_cfg.get('vicreg_lambda', 25.0))
+    vicreg_nu       = float(train_cfg.get('vicreg_nu', 1.0))
     ckpt_every      = int(train_cfg.get('checkpoint_every', 10))
 
     out_dir    = Path(args.results_dir) / f'ae_seed{args.seed}'
@@ -493,25 +507,28 @@ def main():
         print(f'\n[train] Starting AE-DMD training for {epochs} epochs...')
         print(f'[train] DMD context={dmd_context_len}/{horizon} steps, '
               f'predict={horizon - dmd_context_len} steps in pixel space')
+        vic_str = f'  vicreg×{vicreg_lambda}(nu={vicreg_nu})' if use_vicreg else '  vicreg=off'
         print(f'[train] Losses: dmd_pixel×{lambda_dmd_pixel}  '
-              f'recon×{lambda_recon}  pred×{lambda_pred}  fp×{lambda_fp}')
+              f'recon×{lambda_recon}  pred×{lambda_pred}  fp×{lambda_fp}{vic_str}')
 
         for epoch in range(1, epochs + 1):
             t0 = time.time()
             tr, z_star_ema = train_one_epoch(
                 model, loaders['train'], optimizer, device,
                 lambda_dmd_pixel, lambda_recon, lambda_pred, lambda_fp,
-                dmd_context_len, dmd_ridge, W, z_star_ema, frame_stack)
+                dmd_context_len, dmd_ridge, W, z_star_ema, frame_stack,
+                use_vicreg=use_vicreg, vicreg_lambda=vicreg_lambda, vicreg_nu=vicreg_nu)
             val_loss = val_one_epoch(
                 model, loaders['val'], device,
                 lambda_dmd_pixel, lambda_recon, lambda_pred, lambda_fp,
                 dmd_context_len, dmd_ridge, W, z_star_ema, frame_stack)
             scheduler.step()
 
+            vic_log = f'  vic={tr["vic"]:.4f}' if use_vicreg else ''
             print(f'[Epoch {epoch:3d}/{epochs}]  '
                   f'train={tr["total"]:.4f}  val={val_loss:.4f}  '
                   f'dmd={tr["dmd"]:.4f}  recon={tr["recon"]:.4f}  '
-                  f'pred={tr["pred"]:.4f}  fp={tr["fp"]:.4f}  '
+                  f'pred={tr["pred"]:.4f}  fp={tr["fp"]:.4f}{vic_log}  '
                   f'({time.time()-t0:.1f}s)')
 
             if epoch % ckpt_every == 0:
