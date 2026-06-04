@@ -29,16 +29,16 @@ training:
   epochs: 200
   horizon: 10
   lambda_pred: 1.0
-  lambda_state: 0.1             # direction alignment: forces θ encoding into V_u direction
+  lambda_state: 0.0             # NOT needed for CEM (linear control structure only)
   lambda_mirror: 1.0           # sign alignment: encoder(flip(obs)) + encoder(obs) ≈ 2·z* (no state labels)
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 25.0              # increased from 10: fp_err=0.844 was too large (linearization broken)
-  lambda_spec: 0.0             # disabled: replaced by L_dynSIG + L_temp
+  lambda_fp: 10.0              # reduced from 25: z* fixed point, but not so dominant it crowds pred
+  lambda_spec: 0.0             # NOT needed for CEM (forces specific eigenvalue for LQR only)
   lambda_spec_marginal: 0.0
-  lambda_PBH: 1.0              # uses B_eff (d×1), forces scalar stabilisability
+  lambda_PBH: 0.0              # NOT needed for CEM (LQR stabilizability only, causes Jacobian conflicts)
   lambda_local: 0.0
   lambda_unstable: 0.0
   unstable_eta: 0.05
@@ -47,8 +47,8 @@ training:
   jacobian_every: 10
   use_vicreg: true             # anti-collapse: variance + covariance regularization on z_0
   vicreg_lambda: 25.0          # std(z_i) ≥ 1 per dimension
-  lambda_sigreg: 0.0           # replaced by lambda_dynSIG
-  lambda_varfloor: 0.5         # variance floor for dynSIG
+  lambda_sigreg: 0.0
+  lambda_varfloor: 0.0         # redundant with VICReg
   sigreg_num_slices: 32
   sigreg_num_points: 9
   vicreg_nu: 1.0
@@ -64,15 +64,15 @@ training:
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 0
   encoder_lr_unfreeze_mult: 0.1
-  # ── Dynamics-aware regularization ──────────────────────────────────────────
-  lambda_dynSIG: 2.0
+  # ── Dynamics-aware regularization (all disabled for CEM — these are linear control tools) ──
+  lambda_dynSIG: 0.0
   dynSIG_T_g: 5
   dynSIG_alpha: 0.3
   dynSIG_beta: 0.95
   dynSIG_near_eq_radius: 0.0
   lambda_temp: 0.0
   temp_near_eq_radius: 2.0
-  lambda_spec: 5.0             # forces rho(A_jac)→1.0827 (unstable mode recovery)
+  lambda_spec: 0.0             # NOT needed for CEM; also fixes the duplicate-entry override bug
 
 probes:
   epsilon_lambda: 0.05
