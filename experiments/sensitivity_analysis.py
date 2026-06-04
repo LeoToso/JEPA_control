@@ -120,7 +120,13 @@ def run_sensitivity(model, cfg, device, label: str, n_theta: int = 60, image_siz
 
     rho = mags[idx_u]
     print(f'\n[{label}] z* norm={np.linalg.norm(z_star_np):.3f}  rho(A)={rho:.4f}')
-    print(f'[{label}] V_u aligned with B: cos={float(np.abs(V_u @ A_jac.detach().cpu().numpy().T @ z_star_np)):.3f}')
+    if hasattr(model, 'action_encoder') and hasattr(model.action_encoder, 'W'):
+        B_eff = (B_jac @ model.action_encoder.W.weight).detach().cpu().numpy().squeeze()
+    else:
+        B_eff = B_jac.detach().cpu().numpy().squeeze()
+    B_eff_norm = B_eff / (np.linalg.norm(B_eff) + 1e-8)
+    vu_b_cos = float(np.abs(V_u @ B_eff_norm))
+    print(f'[{label}] cos(V_u, B_eff) = {vu_b_cos:.3f}  (>0.5 = good control alignment)')
 
     thetas = np.linspace(-0.5, 0.5, n_theta)
     dz_norms, vu_projs, cos_angles = [], [], []
