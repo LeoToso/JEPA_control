@@ -232,18 +232,60 @@ def plot_gramian(ax, eigvals: np.ndarray, title: str):
     ax.legend(fontsize=7)
 
 
-# ── Panel 3: PCA scatter ──────────────────────────────────────────────────────
+# ── Panel 3: Phase portrait ───────────────────────────────────────────────────
 
-def plot_pca(ax, z: np.ndarray, states: np.ndarray, title: str):
-    """PC1 vs PC2 scatter colored by pole angle θ."""
-    z2, var_ratio = _pca2(z)
-    theta = states[:, 2]  # pole angle
-    sc = ax.scatter(z2[:, 0], z2[:, 1], c=theta, cmap='coolwarm',
-                    s=3, alpha=0.4, vmin=-0.6, vmax=0.6)
-    plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04, label='θ (rad)')
-    ax.set_xlabel(f'PC1 ({var_ratio[0]*100:.1f}%)', fontsize=8)
-    ax.set_ylabel(f'PC2 ({var_ratio[1]*100:.1f}%)', fontsize=8)
+def plot_phase_portrait(ax, model, frame_stack: int, device,
+                        z_star: np.ndarray, zs: np.ndarray, title: str,
+                        grid_size: int = 14):
+    """2D phase portrait of f(z, u=0) - z in the PC1-PC2 subspace around z*.
+
+    The 2D plane is defined by the top two PCA directions of the trajectory
+    data centered on z*.  Each arrow shows the predictor drift for a zero-
+    action step starting from that point, giving a vector-field view of the
+    latent dynamics.  A saddle at z* (some arrows toward, some away) means
+    the model has captured the unstable cartpole equilibrium.  A pure sink
+    (all arrows toward z*) means the model learned only stable dynamics.
+    """
+    # Top 2 PCA directions centered on z*
+    z_centered = zs - z_star[np.newaxis, :]
+    _, _, Vt = np.linalg.svd(z_centered, full_matrices=False)
+    v1, v2 = Vt[0], Vt[1]   # (d,) each
+
+    # Grid range: 95th-percentile spread along each direction
+    c1_all = z_centered @ v1
+    c2_all = z_centered @ v2
+    r1 = float(np.percentile(np.abs(c1_all), 90)) * 1.1
+    r2 = float(np.percentile(np.abs(c2_all), 90)) * 1.1
+
+    c1_vals = np.linspace(-r1, r1, grid_size)
+    c2_vals = np.linspace(-r2, r2, grid_size)
+    C1, C2 = np.meshgrid(c1_vals, c2_vals)
+    dC1 = np.zeros_like(C1)
+    dC2 = np.zeros_like(C2)
+
+    W = getattr(model.config, 'predictor_window', 1)
+    model.eval()
+
+    for i in range(grid_size):
+        for j in range(grid_size):
+            z = z_star + float(C1[i, j]) * v1 + float(C2[i, j]) * v2
+            z_t = torch.tensor(z, dtype=torch.float32, device=device).unsqueeze(0)
+            z_win = z_t.unsqueeze(1).expand(1, W, -1)
+            u_win = torch.zeros(1, W, 1, device=device)
+            with torch.no_grad():
+                z_next = model.predict(z_win, u_win).cpu().numpy()[0]
+            dz = z_next - z
+            dC1[i, j] = float(dz @ v1)
+            dC2[i, j] = float(dz @ v2)
+
+    speed = np.sqrt(dC1 ** 2 + dC2 ** 2) + 1e-9
+    ax.quiver(C1, C2, dC1 / speed, dC2 / speed, speed,
+              cmap='plasma', alpha=0.85, scale=grid_size * 1.2)
+    ax.plot(0, 0, 'r*', markersize=12, zorder=5, label='z*')
+    ax.set_xlabel(f'PC1', fontsize=8)
+    ax.set_ylabel(f'PC2', fontsize=8)
     ax.set_title(title, fontsize=9)
+    ax.legend(fontsize=7, loc='upper right')
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -323,6 +365,7 @@ def main():
         all_data.append({
             'label': label, 'zs': zs, 'states': states,
             'R': R, 'gramian_eigvals': gramian_eigvals,
+            'model': model, 'frame_stack': frame_stack, 'z_star': z_star,
         })
 
     env.close()
@@ -349,9 +392,11 @@ def main():
                               transform=axes[row, 1].transAxes)
             axes[row, 1].set_title(f'{label}\nControllability Gramian λ', fontsize=9)
 
-        # Col 2: PCA scatter
-        plot_pca(axes[row, 2], d['zs'], d['states'],
-                 title=f'{label}\nLatent PCA (color=θ)')
+        # Col 2: Phase portrait (predictor drift f(z,0)-z in PC1-PC2 plane)
+        print(f'  [{label}] computing phase portrait ...')
+        plot_phase_portrait(axes[row, 2], d['model'], d['frame_stack'], device,
+                            d['z_star'], d['zs'],
+                            title=f'{label}\nPhase portrait (u=0)')
 
     fig.suptitle('Latent Dynamics Structure Comparison', fontsize=13, y=1.01)
     fig.tight_layout()
