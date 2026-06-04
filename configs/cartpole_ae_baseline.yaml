@@ -10,8 +10,8 @@ environment:
   action_range: [-10, 10]
 
 model:
-  latent_dim: 4             # matches physical state dim (x, ẋ, θ, θ̇) — hard bottleneck
-  action_latent_dim: 1      # scalar action, no lifting needed at d=4
+  latent_dim: 32
+  action_latent_dim: 4
   action_encoder: linear
   patch_size: 8
   frame_stack: 2            # 2 consecutive frames → encoder sees [obs_{t-1}, obs_t] → velocity info
@@ -19,7 +19,7 @@ model:
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
-  predictor_hidden_dim: 64
+  predictor_hidden_dim: 256
   predictor_n_layers: 2
 
 training:
@@ -34,16 +34,9 @@ training:
   lambda_pred: 0.5         # CEM predictor (secondary — predictor network for nonlinear planning)
   lambda_fp: 5.0           # fixed-point: predictor(z*, 0) = z*
   # ── DMD parameters ────────────────────────────────────────────────────────
-  # With d=4: context_len=8 → 256*8=2048 equations for 4*4+4=20 unknowns (100:1)
-  # Per-trajectory would give 8 eqs for 20 unknowns (underdetermined), so batch DMD
-  # is correct here.  Bounou et al. used per-trajectory with d=4 + long context (50+).
-  dmd_context_len: 8       # 8 context steps (was 5; more equations → better A,B estimate)
+  dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
   dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
   # ── No collapse prevention needed: reconstruction loss anchors encoder ────
-  # x IS encoded (|r|≈0.75). The real problem is θ under-encoding: with d=32,
-  # the encoder lazily encodes x (dominant pixel signal) and ignores θ.
-  # Fix: reduce latent_dim to 4 (matching physical state dimension), which is
-  # the hard bottleneck used in Bounou et al. 2021.
   use_vicreg: false
   # ── No EMA target encoder: pixel targets are stable, no moving-target issue ─
   target_encoder_momentum: 0.9995   # kept for backwards-compat but not used
