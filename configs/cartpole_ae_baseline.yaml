@@ -1,7 +1,7 @@
 environment:
   name: cartpole
   frame_skip: 1
-  image_size: 128
+  image_size: 64
   mass_cart: 1.0
   mass_pole: 0.1
   pole_length: 0.5
@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4
   action_encoder: linear
-  patch_size: 8    # 128/8 = 256 patches — 4× more spatial tokens, reduces pixel dead zone
+  patch_size: 8    # 64/8 = 64 patches
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
@@ -96,14 +96,14 @@ data:
   n_random: 100000
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 1.0    # wider exploration: pole up to ±57° prevents AE collapse
+  random_init_range: 1.0    # wide exploration: pole up to ±57°
   lqr_init_range: 0.10
   lqr_noise_std: 0.25
-  n_equilibrium: 1000
-  n_eq_selfloop: 500
+  n_equilibrium: 200        # reduced from 1000: mean image has higher variance → recon can't cheat
+  n_eq_selfloop: 100        # reduced from 500
   eq_init_range: 0.002
   eq_noise_std: 0.001
-  n_pe: 25000
+  n_pe: 0                   # no PRBS: AE doesn't use dynSIG, and near-eq data caused collapse
   pe_init_range: 0.05
   pe_action_amplitude: 3.0
   pe_flip_prob: 0.15

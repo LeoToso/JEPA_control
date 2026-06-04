@@ -98,17 +98,17 @@ def train_one_epoch(model, target_encoder, loader, optimizer, device,
         z_targets = z_all[:, 1:].detach()
         W = predictor_window
         z_win_buf = [z_all[:, 0]] * W
-        u_win_buf = [torch.zeros(B, 1, device=device)] * W
+        u_win_buf = [torch.zeros(B, 1, device=device)] * (W - 1)  # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=device)
         for k in range(H):
-            u_k     = actions[:, k]
+            u_k = actions[:, k]
+            u_win_buf.append(u_k)                              # append BEFORE predict
             z_stack = torch.stack(z_win_buf[-W:], dim=1)
             u_stack = torch.stack(u_win_buf[-W:], dim=1)
             z_hat   = model.predict(z_stack, u_stack)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
             z_win_buf.append(z_hat)
-            u_win_buf.append(u_k)
         pred_loss = pred_loss / H
 
         # ── reconstruction loss (denoising: predict clean from noisy encoding) ──
@@ -185,16 +185,17 @@ def val_one_epoch(model, loader, device, lambda_pred, lambda_recon, lambda_fp,
         z_targets  = z_all[:, 1:].detach()
         W          = predictor_window
         z_win_buf  = [z_all[:, 0]] * W
-        u_win_buf  = [torch.zeros(B, 1, device=device)] * W
+        u_win_buf  = [torch.zeros(B, 1, device=device)] * (W - 1)
 
         pred_loss = torch.zeros(1, device=device)
         for k in range(H):
-            u_k    = actions[:, k]
+            u_k = actions[:, k]
+            u_win_buf.append(u_k)
             zs     = torch.stack(z_win_buf[-W:], dim=1)
             us     = torch.stack(u_win_buf[-W:], dim=1)
             z_hat  = model.predict(zs, us)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
-            z_win_buf.append(z_hat); u_win_buf.append(u_k)
+            z_win_buf.append(z_hat)
         pred_loss = pred_loss / H
 
         obs_t_float = obs_seq[:, 0]

@@ -13,7 +13,7 @@ model:
   latent_dim: 32
   action_latent_dim: 4       # action lifting: u(R^1) -> c(R^4), B becomes (32x4)
   action_encoder: linear     # linear lifting W in R^{4x1}
-  patch_size: 8    # 128/8 = 256 patches — 4× more spatial tokens, reduces pixel dead zone from ~0.05 to ~0.01 rad
+  patch_size: 16   # 128/16 = 64 patches
   frame_stack: 1
   predictor_window: 3
   vit_embed_dim: 128
