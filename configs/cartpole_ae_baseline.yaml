@@ -32,16 +32,12 @@ training:
   lambda_dmd_pixel: 5.0    # MAIN: pixel prediction via per-batch DMD (stable pixel targets)
   lambda_recon: 1.0        # reconstruction: decoder(encoder(obs)) ≈ obs (prevents collapse)
   lambda_pred: 0.5         # CEM predictor (secondary — predictor network for nonlinear planning)
-  lambda_fp: 5.0           # fixed-point: predictor(z*, 0) = z*
+  lambda_fp: 0.0
   # ── DMD parameters ────────────────────────────────────────────────────────
   dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
   dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
-  # ── Collapse prevention: VICReg variance+covariance ─────────────────────
-  # dmd≈recon throughout training proves reconstruction alone doesn't prevent
-  # collapse: when z≈z* for all inputs the decoder outputs the mean frame and
-  # ∂MSE/∂z=0 — zero gradient to the encoder at the degenerate solution.
-  # VICReg variance forces std(z_i)≥1, providing nonzero gradient at collapse.
-  use_vicreg: true
+  # ── Collapse prevention ───────────────────────────────────────────────────
+  use_vicreg: false
   vicreg_lambda: 25.0
   vicreg_nu: 1.0
   # ── No EMA target encoder: pixel targets are stable, no moving-target issue ─
