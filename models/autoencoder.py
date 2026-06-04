@@ -25,10 +25,12 @@ class AEWorldModel(JEPAModel):
 
     def __init__(self, config: JEPAConfig):
         super().__init__(config)
+        # Decoder always reconstructs a single frame (3 channels), regardless of frame_stack
+        _out_chans = config.in_chans // max(config.frame_stack, 1)
         self.decoder = PixelDecoder(
             latent_dim=config.latent_dim,
             image_size=config.image_size,
-            in_chans=config.in_chans,
+            in_chans=_out_chans,
         )
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
