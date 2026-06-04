@@ -504,6 +504,56 @@ class Trainer:
             total_loss = total_loss + self.lambda_mirror * mirror_loss
             info['mirror_loss'] = mirror_loss.item()
 
+        # ── spec_eig via JVP: fires every training step after warmup ─────────
+        # Computes A_jac @ v̂_u in ONE forward pass (forward-mode JVP), avoiding
+        # the expensive d×d Jacobian.  Fires every step → 10× more gradient
+        # pressure vs. the old every-jacobian_every version.
+        # Gradient flows through BOTH predictor (via JVP create_graph) AND encoder
+        # (via v_u_hat) so they cooperate: encoder aligns v̂_u with A_jac's
+        # dominant mode; predictor pushes that mode toward λ*.
+        if (is_train and self.lambda_spec_eig > 0
+                and self.epoch >= self.spec_eig_warmup_epochs
+                and self.gt is not None
+                and self._obs_v_u is not None
+                and self._z_star_ema is not None):
+            try:
+                z_pert_ge  = self.model.encoder(self._obs_v_u).squeeze(0)   # (d,) grad on
+                z_star_sg  = self._z_star_ema.detach()
+                v_u_lat    = z_pert_ge - z_star_sg
+                v_norm_sg  = v_u_lat.norm().detach()   # detach norm — no grad through scale
+                if v_norm_sg > 1e-4:
+                    v_u_hat  = v_u_lat / v_norm_sg     # (d,) grad flows to encoder
+                    W_w      = self.predictor_window
+                    d_w      = v_u_hat.shape[0]
+                    # History window filled with z* (constant, detached)
+                    z_hist   = (z_star_sg.unsqueeze(0).unsqueeze(1)
+                                .expand(1, W_w - 1, d_w).clone())   # (1,W-1,d)
+                    u_zero   = torch.zeros(1, W_w, 1, device=self.device)
+                    z_base   = z_star_sg.unsqueeze(0)   # (1, d) — JVP base point
+                    v_tang   = v_u_hat.unsqueeze(0)     # (1, d) — tangent (has encoder grad)
+
+                    def _pred_last(z_l):
+                        z_l_unsq = z_l.unsqueeze(1)     # (1, 1, d)
+                        z_win = (torch.cat([z_hist, z_l_unsq], dim=1)
+                                 if W_w > 1 else z_l_unsq)
+                        return self.model.predict(z_win, u_zero)   # (1, d)
+
+                    # JVP: df/dz_last @ v_tang = A_jac @ v̂_u  (one forward pass)
+                    _, Av_batch = torch.autograd.functional.jvp(
+                        _pred_last, z_base, v_tang, create_graph=True,
+                    )
+                    Av     = Av_batch.squeeze(0)         # (d,) grad → pred + encoder
+                    lam_gt = torch.tensor(
+                        float(np.real(self.gt.dominant_unstable_eigenvalue)),
+                        dtype=Av.dtype, device=Av.device,
+                    )
+                    residual      = Av - lam_gt * v_u_hat   # (d,)
+                    spec_eig_loss = (residual ** 2).sum()
+                    total_loss    = total_loss + self.lambda_spec_eig * spec_eig_loss
+                    info['spec_eig_loss'] = spec_eig_loss.item()
+            except Exception as exc:
+                warnings.warn(f'spec_eig JVP failed: {exc}')
+
         # ── Local linearization loss (L_local) ───────────────────────────────
         # Applied every step to self-loop (near-equilibrium) samples.
         # Forces f(z_t,u_t) ≈ z* + A(z_t-z*) + B·u_t using stop-grad A, B.
@@ -538,8 +588,6 @@ class Trainer:
             or (self.lambda_spec > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
-            or (self.lambda_spec_eig > 0 and self._obs_v_u is not None
-                and self.epoch >= self.spec_eig_warmup_epochs)
             or (self.lambda_PBH > 0
                 and self.true_unstable_eigs is not None
                 and len(self.true_unstable_eigs) > 0)
@@ -627,30 +675,6 @@ class Trainer:
                         marginal_loss = dist_to_one[sorted_idx[:k]].sum()
                         total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
                         info['spec_marginal_loss'] = marginal_loss.item()
-
-                # L_spec_eig: eigenvector equation for the GT dominant unstable mode.
-                # Directly enforces A_jac @ v̂_u = λ* @ v̂_u where v̂_u is the
-                # latent image of the physical unstable direction (no grad through
-                # encoder — v̂_u is treated as a fixed target direction each step).
-                if (self.lambda_spec_eig > 0
-                        and self.epoch >= self.spec_eig_warmup_epochs
-                        and self.gt is not None
-                        and self._obs_v_u is not None
-                        and self._z_star_ema is not None):
-                    with torch.no_grad():
-                        z_pert  = self.model.encoder(self._obs_v_u).squeeze(0)  # (d,)
-                        v_u_lat = z_pert - self._z_star_ema.detach()             # (d,)
-                        v_norm  = v_u_lat.norm()
-                    if v_norm > 1e-4:
-                        v_u_hat = (v_u_lat / v_norm).to(dtype=A_jac.dtype)      # (d,), no grad
-                        lam_gt  = torch.tensor(
-                            float(np.real(self.gt.dominant_unstable_eigenvalue)),
-                            dtype=A_jac.dtype, device=A_jac.device)
-                        Av             = A_jac @ v_u_hat          # (d,) — grad flows through A_jac
-                        residual       = Av - lam_gt * v_u_hat    # should be 0 at optimum
-                        spec_eig_loss  = (residual ** 2).sum()
-                        total_loss     = total_loss + self.lambda_spec_eig * spec_eig_loss
-                        info['spec_eig_loss'] = spec_eig_loss.item()
 
                 # PBH stabilisability at each GT unstable eigenvalue.
                 # Uses B_eff (d×1) — the scalar effective B — so gradient flows

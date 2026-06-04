@@ -35,7 +35,7 @@ training:
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   inv_action_scale: 10.0
-  lambda_fp: 10.0              # reduced from 25: z* fixed point, but not so dominant it crowds pred
+  lambda_fp: 30.0              # increased: force ||f(z*,0)-z*|| → 0 so A_jac is reliable at z*
   lambda_spec: 0.0             # legacy eigenvalue-matching loss (off — replaced by spec_eig)
   lambda_spec_marginal: 0.0
   # ── Eigenvector-equation spectral loss ─────────────────────────────────────
