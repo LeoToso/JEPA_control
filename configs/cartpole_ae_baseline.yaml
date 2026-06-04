@@ -13,8 +13,8 @@ model:
   latent_dim: 32
   action_latent_dim: 4
   action_encoder: linear
-  patch_size: 8    # 64/8 = 64 patches
-  frame_stack: 1
+  patch_size: 8
+  frame_stack: 2            # 2 consecutive frames → encoder sees [obs_{t-1}, obs_t] → velocity info
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
@@ -26,42 +26,22 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   batch_size: 256
-  epochs: 200
+  epochs: 80
   horizon: 10
-  lambda_pred: 1.0
-  lambda_recon: 1.0            # reconstruction loss weight (AE-specific)
-  lambda_fp: 5.0               # fixed-point: f(z*,0)=z*
-  # EMA target encoder: momentum must be HIGH relative to batches/epoch.
-  # With 180 batches/epoch: lag ≈ 1/((1-m)*180) epochs.
-  # 0.99  → lag=0.56 ep (target collapses with online by ep 3) ← was broken
-  # 0.9995 → lag=11 ep (diverse targets through first ~30 epochs) ← correct
-  target_encoder_momentum: 0.9995
-  aug_noise_std: 0.05          # denoising AE: online encoder sees obs+noise, decoder reconstructs clean
-  # All dynamics-structure losses disabled (clean baseline)
-  lambda_state: 0.0
-  lambda_anchor: 0.0
-  lambda_enc_anchor: 0.0
-  lambda_inv: 0.0
-  lambda_spec: 0.0
-  lambda_spec_marginal: 0.0
-  lambda_PBH: 0.0
-  lambda_local: 0.0
-  lambda_unstable: 0.0
-  lambda_dynSIG: 0.0
-  lambda_temp: 0.0
-  use_vicreg: true           # prevents encoder collapse: variance floor + covariance decorrelation
-  vicreg_lambda: 25.0        # std(z_i) ≥ 1 constraint per dimension (default 25.0)
-  vicreg_nu: 1.0             # covariance off-diagonal penalty
-  lambda_sigreg: 0.0
-  ema_momentum: 0.996
-  state_encoder_grad_scale: 1.0
-  predictor_lr_mult: 1.0
-  predictor_window: 3
+  # ── Loss weights ──────────────────────────────────────────────────────────
+  lambda_dmd_pixel: 5.0    # MAIN: pixel prediction via per-batch DMD (stable pixel targets)
+  lambda_recon: 1.0        # reconstruction: decoder(encoder(obs)) ≈ obs (prevents collapse)
+  lambda_pred: 0.5         # CEM predictor (secondary — predictor network for nonlinear planning)
+  lambda_fp: 5.0           # fixed-point: predictor(z*, 0) = z*
+  # ── DMD parameters ────────────────────────────────────────────────────────
+  dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
+  dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
+  # ── No collapse prevention needed: reconstruction loss anchors encoder ────
+  use_vicreg: false
+  # ── No EMA target encoder: pixel targets are stable, no moving-target issue ─
+  target_encoder_momentum: 0.9995   # kept for backwards-compat but not used
+  aug_noise_std: 0.0
   checkpoint_every: 10
-  warmup_epochs: 0
-  freeze_encoder_epochs: 0
-  encoder_lr_unfreeze_mult: 0.1
-  jacobian_every: 10
 
 probes:
   epsilon_lambda: 0.05
@@ -76,13 +56,6 @@ control:
   stabilization_threshold: 0.1
   settling_threshold: 0.05
 
-mpc:
-  horizon: 10
-  chunk_size: 1
-  Q_f_multiplier: 10.0
-  grad_lr: 0.05
-  grad_n_iter: 100
-
 cem:
   horizon: 25
   chunk_size: 1
@@ -90,20 +63,20 @@ cem:
   n_elites: 50
   n_iter: 5
   init_std: 3.0
-  n_trials: 50
+  n_trials: 30
 
 data:
-  n_random: 100000
+  n_random: 20000
   train_frac: 0.8
   val_frac: 0.1
-  random_init_range: 1.0    # wide exploration: pole up to ±57°
-  lqr_init_range: 0.10
+  random_init_range: 1.0
+  lqr_init_range: 0.30
   lqr_noise_std: 0.25
-  n_equilibrium: 200        # reduced from 1000: mean image has higher variance → recon can't cheat
-  n_eq_selfloop: 100        # reduced from 500
+  n_equilibrium: 500
+  n_eq_selfloop: 200
   eq_init_range: 0.002
   eq_noise_std: 0.001
-  n_pe: 0                   # no PRBS: AE doesn't use dynSIG, and near-eq data caused collapse
+  n_pe: 2000
   pe_init_range: 0.05
   pe_action_amplitude: 3.0
   pe_flip_prob: 0.15
