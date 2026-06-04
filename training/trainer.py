@@ -91,7 +91,15 @@ class Trainer:
         # Cartpole horizontal flip = negate all state components (x,ẋ,θ,θ̇→-x,-ẋ,-θ,-θ̇).
         # Purely self-supervised — no state labels needed.
         self.lambda_mirror  = float(self.cfg.get('lambda_mirror', 0.0))
-        self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
+        # Initialize Sigma_target to I so dynSIG/varfloor are active from epoch 0
+        # (isotropic = standard SIGreg), then gradually shift to Gramian target once
+        # A_jac is available.  Without this, both losses skip for the first
+        # jacobian_every epochs (Sigma_target is None) → no collapse prevention.
+        _d = model.encoder.latent_dim
+        if self.lambda_dynSIG > 0 or self.lambda_varfloor > 0:
+            self._Sigma_target: Optional[torch.Tensor] = torch.eye(_d)
+        else:
+            self._Sigma_target: Optional[torch.Tensor] = None  # EMA of Gramian-based target cov
         self.ema_momentum  = float(self.cfg.get('ema_momentum',  0.996))
         # EMA target encoder: use target_encoder for z_rest targets instead of
         # stop-grad online encoder.  Prevents collapse because targets lag behind

@@ -45,10 +45,10 @@ training:
   rho_max_init: 1.3
   local_state_threshold: 0.05
   jacobian_every: 10
-  use_vicreg: true             # anti-collapse: variance + covariance regularization on z_0
-  vicreg_lambda: 25.0          # std(z_i) ≥ 1 per dimension
+  use_vicreg: false            # replaced by dynSIGreg (dynamics-aware SIGreg)
+  vicreg_lambda: 25.0
   lambda_sigreg: 0.0
-  lambda_varfloor: 0.0         # redundant with VICReg
+  lambda_varfloor: 0.5         # companion to dynSIG: fixes vanishing gradient at perfect collapse
   sigreg_num_slices: 32
   sigreg_num_points: 9
   vicreg_nu: 1.0
@@ -64,8 +64,12 @@ training:
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 0
   encoder_lr_unfreeze_mult: 0.1
-  # ── Dynamics-aware regularization (all disabled for CEM — these are linear control tools) ──
-  lambda_dynSIG: 0.0
+  # ── Dynamics-aware regularization ──────────────────────────────────────────
+  # dynSIGreg replaces VICReg: shapes encoder covariance to match the controllability
+  # Gramian W_T = Σ A^k B B^T (A^T)^k.  Gramian is detach()ed so no gradient flows
+  # through A_jac — no Jacobian-coupling oscillations (unlike spec/PBH).
+  # Starts isotropic (Sigma_target = I) for first jacobian_every epochs, then updates.
+  lambda_dynSIG: 2.0
   dynSIG_T_g: 5
   dynSIG_alpha: 0.3
   dynSIG_beta: 0.95
