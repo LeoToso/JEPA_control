@@ -19,13 +19,15 @@ class CNNEncoder(nn.Module):
         layers: list[nn.Module] = []
         for i in range(6):
             c_in, c_out = channels[i], channels[i + 1]
+            is_last = (i == 5)
             layers += [
                 nn.Conv2d(c_in, c_out, kernel_size=3, padding=1),
                 nn.MaxPool2d(2),
-                nn.BatchNorm2d(c_out),
             ]
-            if i < 5:
-                layers.append(nn.ReLU(inplace=True))
+            if not is_last:
+                # BN + ReLU on blocks 0-4 (spatial ≥ 2×2, batch-safe)
+                layers += [nn.BatchNorm2d(c_out), nn.ReLU(inplace=True)]
+            # last block: no BN (spatial = 1×1 → BN fails for batch_size=1), no ReLU
         self.net = nn.Sequential(*layers)
         self._init_weights()
 
