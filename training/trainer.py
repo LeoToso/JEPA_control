@@ -597,34 +597,44 @@ class Trainer:
                 from control.jacobian import compute_jacobian_torch
                 z_star_t = (self._z_star_ema if self._z_star_ema is not None
                             else z_all[:, 0].mean(dim=0).detach())
-                A_jac, B_jac = compute_jacobian_torch(
+                # A_aug: (Wd×Wd) companion form; B_aug: (Wd×m) with B_jac in last d rows.
+                # For W=1 these collapse to the standard (d×d)/(d×m) pair.
+                A_aug, B_aug = compute_jacobian_torch(
                     self.model, z_star_t, self.device,
                 )
-                # B_eff: effective (d×1) B for raw scalar action, differentiable.
-                # B_jac = ∂f/∂c (d×m); B_eff = B_jac @ W_enc where c = W_enc @ u.
-                # Gradient flows through both B_jac (predictor) and W_enc (action encoder).
-                if hasattr(self.model.action_encoder, 'W'):
-                    B_eff_torch = B_jac @ self.model.action_encoder.W.weight  # (d, 1)
-                else:
-                    B_eff_torch = B_jac  # identity encoder: B_jac already (d, 1)
+                W_win = getattr(self.model.config, 'predictor_window', 1)
+                d_lat = z_star_t.shape[0]
 
-                # Cache for L_local / L_temp (used every step between Jacobian updates)
+                # B_eff_aug: chain through action encoder weight for scalar input.
+                if hasattr(self.model.action_encoder, 'W'):
+                    # B_aug last d rows: ∂z_{t+1}/∂c; multiply by W_enc to get ∂z_{t+1}/∂u
+                    B_last = B_aug[(W_win - 1) * d_lat:] @ self.model.action_encoder.W.weight
+                    B_zeros_eff = torch.zeros((W_win - 1) * d_lat, 1, device=self.device)
+                    B_eff_aug = torch.cat([B_zeros_eff, B_last], dim=0)  # (Wd, 1)
+                else:
+                    B_eff_aug = B_aug  # linear encoder: B_aug already correct
+
+                # Cache current-state slices for L_local / L_temp
+                A_jac = A_aug[(W_win - 1) * d_lat:, (W_win - 1) * d_lat:]  # (d, d) current block
+                B_eff_torch = B_eff_aug[(W_win - 1) * d_lat:]               # (d, 1) current slice
                 self._A_jac_cache = A_jac.detach()
-                self._B_jac_cache = B_jac.detach()
+                self._B_jac_cache = B_aug[(W_win - 1) * d_lat:].detach()
                 self._B_eff_cache = B_eff_torch.detach()
 
                 # Update Sigma_target via EMA for L_dynSIG.
-                # Use B_eff (d×1) for the Gramian: correct for scalar-input control.
+                # Project augmented Gramian to current-state subspace (last d rows/cols).
                 if self.lambda_dynSIG > 0:
                     from losses.dyn_sigreg import (compute_controllability_gramian,
                                                    build_sigma_target)
                     with torch.no_grad():
-                        W_T_new = compute_controllability_gramian(
-                            self._A_jac_cache.float(),
-                            self._B_eff_cache.float(),   # scalar B, not wide B_jac
+                        W_T_aug = compute_controllability_gramian(
+                            A_aug.detach().float(),
+                            B_eff_aug.detach().float(),
                             T_g=self.dynSIG_T_g,
                         )
-                        Sigma_new = build_sigma_target(W_T_new, alpha=self.dynSIG_alpha)
+                        # Select the (d×d) block corresponding to z_t (last d dims)
+                        W_T_cur = W_T_aug[(W_win - 1) * d_lat:, (W_win - 1) * d_lat:]
+                        Sigma_new = build_sigma_target(W_T_cur, alpha=self.dynSIG_alpha)
                         if self._Sigma_target is None:
                             self._Sigma_target = Sigma_new
                         else:
@@ -633,7 +643,7 @@ class Trainer:
                                 + (1 - self.dynSIG_beta) * Sigma_new
                             )
 
-                eigvals = torch.linalg.eigvals(A_jac)
+                eigvals = torch.linalg.eigvals(A_aug)
 
                 # L_unstable: data-driven instability margin.
                 # No GT eigenvalues needed — only requires knowing the equilibrium
@@ -676,31 +686,25 @@ class Trainer:
                         total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
                         info['spec_marginal_loss'] = marginal_loss.item()
 
-                # PBH: cosine alignment of B_eff with the unstable eigenvectors of A_jac.
-                #
-                # Replaces the log-barrier -log(sigma_min([λI-A, B])):
-                #   - Log-barrier couples A-shaping (spec) with B-alignment (PBH), causing
-                #     competing gradients and a plateau when spec converges and [λI-A] is
-                #     nearly singular (making sigma_min extremely sensitive to tiny B changes).
-                #   - Cosine loss is O(1), first-order through B_eff, and fully decoupled:
-                #     spec shapes A's eigenvalue, PBH shapes B's direction independently.
-                #
-                # Loss = 1 - cos²(B_eff, V_u) ∈ [0,1].  0 = perfectly aligned, 1 = orthogonal.
+                # PBH: cosine alignment of B_eff_aug with unstable eigenvectors of A_aug.
+                # Uses the full augmented (Wd-dimensional) vectors so the alignment check
+                # is on the true dynamical system, not just the partial J_{W-1} block.
+                # Loss = 1 - cos²(B_eff_aug, V_u) ∈ [0,1].
                 if (self.lambda_PBH > 0
                         and self.true_unstable_eigs is not None
                         and len(self.true_unstable_eigs) > 0):
                     with torch.no_grad():
-                        eig_vals_r, eig_vecs_r = torch.linalg.eig(A_jac.detach().float())
+                        eig_vals_r, eig_vecs_r = torch.linalg.eig(A_aug.detach().float())
                         unstable_mask = eig_vals_r.abs() >= 0.95
                         if unstable_mask.sum() == 0:
                             unstable_mask = eig_vals_r.abs() >= eig_vals_r.abs().max() * 0.99
-                        v_u = eig_vecs_r[:, unstable_mask].real          # (d, n_unstable)
+                        v_u = eig_vecs_r[:, unstable_mask].real    # (Wd, n_unstable)
                         v_u = v_u / (v_u.norm(dim=0, keepdim=True) + 1e-8)
 
-                    b_eff = B_eff_torch.to(dtype=torch.float32).flatten()  # (d,)
+                    b_eff = B_eff_aug.to(dtype=torch.float32).flatten()  # (Wd,)
                     b_norm = b_eff / (b_eff.norm() + 1e-8)
-                    cos_sq = (v_u.T @ b_norm.unsqueeze(1)) ** 2            # (n_unstable, 1)
-                    pbh_loss = 1.0 - cos_sq.max()                          # 0=aligned, 1=orthogonal
+                    cos_sq = (v_u.T @ b_norm.unsqueeze(1)) ** 2          # (n_unstable, 1)
+                    pbh_loss = 1.0 - cos_sq.max()
                     total_loss = total_loss + self.lambda_PBH * pbh_loss
                     info['pbh_loss'] = pbh_loss.item()
             except Exception as exc:
