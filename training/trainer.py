@@ -676,39 +676,31 @@ class Trainer:
                         total_loss = total_loss + self.lambda_spec_marginal * marginal_loss
                         info['spec_marginal_loss'] = marginal_loss.item()
 
-                # PBH stabilisability at each GT unstable eigenvalue.
-                # Uses B_eff (d×1) — the scalar effective B — so gradient flows
-                # through both the predictor (B_jac) and action encoder (W_enc).
+                # PBH: cosine alignment of B_eff with the unstable eigenvectors of A_jac.
+                #
+                # Replaces the log-barrier -log(sigma_min([λI-A, B])):
+                #   - Log-barrier couples A-shaping (spec) with B-alignment (PBH), causing
+                #     competing gradients and a plateau when spec converges and [λI-A] is
+                #     nearly singular (making sigma_min extremely sensitive to tiny B changes).
+                #   - Cosine loss is O(1), first-order through B_eff, and fully decoupled:
+                #     spec shapes A's eigenvalue, PBH shapes B's direction independently.
+                #
+                # Loss = 1 - cos²(B_eff, V_u) ∈ [0,1].  0 = perfectly aligned, 1 = orthogonal.
                 if (self.lambda_PBH > 0
                         and self.true_unstable_eigs is not None
                         and len(self.true_unstable_eigs) > 0):
-                    pbh_terms = []
-                    d_dyn = A_jac.shape[0]
-                    for lam_star_val in self.true_unstable_eigs:
-                        lam_r = torch.tensor(
-                            float(np.real(lam_star_val)),
-                            dtype=A_jac.dtype, device=A_jac.device,
-                        )
-                        M_S = torch.cat(
-                            [lam_r * torch.eye(d_dyn, device=A_jac.device,
-                                               dtype=A_jac.dtype) - A_jac,
-                             B_eff_torch.to(dtype=A_jac.dtype)], dim=-1,
-                        )
-                        sv = torch.linalg.svdvals(M_S)
-                        pbh_terms.append(-torch.log(sv[-1] + 1e-6))
-                    # Also evaluate PBH at the CURRENT dominant eigenvalue to
-                    # prevent B_eff from collapsing while rho < GT target.
-                    # At rho_cur, [rho_cur*I-A] is nearly singular → stronger
-                    # gradient forces B_eff into the dominant eigenspace.
-                    rho_cur = torch.max(torch.abs(eigvals)).real.detach()
-                    M_cur = torch.cat(
-                        [rho_cur * torch.eye(d_dyn, device=A_jac.device,
-                                             dtype=A_jac.dtype) - A_jac,
-                         B_eff_torch.to(dtype=A_jac.dtype)], dim=-1,
-                    )
-                    sv_cur = torch.linalg.svdvals(M_cur)
-                    pbh_terms.append(-torch.log(sv_cur[-1] + 1e-6))
-                    pbh_loss = torch.stack(pbh_terms).mean()
+                    with torch.no_grad():
+                        eig_vals_r, eig_vecs_r = torch.linalg.eig(A_jac.detach().float())
+                        unstable_mask = eig_vals_r.abs() >= 0.95
+                        if unstable_mask.sum() == 0:
+                            unstable_mask = eig_vals_r.abs() >= eig_vals_r.abs().max() * 0.99
+                        v_u = eig_vecs_r[:, unstable_mask].real          # (d, n_unstable)
+                        v_u = v_u / (v_u.norm(dim=0, keepdim=True) + 1e-8)
+
+                    b_eff = B_eff_torch.to(dtype=torch.float32).flatten()  # (d,)
+                    b_norm = b_eff / (b_eff.norm() + 1e-8)
+                    cos_sq = (v_u.T @ b_norm.unsqueeze(1)) ** 2            # (n_unstable, 1)
+                    pbh_loss = 1.0 - cos_sq.max()                          # 0=aligned, 1=orthogonal
                     total_loss = total_loss + self.lambda_PBH * pbh_loss
                     info['pbh_loss'] = pbh_loss.item()
             except Exception as exc:
