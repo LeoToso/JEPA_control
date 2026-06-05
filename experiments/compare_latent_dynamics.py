@@ -200,9 +200,10 @@ def plot_pearson(ax, R: np.ndarray, title: str):
     ax.set_title(title, fontsize=9)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     for j in range(4):
-        best = int(np.argmax(np.abs(R_sorted[j])))
-        ax.add_patch(plt.Rectangle((best - 0.5, j - 0.5), 1, 1,
-                                   fill=False, edgecolor='lime', lw=1.5))
+        best = int(np.argmax(R_sorted[j]))   # max positive r
+        if R_sorted[j, best] > 0.05:         # only mark if meaningfully positive
+            ax.add_patch(plt.Rectangle((best - 0.5, j - 0.5), 1, 1,
+                                       fill=False, edgecolor='lime', lw=1.5))
 
 
 # ── Panel 2: Controllability Gramian ─────────────────────────────────────────
