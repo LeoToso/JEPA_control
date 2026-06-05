@@ -252,30 +252,52 @@ def plot_gramian(ax, eigvals: np.ndarray, title: str):
     ax.legend(fontsize=7)
 
 
+# ── Near-equilibrium encodings for phase portrait PCA ────────────────────────
+
+def collect_near_eq_encodings(env, model, frame_stack: int, device,
+                               theta_range: float = 0.5, n_theta: int = 40) -> np.ndarray:
+    """Encode states sweeping θ ∈ [-theta_range, theta_range] at rest (x=ẋ=θ̇=0).
+
+    Returns (n_theta, d).  Used as the PCA basis for the phase portrait so that
+    z* (encoded at θ=0) lands near the centre of the projection rather than at
+    the edge of a wide random-rollout distribution.
+    """
+    thetas = np.linspace(-theta_range, theta_range, n_theta)
+    zs = []
+    for th in thetas:
+        x0 = np.array([0.0, 0.0, float(th), 0.0], dtype=np.float32)
+        obs, _, _ = env.reset_to_state(x0)
+        obs_t = _to_tensor(obs, device)
+        if frame_stack > 1:
+            obs_t = torch.cat([obs_t, obs_t], dim=1)
+        with torch.no_grad():
+            z = model.encoder(obs_t).cpu().numpy()[0]
+        zs.append(z)
+    return np.array(zs)
+
+
 # ── Panel 3: Phase portrait ───────────────────────────────────────────────────
 
 def plot_phase_portrait(ax, model, frame_stack: int, device,
                         z_star: np.ndarray, zs: np.ndarray, title: str,
-                        grid_size: int = 14):
+                        grid_size: int = 14, zs_near_eq: np.ndarray = None):
     """2D phase portrait of f(z, u=0) - z in the PC1-PC2 subspace around z*.
 
-    The 2D plane is defined by the top two PCA directions of the trajectory
-    data centered on z*.  Each arrow shows the predictor drift for a zero-
-    action step starting from that point, giving a vector-field view of the
-    latent dynamics.  A saddle at z* (some arrows toward, some away) means
-    the model has captured the unstable cartpole equilibrium.  A pure sink
-    (all arrows toward z*) means the model learned only stable dynamics.
+    PCA basis is computed from near-equilibrium encodings (zs_near_eq) so that
+    z* sits near the centre of the projection.  Falls back to rollout data if
+    zs_near_eq is not provided.
     """
-    # Top 2 PCA directions centered on z*
-    z_centered = zs - z_star[np.newaxis, :]
+    # PCA from near-eq data so z* is centred; fall back to rollout data
+    pca_src = zs_near_eq if zs_near_eq is not None else zs
+    z_centered = pca_src - z_star[np.newaxis, :]
     _, _, Vt = np.linalg.svd(z_centered, full_matrices=False)
     v1, v2 = Vt[0], Vt[1]   # (d,) each
 
-    # Grid range: 95th-percentile spread along each direction
+    # Grid range from near-eq spread (tight, centred on z*)
     c1_all = z_centered @ v1
     c2_all = z_centered @ v2
-    r1 = float(np.percentile(np.abs(c1_all), 90)) * 1.1
-    r2 = float(np.percentile(np.abs(c2_all), 90)) * 1.1
+    r1 = float(np.percentile(np.abs(c1_all), 95)) * 1.2
+    r2 = float(np.percentile(np.abs(c2_all), 95)) * 1.2
 
     c1_vals = np.linspace(-r1, r1, grid_size)
     c2_vals = np.linspace(-r2, r2, grid_size)
@@ -383,11 +405,15 @@ def main():
             print(f'    Gramian failed: {exc}')
             gramian_eigvals = None
 
+        print(f'    collecting near-eq encodings for phase portrait PCA ...')
+        zs_near_eq = collect_near_eq_encodings(env, model, frame_stack, device)
+
         all_data.append({
             'label': label, 'zs': zs, 'zs_vel': zs_vel,
             'states': states, 'states_vel': states_vel,
             'R': R, 'gramian_eigvals': gramian_eigvals,
             'model': model, 'frame_stack': frame_stack, 'z_star': z_star,
+            'zs_near_eq': zs_near_eq,
         })
 
     env.close()
@@ -414,11 +440,12 @@ def main():
                               transform=axes[row, 1].transAxes)
             axes[row, 1].set_title(f'{label}\nControllability Gramian λ', fontsize=9)
 
-        # Col 2: Phase portrait (predictor drift f(z,0)-z in PC1-PC2 plane)
+        # Col 2: Phase portrait — PCA centred on z* via near-eq encodings
         print(f'  [{label}] computing phase portrait ...')
         plot_phase_portrait(axes[row, 2], d['model'], d['frame_stack'], device,
                             d['z_star'], d['zs'],
-                            title=f'{label}\nPhase portrait (u=0)')
+                            title=f'{label}\nPhase portrait (u=0)',
+                            zs_near_eq=d['zs_near_eq'])
 
     fig.suptitle('Latent Dynamics Structure Comparison', fontsize=13, y=1.01)
     fig.tight_layout()
