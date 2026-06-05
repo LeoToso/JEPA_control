@@ -111,7 +111,9 @@ class Trainer:
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
-        self.predictor_window = int(self.cfg.get('predictor_window', 1))
+        self.predictor_window = int(self.cfg.get(
+            'predictor_window',
+            getattr(getattr(model, 'config', None), 'predictor_window', 1)))
 
         lr           = float(self.cfg.get('lr', 1e-4))
         weight_decay = float(self.cfg.get('weight_decay', 1e-4))

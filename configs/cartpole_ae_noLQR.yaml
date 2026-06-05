@@ -29,6 +29,7 @@ training:
   batch_size: 256
   epochs: 200
   horizon: 10
+  predictor_window: 3       # must match model.predictor_window
   # ── Loss weights ──────────────────────────────────────────────────────────
   lambda_dmd_pixel: 5.0    # MAIN: pixel prediction via per-batch DMD (stable pixel targets)
   lambda_recon: 1.0        # reconstruction: decoder(encoder(obs)) ≈ obs (prevents collapse)
