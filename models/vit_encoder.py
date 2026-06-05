@@ -38,7 +38,7 @@ class TransformerBlock(nn.Module):
 
 
 class ViTEncoder(nn.Module):
-    """Small ViT: patch-embed -> transformer blocks -> CLS -> linear projection."""
+    """Small ViT: patch-embed -> transformer blocks -> mean pool -> linear projection."""
 
     def __init__(self, image_size=64, patch_size=8, in_chans=3,
                  embed_dim=128, depth=4, num_heads=4, mlp_ratio=2.0,
@@ -48,8 +48,6 @@ class ViTEncoder(nn.Module):
         num_patches = (image_size // patch_size) ** 2
 
         self.patch_embed = PatchEmbed(image_size, patch_size, in_chans, embed_dim)
-        self.cls_token   = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        # Sinusoidal positional encoding for patch tokens (not CLS)
         self.register_buffer('pos_embed', self._sinusoidal_pos(num_patches, embed_dim))
         self.blocks = nn.Sequential(*[
             TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout)
@@ -69,7 +67,6 @@ class ViTEncoder(nn.Module):
         return pe
 
     def _init_weights(self):
-        nn.init.trunc_normal_(self.cls_token, std=0.02)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -78,15 +75,12 @@ class ViTEncoder(nn.Module):
             elif isinstance(m, nn.LayerNorm):
                 nn.init.ones_(m.weight); nn.init.zeros_(m.bias)
 
-    def forward(self, x):                          # x: (B, 3, H, W)
-        B = x.shape[0]
+    def forward(self, x):                          # x: (B, C, H, W)
         p = self.patch_embed(x)                    # (B, N, embed_dim)
         p = p + self.pos_embed
-        cls = self.cls_token.expand(B, -1, -1)     # (B, 1, embed_dim)
-        tokens = torch.cat([cls, p], dim=1)        # (B, N+1, embed_dim)
-        tokens = self.blocks(tokens)
+        tokens = self.blocks(p)                    # (B, N, embed_dim)
         tokens = self.norm(tokens)
-        z = self.proj(tokens[:, 1:].mean(dim=1))   # mean of patch tokens -> (B, latent_dim)
+        z = self.proj(tokens.mean(dim=1))          # mean pool → (B, latent_dim)
         return z
 
     @torch.no_grad()

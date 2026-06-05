@@ -476,10 +476,12 @@ def main():
     from models.jepa import JEPAConfig
     from models.autoencoder import AEWorldModel
 
+    encoder_type = model_cfg.get('encoder_type', 'vit')
     jepa_cfg = JEPAConfig(
         latent_dim=int(model_cfg.get('latent_dim', 32)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 4)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
+        encoder_type=encoder_type,
         image_size=int(env_cfg.get('image_size', 64)),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=frame_stack,
@@ -493,7 +495,7 @@ def main():
     model = AEWorldModel(jepa_cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'[model] AEWorldModel  params: {n_params:,}  '
-          f'(encoder in_chans={jepa_cfg.in_chans})')
+          f'(encoder={encoder_type}, in_chans={jepa_cfg.in_chans})')
 
     if args.eval_only or (ckpt_final.exists() and not args.force):
         ckpt_path = args.checkpoint or str(ckpt_final)

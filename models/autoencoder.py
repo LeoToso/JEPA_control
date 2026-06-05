@@ -27,11 +27,18 @@ class AEWorldModel(JEPAModel):
         super().__init__(config)
         # Decoder always reconstructs a single frame (3 channels), regardless of frame_stack
         _out_chans = config.in_chans // max(config.frame_stack, 1)
-        self.decoder = PixelDecoder(
-            latent_dim=config.latent_dim,
-            image_size=config.image_size,
-            in_chans=_out_chans,
-        )
+        if config.encoder_type == 'cnn':
+            from models.cnn_decoder import CNNDecoder
+            self.decoder = CNNDecoder(
+                latent_dim=config.latent_dim,
+                out_chans=_out_chans,
+            )
+        else:
+            self.decoder = PixelDecoder(
+                latent_dim=config.latent_dim,
+                image_size=config.image_size,
+                in_chans=_out_chans,
+            )
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """z: (B, d) → obs_hat: (B, C, H, W) in [0, 1]"""

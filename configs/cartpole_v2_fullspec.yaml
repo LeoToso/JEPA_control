@@ -14,7 +14,7 @@ model:
   action_latent_dim: 1
   action_encoder: linear
   patch_size: 8
-  frame_stack: 1
+  frame_stack: 2            # 2 consecutive frames → encoder sees position + velocity
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
@@ -33,7 +33,7 @@ training:
   lambda_mirror: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  lambda_inv: 0.0
+  lambda_inv: 1.0
   inv_action_scale: 10.0
   lambda_fp: 30.0              # increased: force ||f(z*,0)-z*|| → 0 so A_jac is reliable at z*
   lambda_spec: 5.0
@@ -41,7 +41,7 @@ training:
   lambda_spec_eig: 0.0
   spec_eig_warmup_epochs: 80
   spec_eig_epsilon: 0.15
-  lambda_PBH: 1.0
+  lambda_PBH: 0.0
   lambda_local: 0.0
   lambda_unstable: 0.0
   unstable_eta: 0.05

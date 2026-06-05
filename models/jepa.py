@@ -17,6 +17,7 @@ class JEPAConfig:
     action_dim: int = 1
     action_latent_dim: int = 32
     action_encoder: str = 'none'   # 'none' | 'linear' | 'mlp'
+    encoder_type: str = 'vit'      # 'vit' | 'cnn'
     # ViT hyperparameters
     image_size: int = 64
     patch_size: int = 8
@@ -49,16 +50,23 @@ class JEPAModel(nn.Module):
         super().__init__()
         self.config = config
         config.in_chans = config.frame_stack * 3
-        self.encoder = ViTEncoder(
-            image_size=config.image_size,
-            patch_size=config.patch_size,
-            in_chans=config.in_chans,
-            embed_dim=config.vit_embed_dim,
-            depth=config.vit_depth,
-            num_heads=config.vit_num_heads,
-            mlp_ratio=config.vit_mlp_ratio,
-            latent_dim=config.latent_dim,
-        )
+        if config.encoder_type == 'cnn':
+            from models.cnn_encoder import CNNEncoder
+            self.encoder = CNNEncoder(
+                in_chans=config.in_chans,
+                latent_dim=config.latent_dim,
+            )
+        else:
+            self.encoder = ViTEncoder(
+                image_size=config.image_size,
+                patch_size=config.patch_size,
+                in_chans=config.in_chans,
+                embed_dim=config.vit_embed_dim,
+                depth=config.vit_depth,
+                num_heads=config.vit_num_heads,
+                mlp_ratio=config.vit_mlp_ratio,
+                latent_dim=config.latent_dim,
+            )
         self.action_encoder = make_action_encoder(
             variant=config.action_encoder_type,
             action_dim=config.action_dim,
@@ -144,7 +152,7 @@ class JEPAModel(nn.Module):
         return {
             'variant': c.variant, 'latent_dim': c.latent_dim,
             'action_dim': c.action_dim, 'action_latent_dim': c.action_latent_dim,
-            'action_encoder': c.action_encoder,
+            'action_encoder': c.action_encoder, 'encoder_type': c.encoder_type,
             'image_size': c.image_size, 'patch_size': c.patch_size,
             'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,

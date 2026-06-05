@@ -14,7 +14,7 @@ model:
   action_latent_dim: 1
   action_encoder: linear
   patch_size: 8
-  frame_stack: 1
+  frame_stack: 2            # 2 consecutive frames → encoder sees position + velocity
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
@@ -26,7 +26,7 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   batch_size: 256
-  epochs: 100
+  epochs: 200
   horizon: 10
   # ── Active losses ────────────────────────────────────────────────────────
   lambda_pred: 1.0          # JEPA prediction loss (main objective)
