@@ -61,6 +61,7 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
     from models.jepa import JEPAModel
     from models.autoencoder import AEWorldModel
 
+    ckpt = torch.load(ckpt_path, map_location=device)
     state = ckpt.get('model_state', ckpt) if isinstance(ckpt, dict) else ckpt
 
     # Auto-detect in_chans from checkpoint weights so old (fs=1) checkpoints
