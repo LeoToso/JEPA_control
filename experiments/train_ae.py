@@ -404,8 +404,9 @@ def main():
     vicreg_lambda   = float(train_cfg.get('vicreg_lambda', 25.0))
     vicreg_nu       = float(train_cfg.get('vicreg_nu', 1.0))
     ckpt_every      = int(train_cfg.get('checkpoint_every', 10))
+    _cfg_stem       = Path(args.config).stem
 
-    out_dir    = Path(args.results_dir) / f'ae_seed{args.seed}'
+    out_dir    = Path(args.results_dir) / f'{_cfg_stem}_seed{args.seed}'
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt_final = out_dir / 'model_final.pt'
 
@@ -432,7 +433,7 @@ def main():
     # ── dataset ───────────────────────────────────────────────────────────
     from data.dataset import load_dataset, make_dataloaders, generate_dataset
     data_cfg = cfg['data']
-    h5_path  = Path(args.data_dir) / f'cartpole_ae_ep_seed{args.seed}.h5'
+    h5_path  = Path(args.data_dir) / f'{_cfg_stem}_ep_seed{args.seed}.h5'
     if h5_path.exists():
         print(f'[data] Loading {h5_path}')
         data = load_dataset(str(h5_path))
