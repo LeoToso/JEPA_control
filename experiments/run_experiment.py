@@ -15,7 +15,7 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    data_dir='data', results_dir='results',
                    device=None, skip_if_exists=True, eval_only=False,
                    epochs_override=None, cem_only=False, resume_from=None,
-                   checkpoint_path=None):
+                   checkpoint_path=None, no_control=False):
 
     t_start = time.time()
 
@@ -395,66 +395,79 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             frame_stack=frame_stack, B_eff=B_eff,
         )
 
-    # MPC setup
-    action_lb = float(env_cfg.get('action_range', [-10, 10])[0])
-    action_ub = float(env_cfg.get('action_range', [-10, 10])[1])
-    mpc_horizon  = int(mpc_cfg.get('horizon', 20))
-    mpc_chunk    = int(mpc_cfg.get('chunk_size', 1))
-    mpc_Qf_mult  = float(mpc_cfg.get('Q_f_multiplier', 10.0))
-    n_trials     = int(probe_cfg.get('n_trials_control', 100))
-    T_rollout    = int(probe_cfg.get('T_rollout', 200))
-    init_scale   = float(ctrl_cfg.get('init_scale', 0.05))
-    R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(1)   # scalar action → (1,1)
-    d            = len(z_star)
-
-    # Pure JEPA: CEM cost is identity in latent space — ||z - z*||^2.
-    # State probe is diagnostic only; encoder was never trained with state gradients.
-    Q_lqr = np.eye(d)
-    Q_lqr_source = 'identity'
-    print('[control] Using Q_lqr: identity (pure latent cost)')
-    Q_f = mpc_Qf_mult * Q_lqr
-
-    from control.rollout import evaluate_stabilization_mpc
-    from control.visualize import save_rollout_frames, save_rollout_video
     ctrl_results = {}
 
-    # Compute GT-LQR gain once — reused for sanity check and encoder-observer LQR
-    from control.lqr import solve_discrete_lqr
-    K_gt = None
-    try:
-        K_gt, _, _ = solve_discrete_lqr(gt.A_star, gt.B_star,
-                                         np.diag([10., 0.1, 100., 0.1]), R_lqr)
-    except Exception as e:
-        print(f'[control] solve_discrete_lqr failed: {e}')
+    if no_control:
+        print('[control] --no-control: skipping all planning/control evaluation')
 
-    # ── GT-LQR sanity check ───────────────────────────────────────────────────
-    try:
-        if K_gt is None:
-            raise RuntimeError('K_gt not available')
-        rng_gt = np.random.RandomState(seed + 999)
-        gt_succs = []
-        for _ in range(20):
-            x0_gt = rng_gt.uniform(-init_scale, init_scale, 4).astype(np.float32)
-            _, s_gt, _ = env.reset_to_state(x0_gt)
-            done_gt = False
-            for _ in range(T_rollout):
-                u_gt = float(np.clip((-K_gt @ s_gt)[0], action_lb, action_ub))
-                _, s_gt, _, done_gt, _ = env.step(u_gt)
-                if done_gt: break
-            gt_succs.append(int(not done_gt))
-        print(f'[control] GT-LQR sanity: {np.mean(gt_succs):.2f}  ({sum(gt_succs)}/20)')
-    except Exception as e:
-        print(f'[control] GT-LQR failed: {e}')
+    # Sentinel defaults so later code can safely reference these even when no_control=True
+    # (the guards below prevent actual execution in that case)
+    K_gt = None; n_trials = 0; T_rollout = 200; init_scale = 0.05
+    action_lb = -10.0; action_ub = 10.0; R_lqr = 0.01 * np.eye(1)
+    d = len(z_star); Q_lqr = np.eye(d); Q_lqr_source = 'identity'
+    Q_f = Q_lqr; mpc_horizon = 20; mpc_chunk = 1; u_ff_lin = 0.0; c_drift = 0.0
+    A_stab = A_jac; _n_def = 0
 
-    if cem_only:
-        print('[control] --cem-only: skipping LQR and Linear MPC controllers')
+    if not no_control:
+        # MPC setup
+        action_lb = float(env_cfg.get('action_range', [-10, 10])[0])
+        action_ub = float(env_cfg.get('action_range', [-10, 10])[1])
+        mpc_horizon  = int(mpc_cfg.get('horizon', 20))
+        mpc_chunk    = int(mpc_cfg.get('chunk_size', 1))
+        mpc_Qf_mult  = float(mpc_cfg.get('Q_f_multiplier', 10.0))
+        n_trials     = int(probe_cfg.get('n_trials_control', 100))
+        T_rollout    = int(probe_cfg.get('T_rollout', 200))
+        init_scale   = float(ctrl_cfg.get('init_scale', 0.05))
+        R_lqr        = float(ctrl_cfg.get('R_lqr', 0.01)) * np.eye(1)   # scalar action → (1,1)
+        d            = len(z_star)
+
+        # Pure JEPA: CEM cost is identity in latent space — ||z - z*||^2.
+        # State probe is diagnostic only; encoder was never trained with state gradients.
+        Q_lqr = np.eye(d)
+        Q_lqr_source = 'identity'
+        print('[control] Using Q_lqr: identity (pure latent cost)')
+        Q_f = mpc_Qf_mult * Q_lqr
+
+        from control.rollout import evaluate_stabilization_mpc
+        from control.visualize import save_rollout_frames, save_rollout_video
+
+        # Compute GT-LQR gain once — reused for sanity check and encoder-observer LQR
+        from control.lqr import solve_discrete_lqr
+        K_gt = None
+        try:
+            K_gt, _, _ = solve_discrete_lqr(gt.A_star, gt.B_star,
+                                             np.diag([10., 0.1, 100., 0.1]), R_lqr)
+        except Exception as e:
+            print(f'[control] solve_discrete_lqr failed: {e}')
+
+        # ── GT-LQR sanity check ───────────────────────────────────────────────────
+        try:
+            if K_gt is None:
+                raise RuntimeError('K_gt not available')
+            rng_gt = np.random.RandomState(seed + 999)
+            gt_succs = []
+            for _ in range(20):
+                x0_gt = rng_gt.uniform(-init_scale, init_scale, 4).astype(np.float32)
+                _, s_gt, _ = env.reset_to_state(x0_gt)
+                done_gt = False
+                for _ in range(T_rollout):
+                    u_gt = float(np.clip((-K_gt @ s_gt)[0], action_lb, action_ub))
+                    _, s_gt, _, done_gt, _ = env.step(u_gt)
+                    if done_gt: break
+                gt_succs.append(int(not done_gt))
+            print(f'[control] GT-LQR sanity: {np.mean(gt_succs):.2f}  ({sum(gt_succs)}/20)')
+        except Exception as e:
+            print(f'[control] GT-LQR failed: {e}')
+
+        if cem_only:
+            print('[control] --cem-only: skipping LQR and Linear MPC controllers')
 
     # ── Encoder-observer LQR ─────────────────────────────────────────────────
     # Use encoder+state_head as a visual state observer, apply GT-LQR gain.
     # No predictor needed — tests whether the encoder alone suffices for control.
-    if not cem_only:
+    if not cem_only and not no_control:
         print('\n[control] --- Encoder-Observer LQR ---')
-    if not cem_only:
+    if not cem_only and not no_control:
         try:
             if K_gt is None:
                 raise RuntimeError('K_gt not available')
@@ -517,8 +530,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # ── Encoder-observer LQR (theta-only) ────────────────────────────────────
     # Zero out x and ẋ estimates — only trust visual theta/θ̇ from state_head.
     # Diagnoses whether inaccurate cart-position estimation causes the failure.
-    if not cem_only: print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
-    if not cem_only:
+    if not cem_only and not no_control: print('\n[control] --- Encoder-Observer LQR (theta-only) ---')
+    if not cem_only and not no_control:
         try:
             if K_gt is None:
                 raise RuntimeError('K_gt not available')
@@ -584,8 +597,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # When state_head hasn't converged, Q_lqr=W^T@Q_phys@W is degenerate.
     # This controller drives z → z* directly with Q=I in latent space,
     # using only the Jacobian linearization — no state estimation needed.
-    if not cem_only: print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
-    if not cem_only:
+    if not cem_only and not no_control: print('\n[control] --- Pure-Latent LQR (Q=I, no state_head) ---')
+    if not cem_only and not no_control:
         try:
             from control.lqr import solve_discrete_lqr
             Q_lat_I = np.eye(d)
@@ -651,12 +664,13 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             ctrl_results['pure_latent_lqr'] = {'error': str(exc)}
 
     # Pre-stabilise A_jac — used by both Linear MPC and CEM-linear
-    from control.lqr import pre_stabilize_A
-    A_stab, _n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
+    if not no_control:
+        from control.lqr import pre_stabilize_A
+        A_stab, _n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
 
     # ── Linear MPC (from Jacobian) ────────────────────────────────────────────
-    if not cem_only: print('\n[control] --- Linear MPC (Jacobian) ---')
-    if not cem_only:
+    if not cem_only and not no_control: print('\n[control] --- Linear MPC (Jacobian) ---')
+    if not cem_only and not no_control:
         try:
             from control.mpc import LatentMPC
             print(f'[control] A_jac pre-stab: deflated={_n_def}  rho={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
@@ -721,35 +735,38 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                   f'||V_u^T(z-z*)||={_Vu_proj:.4f}  cos={_cos_s:.3f}')
 
     # ── CEM setup ─────────────────────────────────────────────────────────────
-    cem_cfg      = cfg.get('cem', {})
-    cem_horizon  = int(cem_cfg.get('horizon',   mpc_horizon))
-    cem_chunk    = int(cem_cfg.get('chunk_size', mpc_chunk))
-    cem_n_samp   = int(cem_cfg.get('n_samples',  500))
-    cem_n_elite  = int(cem_cfg.get('n_elites',    50))
-    cem_n_iter   = int(cem_cfg.get('n_iter',       5))
-    cem_std      = float(cem_cfg.get('init_std',  3.0))
-    n_trials_cem = int(cem_cfg.get('n_trials',    50))
+    if not no_control:
+        cem_cfg      = cfg.get('cem', {})
+        cem_horizon  = int(cem_cfg.get('horizon',   mpc_horizon))
+        cem_chunk    = int(cem_cfg.get('chunk_size', mpc_chunk))
+        cem_n_samp   = int(cem_cfg.get('n_samples',  500))
+        cem_n_elite  = int(cem_cfg.get('n_elites',    50))
+        cem_n_iter   = int(cem_cfg.get('n_iter',       5))
+        cem_std      = float(cem_cfg.get('init_std',  3.0))
+        n_trials_cem = int(cem_cfg.get('n_trials',    50))
 
-    # ── CEM sweep: nonlinear predictor dynamics, Q=V_u@V_u^T, R=0.1·I ──────────
-    # Q_unstable focuses cost only on the unstable subspace of A_jac, so CEM
-    # minimises deviation along the direction that actually matters (|λ|≥0.95)
-    # rather than spreading equally across all 32 latent dims.
-    # When there are no unstable eigenvectors, fall back to Q=I.
-    # Warm-starting (σ_warm=0.5) prevents cold-start bang-bang bias.
-    _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
-    _Q_qu     = Q_unstable if _n_unstable > 0 else np.eye(d)
-    _Q_qu_tag = 'Vu' if _n_unstable > 0 else 'I(fallback)'
-    _cem_sweep = [
-        dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
-             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc='H=10 Q=I  nonlinear'),
-        dict(tag='H10_Qu_nl', horizon=10, Q=_Q_qu, Qf=_Q_qu,
-             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc=f'H=10 Q={_Q_qu_tag} nonlinear'),
-        dict(tag='H25_Qu_nl', horizon=25, Q=_Q_qu, Qf=_Q_qu,
-             zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
-             desc=f'H=25 Q={_Q_qu_tag} nonlinear'),
-    ]
+    _cem_sweep = []
+    if not no_control:
+        # ── CEM sweep: nonlinear predictor dynamics, Q=V_u@V_u^T, R=0.1·I ──────────
+        # Q_unstable focuses cost only on the unstable subspace of A_jac, so CEM
+        # minimises deviation along the direction that actually matters (|λ|≥0.95)
+        # rather than spreading equally across all 32 latent dims.
+        # When there are no unstable eigenvectors, fall back to Q=I.
+        # Warm-starting (σ_warm=0.5) prevents cold-start bang-bang bias.
+        _R_cem    = 0.1 * np.eye(1)   # scalar action; R=0.1·I matches user choice
+        _Q_qu     = Q_unstable if _n_unstable > 0 else np.eye(d)
+        _Q_qu_tag = 'Vu' if _n_unstable > 0 else 'I(fallback)'
+        _cem_sweep = [
+            dict(tag='H10_QI_nl', horizon=10, Q=np.eye(d), Qf=np.eye(d),
+                 zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+                 desc='H=10 Q=I  nonlinear'),
+            dict(tag='H10_Qu_nl', horizon=10, Q=_Q_qu, Qf=_Q_qu,
+                 zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+                 desc=f'H=10 Q={_Q_qu_tag} nonlinear'),
+            dict(tag='H25_Qu_nl', horizon=25, Q=_Q_qu, Qf=_Q_qu,
+                 zs=z_star, std=3.0, ws=0.5, R=_R_cem, ni=20,
+                 desc=f'H=25 Q={_Q_qu_tag} nonlinear'),
+        ]
 
     from control.cem import CEMLatentPlanner
     for _sc in _cem_sweep:
@@ -798,25 +815,26 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             ctrl_results[f'cem_nonlinear_{_tag}'] = {'error': str(exc)}
 
     # ── CEM sweep summary table ───────────────────────────────────────────────
-    print('\n' + '═' * 55)
-    print('CEM SWEEP SUMMARY  (nonlinear predictor, Q=V_u@V_u^T)')
-    print('═' * 55)
-    print(f'  {"Config":<28} {"succ":>7} {"frac_stb":>9} {"ep_len":>8}')
-    print('  ' + '-' * 51)
-    for _sc in _cem_sweep:
-        _t  = _sc['tag']
-        _cn = ctrl_results.get(f'cem_nonlinear_{_t}', {})
-        _f  = lambda d, k: f'{d[k]:.3f}' if k in d else '  err'
-        _fl = lambda d, k: f'{d[k]:.1f}' if k in d else '   err'
-        print(f'  {_sc["desc"]:<28} '
-              f'{_f(_cn, "success_rate"):>7} '
-              f'{_f(_cn, "mean_fraction_stable"):>9} '
-              f'{_fl(_cn, "mean_episode_length"):>8}')
-    print('═' * 55 + '\n')
+    if not no_control and _cem_sweep:
+        print('\n' + '═' * 55)
+        print('CEM SWEEP SUMMARY  (nonlinear predictor, Q=V_u@V_u^T)')
+        print('═' * 55)
+        print(f'  {"Config":<28} {"succ":>7} {"frac_stb":>9} {"ep_len":>8}')
+        print('  ' + '-' * 51)
+        for _sc in _cem_sweep:
+            _t  = _sc['tag']
+            _cn = ctrl_results.get(f'cem_nonlinear_{_t}', {})
+            _f  = lambda d, k: f'{d[k]:.3f}' if k in d else '  err'
+            _fl = lambda d, k: f'{d[k]:.1f}' if k in d else '   err'
+            print(f'  {_sc["desc"]:<28} '
+                  f'{_f(_cn, "success_rate"):>7} '
+                  f'{_f(_cn, "mean_fraction_stable"):>9} '
+                  f'{_fl(_cn, "mean_episode_length"):>8}')
+        print('═' * 55 + '\n')
 
     # ── Nonlinear gradient MPC ────────────────────────────────────────────────
-    if not cem_only: print('\n[control] --- Nonlinear Gradient MPC ---')
-    if not cem_only:
+    if not cem_only and not no_control: print('\n[control] --- Nonlinear Gradient MPC ---')
+    if not cem_only and not no_control:
         try:
             from control.grad_mpc import GradientLatentMPC
             grad_mpc = GradientLatentMPC(
@@ -858,8 +876,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # ── Gradient MPC with state_head physical-state cost ─────────────────────
     # Cost = Q_phys * ||state_head(z_t)||^2 instead of Q * ||z_t - z*||^2.
     # Optimizes physical state error directly; bypasses latent-space cost mis-alignment.
-    if not cem_only: print('\n[control] --- Gradient MPC (state_head cost) ---')
-    if not cem_only:
+    if not cem_only and not no_control: print('\n[control] --- Gradient MPC (state_head cost) ---')
+    if not cem_only and not no_control:
         try:
             from control.grad_mpc import GradientLatentMPC
             if not (state_head is not None):
@@ -959,6 +977,8 @@ if __name__ == '__main__':
     p.add_argument('--force',     action='store_true')
     p.add_argument('--cem-only',  action='store_true',
                    help='Skip all non-CEM controllers during evaluation')
+    p.add_argument('--no-control', action='store_true',
+                   help='Skip all control/planning evaluation; only run probes and save model')
     p.add_argument('--epochs',    type=int, default=None,
                    help='Override training epochs from config')
     p.add_argument('--resume',      default=None,
@@ -976,6 +996,7 @@ if __name__ == '__main__':
         eval_only=args.eval_only,
         epochs_override=args.epochs,
         cem_only=args.cem_only,
+        no_control=args.no_control,
         resume_from=args.resume,
         checkpoint_path=args.checkpoint,
     )
