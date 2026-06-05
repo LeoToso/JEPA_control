@@ -61,7 +61,16 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
     from models.jepa import JEPAModel
     from models.autoencoder import AEWorldModel
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    state = ckpt.get('model_state', ckpt) if isinstance(ckpt, dict) else ckpt
+
+    # Auto-detect in_chans from checkpoint weights so old (fs=1) checkpoints
+    # load correctly even after the yaml was updated to frame_stack=2.
+    if 'encoder.patch_embed.proj.weight' in state:
+        in_chans_ckpt = state['encoder.patch_embed.proj.weight'].shape[1]
+    elif 'encoder.net.0.weight' in state:
+        in_chans_ckpt = state['encoder.net.0.weight'].shape[1]
+    else:
+        in_chans_ckpt = None
 
     # ── Determine model architecture ──────────────────────────────────────
     full_yaml_cfg = {}
@@ -76,13 +85,24 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
     if isinstance(ckpt, dict) and 'config' in ckpt:
         arch = ckpt['config']
     else:
+        yaml_fs = int(model_cfg_yaml.get('frame_stack', 1))
+        # Override frame_stack with the value inferred from checkpoint weights
+        # so visualisation works on old checkpoints after the yaml was updated.
+        if in_chans_ckpt is not None:
+            actual_fs = in_chans_ckpt // 3
+            if actual_fs != yaml_fs:
+                print(f'[load] frame_stack mismatch: yaml={yaml_fs}, '
+                      f'checkpoint in_chans={in_chans_ckpt} → using fs={actual_fs}')
+        else:
+            actual_fs = yaml_fs
         arch = {
             'latent_dim':           int(model_cfg_yaml.get('latent_dim', 32)),
             'action_latent_dim':    int(model_cfg_yaml.get('action_latent_dim', 4)),
             'action_encoder':       model_cfg_yaml.get('action_encoder', 'linear'),
+            'encoder_type':         model_cfg_yaml.get('encoder_type', 'vit'),
             'image_size':           int(full_yaml_cfg.get('environment', {}).get('image_size', 64)),
             'patch_size':           int(model_cfg_yaml.get('patch_size', 8)),
-            'frame_stack':          int(model_cfg_yaml.get('frame_stack', 1)),
+            'frame_stack':          actual_fs,
             'vit_embed_dim':        int(model_cfg_yaml.get('vit_embed_dim', 128)),
             'vit_depth':            int(model_cfg_yaml.get('vit_depth', 4)),
             'vit_num_heads':        int(model_cfg_yaml.get('vit_num_heads', 4)),
@@ -98,7 +118,6 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
              or float(train_cfg_yaml.get('lambda_recon', 0.0)) > 0)
     model = AEWorldModel(jcfg) if is_ae else JEPAModel(jcfg)
 
-    state = ckpt.get('model_state', ckpt) if isinstance(ckpt, dict) else ckpt
     model.load_state_dict(state, strict=False)
     model.to(device).eval()
     return model, frame_stack
