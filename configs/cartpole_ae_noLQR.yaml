@@ -1,0 +1,99 @@
+environment:
+  name: cartpole
+  frame_skip: 1
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 8             # n_z=8 as in Bounou et al. 2021
+  action_latent_dim: 1      # scalar action, no lifting at d=8
+  action_encoder: linear
+  encoder_type: cnn         # Bounou et al. exact CNN (6 conv-blocks, symmetric decoder)
+  patch_size: 8
+  frame_stack: 2            # 2 consecutive frames → encoder sees position + velocity
+  predictor_window: 3
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_hidden_dim: 64  # smaller predictor proportional to latent dim
+  predictor_n_layers: 2
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 200
+  horizon: 10
+  # ── Loss weights ──────────────────────────────────────────────────────────
+  lambda_dmd_pixel: 5.0    # MAIN: pixel prediction via per-batch DMD (stable pixel targets)
+  lambda_recon: 1.0        # reconstruction: decoder(encoder(obs)) ≈ obs (prevents collapse)
+  lambda_pred: 0.5         # CEM predictor (secondary — predictor network for nonlinear planning)
+  lambda_fp: 0.0
+  # ── DMD parameters ────────────────────────────────────────────────────────
+  dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
+  dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
+  # ── Collapse prevention ───────────────────────────────────────────────────
+  use_vicreg: false
+  vicreg_lambda: 25.0
+  vicreg_nu: 1.0
+  # ── No EMA target encoder: pixel targets are stable, no moving-target issue ─
+  target_encoder_momentum: 0.9995   # kept for backwards-compat but not used
+  aug_noise_std: 0.0
+  checkpoint_every: 10
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+cem:
+  horizon: 25
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 3.0
+  n_trials: 30
+
+data:
+  train_frac: 0.8
+  val_frac: 0.1
+  # Random: 50 ep × 200 steps = 10,000 transitions (wide exploration, ±57°)
+  n_random_episodes: 50
+  random_ep_len: 200
+  random_init_range: 1.0
+  # LQR: disabled — LQR data masks instability (z*→z* transitions teach the
+  # MLP predictor that the system is stable near z*, killing CEM control).
+  n_lqr_episodes: 0
+  lqr_ep_len: 100
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.0
+  # Equilibrium: disabled — same reason (stable self-loops reinforce wrong dynamics)
+  n_equilibrium: 0
+  eq_ep_len: 50
+  n_eq_selfloop: 0
+  eq_init_range: 0.002
+  eq_noise_std: 0.001
+  # PRBS: 50 ep × 40 steps = 2,000 transitions (persistent excitation)
+  n_pe_episodes: 50
+  pe_ep_len: 40
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  # Passive: 200 ep × 50 steps = 10,000 transitions (u=0 divergence; near-parity with LQR)
+  n_passive_episodes: 200
+  passive_ep_len: 50
+  passive_init_range: 0.05
