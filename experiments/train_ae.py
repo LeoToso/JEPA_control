@@ -176,18 +176,22 @@ def train_one_epoch(model, loader, optimizer, device,
             z_all    = z_all_fl.reshape(B, H+1, d)
         z_targets = z_all[:, 1:].detach()
 
+        # Teacher forcing: predict z_{k+1} from TRUE window z_{k-W+1..k}, u_{k-W+1..k}.
+        # Open-loop rollout compounds errors across H steps and causes pred divergence.
         W = predictor_window
-        z_win_buf = [z_ctx[:, 0]] * W
-        u_win_buf = [torch.zeros(B, 1, device=device)] * (W - 1)
         pred_loss = torch.zeros(1, device=device)
         for k in range(H):
-            u_k = actions[:, k]
-            u_win_buf.append(u_k)
-            z_hat = model.predict(
-                torch.stack(z_win_buf[-W:], dim=1),
-                torch.stack(u_win_buf[-W:], dim=1))
+            s = max(0, k + 1 - W)
+            z_win = z_all[:, s:k+1].detach()             # (B, ≤W, d)
+            if z_win.shape[1] < W:
+                pad = z_all[:, :1].expand(B, W - z_win.shape[1], d).detach()
+                z_win = torch.cat([pad, z_win], dim=1)   # (B, W, d)
+            u_win = actions[:, s:k+1]                    # (B, ≤W, 1)
+            if u_win.shape[1] < W:
+                pad_u = torch.zeros(B, W - u_win.shape[1], 1, device=device)
+                u_win = torch.cat([pad_u, u_win], dim=1) # (B, W, 1)
+            z_hat = model.predict(z_win, u_win)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
-            z_win_buf.append(z_hat.detach())
         pred_loss = pred_loss / H
 
         # ── Fixed-point loss ─────────────────────────────────────────────
@@ -278,17 +282,19 @@ def val_one_epoch(model, loader, device,
         z_all    = model.encoder(all_flat).reshape(B, H+1, d)
         z_targets = z_all[:, 1:].detach()
         W = predictor_window
-        z_win_buf = [z_ctx[:, 0]] * W
-        u_win_buf = [torch.zeros(B, 1, device=device)] * (W - 1)
         pred_loss = torch.zeros(1, device=device)
         for k in range(H):
-            u_k = actions[:, k]
-            u_win_buf.append(u_k)
-            z_hat = model.predict(
-                torch.stack(z_win_buf[-W:], dim=1),
-                torch.stack(u_win_buf[-W:], dim=1))
+            s = max(0, k + 1 - W)
+            z_win = z_all[:, s:k+1]
+            if z_win.shape[1] < W:
+                pad = z_all[:, :1].expand(B, W - z_win.shape[1], d)
+                z_win = torch.cat([pad, z_win], dim=1)
+            u_win = actions[:, s:k+1]
+            if u_win.shape[1] < W:
+                pad_u = torch.zeros(B, W - u_win.shape[1], 1, device=device)
+                u_win = torch.cat([pad_u, u_win], dim=1)
+            z_hat = model.predict(z_win, u_win)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
-            z_win_buf.append(z_hat)
         pred_loss = pred_loss / H
 
         fp_loss = torch.zeros(1, device=device)
