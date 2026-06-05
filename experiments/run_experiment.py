@@ -77,9 +77,10 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     if n_eq_selfloop > 0:
         print(f'[data] Self-loop injection: n_eq_selfloop={n_eq_selfloop}')
 
-    # Dataset
+    # Dataset — include config stem so different data configs get separate cache files
     from data.dataset import load_dataset, make_dataloaders, generate_dataset
-    h5_path = Path(data_dir) / f'cartpole_v2_ep_fs{frame_skip}_seed{seed}.h5'
+    _cfg_stem = Path(config_path).stem
+    h5_path = Path(data_dir) / f'{_cfg_stem}_ep_fs{frame_skip}_seed{seed}.h5'
     horizon = int(train_cfg.get('horizon', 20))
     if h5_path.exists():
         print(f'[data] Loading {h5_path}')

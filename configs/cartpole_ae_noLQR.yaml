@@ -35,6 +35,24 @@ training:
   lambda_recon: 1.0        # reconstruction: decoder(encoder(obs)) ≈ obs (prevents collapse)
   lambda_pred: 0.5         # CEM predictor (secondary — predictor network for nonlinear planning)
   lambda_fp: 0.0
+  # ── All JEPA-specific regularization disabled (pure AE/DMD baseline) ──────
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_spec_eig: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_sigreg: 0.0
+  lambda_varfloor: 0.0
+  lambda_temp: 0.0
+  lambda_state: 0.0
+  lambda_mirror: 0.0
+  lambda_anchor: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0
+  use_target_encoder: false
+  jacobian_every: 9999     # effectively never (no spectral/PBH/dynSIG to update)
   # ── DMD parameters ────────────────────────────────────────────────────────
   dmd_context_len: 5       # first 5 steps used to estimate (A, B) per batch via lstsq
   dmd_ridge: 1.0e-4        # ridge regularization for normal equations stability
