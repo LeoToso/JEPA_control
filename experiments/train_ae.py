@@ -120,6 +120,108 @@ def _dmd_rollout(z_init: torch.Tensor, A: torch.Tensor, B: torch.Tensor,
     return torch.stack(preds, dim=1)
 
 
+# ── global DMD fit + DMD-LQR eval (Bounou et al. planning) ───────────────────
+
+def fit_global_dmd(model, loader, device, ridge: float = 1e-4):
+    """Encode the full training set and fit a single global (A, B) via ridge LS.
+
+    Bounou et al.'s planning model: z_{t+1} = A z_t + B u_t identified from
+    all training transitions (as opposed to per-batch DMD used as a loss).
+
+    Returns A (d×d) and B (d×1) as numpy arrays.
+    """
+    model.eval()
+    Z1_list, Z2_list, U_list = [], [], []
+
+    with torch.no_grad():
+        for batch in loader:
+            obs_seq = batch['obs_seq'].to(device)   # (B, H+1, C_fs, h, w)
+            actions = batch['actions'].to(device)   # (B, H, 1)
+            Bb, H1, C_fs, h, w = obs_seq.shape
+
+            all_flat = obs_seq.reshape(-1, C_fs, h, w)
+            z_all    = model.encoder(all_flat).reshape(Bb, H1, -1)   # (B, H+1, d)
+
+            Z1_list.append(z_all[:, :-1].reshape(-1, z_all.shape[-1]).cpu())
+            Z2_list.append(z_all[:, 1: ].reshape(-1, z_all.shape[-1]).cpu())
+            U_list.append(actions.reshape(-1, 1).cpu())
+
+    Z1 = torch.cat(Z1_list).numpy()   # (N, d)
+    Z2 = torch.cat(Z2_list).numpy()   # (N, d)
+    U  = torch.cat(U_list ).numpy()   # (N, 1)
+
+    X    = np.concatenate([Z1, U], axis=1)         # (N, d+1)
+    N, d1 = X.shape
+    gram = X.T @ X + ridge * N * np.eye(d1)
+    K    = np.linalg.solve(gram, X.T @ Z2)        # (d+1, d)
+    return K[:-1].T, K[-1:].T                      # A (d,d), B (d,1)
+
+
+def run_dmd_lqr_eval(model, loaders, cfg, env_cfg, ctrl_cfg, device,
+                     z_star_np, frame_stack):
+    """Bounou planning: fit global DMD then evaluate LQR-MPC on the real env."""
+    from control.lqr import solve_discrete_lqr
+    from control.mpc import LatentMPC
+    from control.rollout import evaluate_stabilization_mpc
+    from envs.cartpole_visual import ContinuousCartpoleVisual
+
+    dmd_ridge = float(cfg.get('training', {}).get('dmd_ridge', 1e-4))
+    A, B = fit_global_dmd(model, loaders['train'], device, ridge=dmd_ridge)
+
+    rho_open = float(np.max(np.abs(np.linalg.eigvals(A))))
+    print(f'  Global DMD: rho(A)={rho_open:.4f}  '
+          f'({"unstable" if rho_open > 1 else "stable"})')
+
+    d = len(z_star_np)
+    Q = np.eye(d)
+    R = np.array([[float(ctrl_cfg.get('R_lqr', 0.01))]])
+
+    try:
+        _, _, cl_eigs = solve_discrete_lqr(A, B, Q, R)
+        rho_cl = float(np.max(np.abs(cl_eigs)))
+        print(f'  LQR: rho(A-BK)={rho_cl:.4f}')
+    except Exception as exc:
+        print(f'  LQR solve failed: {exc}')
+        return None
+
+    cem_cfg     = cfg.get('cem', {})
+    probes      = cfg.get('probes', {})
+    action_range = tuple(env_cfg.get('action_range', (-10, 10)))
+
+    mpc = LatentMPC(
+        A=A, B=B, Q=Q, R=R,
+        horizon=int(cem_cfg.get('horizon', 25)),
+        action_lb=float(action_range[0]),
+        action_ub=float(action_range[1]),
+        chunk_size=1,
+    )
+
+    env = ContinuousCartpoleVisual(
+        frame_skip=env_cfg.get('frame_skip', 1),
+        image_size=env_cfg.get('image_size', 64),
+        mass_cart=env_cfg.get('mass_cart', 1.0),
+        mass_pole=env_cfg.get('mass_pole', 0.1),
+        pole_length=env_cfg.get('pole_length', 0.5),
+        gravity=env_cfg.get('gravity', 9.8),
+        action_range=action_range,
+    )
+    results = evaluate_stabilization_mpc(
+        encoder=model.encoder, mpc=mpc, env=env,
+        n_trials=int(probes.get('n_trials_control', 30)),
+        T=int(probes.get('T_rollout', 200)),
+        init_scale=float(ctrl_cfg.get('init_scale', 0.05)),
+        stabilization_threshold=float(ctrl_cfg.get('stabilization_threshold', 0.1)),
+        settling_threshold=float(ctrl_cfg.get('settling_threshold', 0.05)),
+        device=device, z_star=z_star_np, frame_stack=frame_stack,
+    )
+    env.close()
+    results['rho_open']   = rho_open
+    results['rho_closed'] = rho_cl
+    results['A'] = A.tolist()
+    results['B'] = B.tolist()
+    return results
+
+
 # ── training loop ─────────────────────────────────────────────────────────────
 
 def train_one_epoch(model, loader, optimizer, device,
@@ -582,6 +684,20 @@ def main():
     _diag_env.close()
 
     print('\n[eval] Running CEM nonlinear (H=25, Q=I)...')
+    # ── DMD-LQR eval (Bounou et al. planning) ────────────────────────────────
+    print('\n[eval] Running DMD-LQR (Bounou: global (A,B) fit from training data)...')
+    dmd_lqr_results = run_dmd_lqr_eval(
+        model, loaders, cfg, env_cfg, ctrl_cfg, device, z_star_np, frame_stack)
+    if dmd_lqr_results is not None:
+        print(f'  success_rate:        {dmd_lqr_results["success_rate"]:.3f}')
+        print(f'  mean_episode_length: {dmd_lqr_results["mean_episode_length"]:.1f}')
+        print(f'  mean_fraction_stable:{dmd_lqr_results["mean_fraction_stable"]:.3f}')
+        print(f'  mean_cost:           {dmd_lqr_results["mean_cost"]:.1f}')
+        print(f'  rho(A)={dmd_lqr_results["rho_open"]:.4f}  '
+              f'rho(A-BK)={dmd_lqr_results["rho_closed"]:.4f}')
+
+    # ── CEM eval (MLP predictor rollouts) ────────────────────────────────────
+    print('\n[eval] Running CEM nonlinear (H=25, Q=I)...')
     cem_results = run_cem_eval(model, cfg, env_cfg, ctrl_cfg, device,
                                args.seed, z_star_np, frame_stack)
     print(f'  success_rate:        {cem_results["success_rate"]:.3f}')
@@ -589,8 +705,18 @@ def main():
     print(f'  mean_fraction_stable:{cem_results["mean_fraction_stable"]:.3f}')
     print(f'  mean_cost:           {cem_results["mean_cost"]:.1f}')
 
-    cem_scalars = {k: v for k, v in cem_results.items() if k != 'vis_result'}
-    results_out = {'cem_eval': cem_scalars, 'z_star': z_star_np.tolist()}
+    cem_scalars     = {k: v for k, v in cem_results.items() if k != 'vis_result'}
+    dmd_lqr_scalars = ({k: v for k, v in dmd_lqr_results.items()
+                        if k not in ('vis_result', 'A', 'B')}
+                       if dmd_lqr_results else {})
+    results_out = {
+        'cem_eval':     cem_scalars,
+        'dmd_lqr_eval': dmd_lqr_scalars,
+        'z_star':       z_star_np.tolist(),
+    }
+    if dmd_lqr_results:
+        results_out['dmd_A'] = dmd_lqr_results['A']
+        results_out['dmd_B'] = dmd_lqr_results['B']
     with open(out_dir / 'results.json', 'w') as f:
         json.dump(results_out, f, indent=2)
     print(f'[done] Results saved to {out_dir}/results.json')
