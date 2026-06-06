@@ -73,14 +73,16 @@ class ContinuousCartpoleVisual:
     def _render_obs(self):
         frame=self._env.render()
         if frame is None: return np.zeros((self.image_size,self.image_size,3),dtype=np.uint8)
+        size=(self.image_size,self.image_size)
         try:
             import cv2
-            return cv2.resize(frame,(self.image_size,self.image_size),interpolation=cv2.INTER_AREA).astype(np.uint8)
+            return cv2.resize(frame,size,interpolation=cv2.INTER_AREA).astype(np.uint8)
         except ImportError:
-            h,w=frame.shape[:2]
-            row_idx=(np.arange(self.image_size)*h//self.image_size).astype(int)
-            col_idx=(np.arange(self.image_size)*w//self.image_size).astype(int)
-            return frame[np.ix_(row_idx,col_idx)].astype(np.uint8)
+            pass
+        # Area-average downsample (preserves sub-pixel detail — e.g. small pole
+        # angles near equilibrium that nearest-neighbour subsampling aliases away).
+        from PIL import Image
+        return np.asarray(Image.fromarray(frame).resize(size, Image.BOX), dtype=np.uint8)
 
     def get_state(self): return self._env.unwrapped.state.astype(np.float32)
     def close(self): self._env.close()
