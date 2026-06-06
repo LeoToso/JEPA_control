@@ -281,7 +281,13 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     # Jacobian A_jac, B_jac
     print('[control] Computing Jacobian at z* ...')
     from control.jacobian import compute_jacobian_np
-    A_jac, B_jac = compute_jacobian_np(model, z_star, device)
+    _A_aug, _B_aug = compute_jacobian_np(model, z_star, device)
+    # compute_jacobian_np returns augmented (Wd×Wd)/(Wd×m) for W>1.
+    # Slice to the current-state (d×d)/(d×m) block for all diagnostics and control.
+    _d_lat = len(z_star)
+    _W_win = getattr(model.config, 'predictor_window', 1)
+    A_jac = _A_aug[(_W_win-1)*_d_lat:, (_W_win-1)*_d_lat:]   # (d, d)
+    B_jac = _B_aug[(_W_win-1)*_d_lat:, :]                      # (d, m)
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] rho(A_jac)={rho_jac:.4f}')
 

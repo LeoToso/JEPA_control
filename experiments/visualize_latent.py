@@ -159,7 +159,14 @@ def make_figure(model, cfg, device, label: str = '',
     z_star_np = z_star.cpu().numpy()
 
     # ── Jacobian + Gramian ────────────────────────────────────────────────
-    A_jac, B_jac = compute_jacobian_torch(model, z_star, device)
+    # compute_jacobian_torch returns augmented (Wd×Wd)/(Wd×m) matrices for W>1.
+    # For visualization we need the (d×d) current-state block (last d rows/cols).
+    A_aug, B_aug = compute_jacobian_torch(model, z_star, device)
+    d_lat = z_star.shape[0]
+    W_win = getattr(model.config, 'predictor_window', 1)
+    A_jac = A_aug[(W_win-1)*d_lat:, (W_win-1)*d_lat:]   # (d, d) current-state block
+    B_jac = B_aug[(W_win-1)*d_lat:, :]                   # (d, m)
+
     if hasattr(model.action_encoder, 'W'):
         B_eff = (B_jac @ model.action_encoder.W.weight).detach()  # (d, 1)
     else:
