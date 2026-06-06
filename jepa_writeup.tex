@@ -1,0 +1,383 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\title{JEPA World Model for Visual Cartpole Control:\\
+Architecture, Losses, and Data Generation}
+\author{}
+\date{}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\loss}[1]{\mathcal{L}_{\text{#1}}}
+\newcommand{\zstar}{z^{*}}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+The JEPA world model (\texttt{JEPAModel}) consists of three learned components:
+an \emph{online encoder} mapping pixel observations to a low-dimensional latent
+state, a \emph{target encoder} (an EMA copy of the online encoder) that produces
+stable prediction targets, an \emph{action encoder} that lifts the scalar control
+input into the latent action space, and an \emph{MLP predictor} that models the
+one-step latent dynamics. Critically, \textbf{JEPA has no decoder} — it is
+trained purely in latent space via prediction and regularization losses (the
+companion \texttt{AEWorldModel} variant adds a symmetric CNN decoder and is
+described separately).
+
+\section{Model Architecture}
+
+\subsection{Online Encoder --- \texttt{CNNEncoder}}
+
+Input: $(B, 6, 64, 64)$ --- two consecutive RGB frames stacked channel-wise
+(\texttt{frame\_stack=2}, so $3 \times 2 = 6$ input channels).
+
+Six convolutional blocks, each of the form
+$\text{Conv2d}(3{\times}3,\ \text{pad}{=}1) \to \text{MaxPool}(2) \to \text{BN} \to \text{ReLU}$.
+The final block omits batch-norm and ReLU because the spatial resolution collapses
+to $1{\times}1$ (BatchNorm is undefined for spatial size 1 with batch size 1).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}cccc@{}}
+\toprule
+Block & $C_{\text{in}} \to C_{\text{out}}$ & Spatial output & Notes \\
+\midrule
+0 & $6 \to 8$   & $32\times32$ & BN + ReLU \\
+1 & $8 \to 16$  & $16\times16$ & BN + ReLU \\
+2 & $16 \to 32$ & $8\times8$   & BN + ReLU \\
+3 & $32 \to 64$ & $4\times4$   & BN + ReLU \\
+4 & $64 \to 64$ & $2\times2$   & BN + ReLU \\
+5 & $64 \to 8$  & $1\times1$   & \emph{no} BN, \emph{no} ReLU \\
+\bottomrule
+\end{tabular}
+\caption{CNN encoder architecture. Output is flattened to $z \in \R^{8}$
+(latent\_dim $= 8$). Approx.\ 17k parameters.}
+\end{table}
+
+\subsection{Target Encoder}
+
+An exponential-moving-average (EMA) copy of the online encoder, updated every
+training step:
+\begin{equation}
+\theta_{\text{target}} \leftarrow 0.99\,\theta_{\text{target}} + 0.01\,\theta_{\text{online}}.
+\end{equation}
+It produces stop-gradient targets $z_1, \ldots, z_H$ for the prediction loss
+(computed under \texttt{torch.no\_grad()}); only $z_0$ is produced by the
+\emph{online} encoder with gradients enabled. This is the standard
+BYOL/I-JEPA mechanism for preventing representational collapse.
+
+\subsection{Action Encoder --- \texttt{LinearActionEncoder}}
+
+\begin{equation}
+c_t = W u_t, \qquad W \in \R^{1 \times 1},
+\end{equation}
+i.e.\ a learned scalar multiplier on the scalar force $u_t$ (no bias,
+\texttt{action\_latent\_dim=1}, \texttt{action\_encoder: linear}).
+
+\subsection{Predictor --- \texttt{MLPPredictor} (window $W=3$)}
+
+The predictor consumes the last $W=3$ latent states and encoded actions,
+flattened into a single vector:
+\begin{equation}
+\text{input} = \big[\, z_{t-2},\, z_{t-1},\, z_t,\; c_{t-2},\, c_{t-1},\, c_t \,\big]
+\in \R^{3 \times 8 + 3 \times 1} = \R^{27}.
+\end{equation}
+Architecture: $\text{Linear}(27 \to 64) \to \text{ELU} \to \text{Linear}(64 \to 8)$,
+i.e.\ 2 layers with hidden dimension 64. Output: $\hat z_{t+1} \in \R^{8}$.
+
+\bigskip
+\noindent\textbf{Note:} \texttt{JEPAModel} contains \emph{no decoder}.
+The full model is purely encoder $+$ predictor; the \texttt{AEWorldModel}
+subclass adds a symmetric \texttt{CNNDecoder} (six transposed-convolution
+blocks, channel progression $8 \to 64 \to 64 \to 32 \to 16 \to 8 \to 3$,
+final Sigmoid activation) for pixel-space reconstruction and prediction
+losses, but is a separate training pipeline (\texttt{train\_ae.py}).
+
+\section{Training Data Generation}
+
+The dataset is generated once and cached as HDF5. Episodes run to completion
+with \emph{no} mid-episode resets --- the gym \texttt{done} signal is ignored
+so trajectories show the pole falling freely past the $12^\circ$ threshold.
+
+\subsection{Episode types (\texttt{cartpole\_v2\_fullspec.yaml})}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Type & Episodes $\times$ Steps & Transitions & Init.\ range & Action policy \\
+\midrule
+Random   & $50 \times 200$  & 10{,}000 & $\pm 1.0$ rad ($\pm 57^\circ$) & $u \sim \mathcal{U}[-10, 10]$ \\
+LQR      & $100 \times 100$ & 10{,}000 & $\pm 0.10$ rad ($\pm 17^\circ$) & GT-LQR, no noise \\
+Eq-LQR   & $10 \times 50$   & 500      & $\pm 0.002$ rad ($\approx 0^\circ$) & GT-LQR $+\ \sigma{=}0.001$ \\
+PRBS     & $125 \times 40$  & 5{,}000  & $\pm 0.05$ rad & $\pm 3$N, flip prob.\ $0.15$/step \\
+Passive  & $40 \times 50$   & 2{,}000  & $\pm 0.05$ rad & $u \equiv 0$ \\
+Eq.\ self-loops (injected) & --- & 200 & $0$ & $u \equiv 0$ \\
+\bottomrule
+\end{tabular}
+\caption{Composition of the training dataset. Total $\approx 27{,}700$
+transitions, split 80/10/10 (train/val/test) by \emph{whole episodes}
+(no episode straddles two splits).}
+\end{table}
+
+Each segment serves a distinct purpose:
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Random:} broad state-space coverage so the encoder generalizes;
+  \item \textbf{LQR:} near-equilibrium dynamics --- required for $A_{\text{jac}}$
+        and $B_{\text{jac}}$ (the linearization at $\zstar$) to be meaningful;
+  \item \textbf{Eq-LQR:} very tight initialization teaches
+        $f(\zstar, 0) \approx \zstar$ (the fixed-point property);
+  \item \textbf{PRBS:} persistent excitation near equilibrium --- needed to
+        identify the action-response direction $B$ reliably (LQR uses very
+        small $u$, which under-excites $B$);
+  \item \textbf{Passive:} natural divergence from near-equilibrium teaches the
+        predictor that $\rho(A) > 1$ (the equilibrium is unstable);
+  \item \textbf{Equilibrium self-loops:} 200 identical
+        $(\text{obs}_{\text{eq}},\ u{=}0,\ \text{obs}_{\text{eq}})$ transitions
+        appended directly to the training set, reinforcing the fixed-point via
+        \loss{pred} batches.
+\end{itemize}
+
+\subsection{TrajectoryDataset}
+
+Returns windows of $H{+}1 = 11$ consecutive frames \emph{from the same episode}
+(episode IDs prevent windows from crossing episode boundaries). Frame stacking
+at window position $k$:
+\begin{equation}
+\text{obs\_seq}[k] = \big[\,\text{obs}_{k-1},\ \text{obs}_k\,\big] \in \R^{6 \times 64 \times 64},
+\end{equation}
+with $\text{obs}_{-1} := \text{obs}_0$ at the start of a window (duplicated frame,
+zero-velocity context).
+
+\section{Loss Functions}
+
+Each training batch provides
+$\text{obs\_seq} \in \R^{B \times 11 \times 6 \times 64 \times 64}$,
+$\text{actions} \in \R^{B \times 10 \times 1}$,
+$\text{states} \in \R^{B \times 11 \times 4}$.
+
+\subsection{Forward pass / target construction}
+
+\begin{align}
+z_0 &= \text{encoder}_{\text{online}}(\text{obs\_seq}[:,0]) && \text{(gradients flow)} \\
+z_{1}, \ldots, z_{10} &= \text{encoder}_{\text{target}}(\text{obs\_seq}[:,1{:}]) && \text{(no\_grad, detached)} \\
+z_{\text{targets}} &= [z_1, \ldots, z_{10}].\text{detach}()
+\end{align}
+
+\subsection{Predictor unrolling (open-loop)}
+
+Window buffers are initialized as
+$z_{\text{buf}} = [z_0, z_0, z_0]$, $\;u_{\text{buf}} = [0, 0]$.
+For each step $k = 0, \ldots, 9$:
+\begin{align}
+\hat z_{k+1} &= f_\theta\big( z_{\text{buf}}[-3{:}],\ u_{\text{buf}}[-3{:}] \big), \\
+z_{\text{buf}} &\leftarrow z_{\text{buf}} \,\Vert\, [\hat z_{k+1}].
+\end{align}
+
+\begin{quote}
+\textcolor{red}{\textbf{Important:}} after step $k=0$ the window contains
+\emph{predicted} latents $\hat z$, not re-encoded ground-truth latents. This is
+\emph{open-loop} (free-running) unrolling --- prediction errors compound across
+the 10-step horizon, and the gradient signal from later steps is dominated by
+compounded error rather than clean dynamics information.
+\end{quote}
+
+\subsection{$\loss{pred}$ --- Prediction loss \quad ($\lambda = 1.0$)}
+\begin{equation}
+\loss{pred} = \frac{1}{H} \sum_{k=0}^{H-1} \big\| \hat z_{k+1} - z_{k+1} \big\|^2 .
+\end{equation}
+The core JEPA objective: the predictor must model latent dynamics such that
+its open-loop rollout matches target-encoder embeddings of the true future
+frames.
+
+\subsection{$\loss{inv}$ --- Inverse dynamics \quad ($\lambda = 1.0$)}
+\begin{equation}
+\loss{inv} = \left\| \psi(z_0, z_H) - \frac{\bar u}{10} \right\|^2,
+\qquad \bar u = \frac{1}{H}\sum_{k=0}^{H-1} u_k,
+\end{equation}
+where $\psi : \R^{16} \to \R$ is a 2-layer MLP
+($\text{Linear}(16{\to}8) \to \text{ReLU} \to \text{Linear}(8{\to}1)$) and the
+constant $10$ is \texttt{inv\_action\_scale} (normalizing the action range
+$[-10,10]$). Using the full $H$-step gap ($z_0$ vs.\ $z_H$) instead of
+consecutive pairs prevents a trivial "copy" shortcut.
+
+\subsection{$\loss{fp}$ --- Fixed-point loss \quad ($\lambda = 30.0$)}
+\begin{equation}
+\loss{fp} = \big\| f_\theta\big([\zstar, \zstar, \zstar],\, [0,0,0]\big) - \zstar \big\|^2,
+\qquad \zstar = \text{encoder}(\text{obs}_{\text{eq}}).\text{detach}().
+\end{equation}
+Forces the predictor to treat the upright-equilibrium latent as a fixed point
+under zero action. \textbf{This carries the single largest weight in the
+system} ($\lambda_{\text{fp}} = 30$, six times larger than $\lambda_{\text{spec}}$
+and thirty times larger than $\lambda_{\text{pred}}$) — it is effectively
+treated as a near-hard constraint, because without it the predictor could
+satisfy $\loss{pred}$ with arbitrary local dynamics near $\zstar$, making the
+Jacobian $A_{\text{jac}}$ (linearization at $\zstar$, used for all downstream
+control) unreliable.
+
+\subsection{$\loss{spec}$ --- Spectral eigenvalue matching \quad ($\lambda = 5.0$)}
+
+Requires the Jacobian of the predictor at $\zstar$, recomputed every training
+step (\texttt{jacobian\_every=1}) via autograd. For a windowed predictor
+($W=3$, $d=8$), the augmented \emph{companion-form} Jacobian is
+$A_{\text{aug}} \in \R^{24 \times 24}$, $B_{\text{aug}} \in \R^{24 \times 1}$,
+constructed as
+\begin{equation}
+A_{\text{aug}} =
+\begin{bmatrix}
+0      & I      & 0      & \cdots \\
+0      & 0      & I      & \cdots \\
+\vdots &        &        & \ddots \\
+J_0    & J_1    & \cdots & J_{W-1}
+\end{bmatrix},
+\qquad
+J_k = \frac{\partial \hat z_{t+1}}{\partial z_{\text{window}[k]}} \bigg|_{\zstar}.
+\end{equation}
+The current-state $(d \times d)$ block used for control is
+$A_{\text{jac}} = A_{\text{aug}}[(W{-}1)d{:},\ (W{-}1)d{:}]$.
+
+The loss matches the spectrum of $A_{\text{aug}}$ (all 24 eigenvalues) to the
+ground-truth unstable eigenvalues $\Lambda_{\text{unstable}}$ of the
+linearized physical cartpole (computed analytically by
+\texttt{CartpoleGroundTruth}):
+\begin{equation}
+\loss{spec} = \sum_{\lambda^\dagger \in \Lambda_{\text{unstable}}}
+\ \min_{\lambda_i \in \text{eig}(A_{\text{aug}})} |\lambda_i - \lambda^\dagger|^2
+\;+\; 2\big(\rho(A_{\text{aug}}) - \rho_{\text{GT}}\big)^2,
+\end{equation}
+where $\rho(\cdot)$ denotes spectral radius. The second term additionally
+penalizes deviation of the overall growth rate from the ground-truth value
+($\rho_{\text{GT}} \approx 1.18$, from $\sqrt{g/\ell}$ discretized at $dt=0.02$s).
+
+\subsection{$\loss{PBH}$ --- Popov--Belevitch--Hautus alignment \quad ($\lambda = 1.0$)}
+
+The PBH controllability test states that an unstable mode (eigenvector $v_u$ of
+$A$ with $|\lambda| > 1$) is controllable if and only if $B$ is not orthogonal
+to $v_u$. The loss directly enforces this:
+\begin{equation}
+\loss{PBH} = 1 - \max_{v_u \in V_{\text{unstable}}(A_{\text{aug}})} \cos^2\!\big(\hat b_{\text{eff}},\, v_u\big),
+\end{equation}
+where $\hat b_{\text{eff}}$ is the unit vector of
+$B_{\text{eff,aug}} = B_{\text{aug}} \cdot W_{\text{enc}} \in \R^{24}$
+(chaining $\partial z_{t+1}/\partial c_t$ with $\partial c_t/\partial u_t = W_{\text{enc}}$),
+and $V_{\text{unstable}}$ is the set of (real parts of) eigenvectors with
+$|\lambda| \geq 0.95\,\rho(A_{\text{aug}})$. The loss is $0$ when $B_{\text{eff}}$
+perfectly aligns with an unstable mode and $1$ when orthogonal to all of them.
+
+\subsection{$\loss{dynSIG}$ --- Dynamics-aware SIGreg \quad ($\lambda = 2.0$)}
+
+Shapes the encoder's output covariance $\Sigma_z$ toward the
+\emph{controllability Gramian} of the local linearization:
+\begin{equation}
+W_T = \sum_{k=0}^{T_g - 1} A_{\text{jac}}^k\, B_{\text{eff}}\, B_{\text{eff}}^\top\, (A_{\text{jac}}^\top)^k,
+\qquad T_g = 5,
+\end{equation}
+\begin{equation}
+\Sigma_{\text{target}} = (1 - \alpha)\, I + \alpha\, \frac{d \cdot W_T}{\operatorname{tr}(W_T)},
+\qquad \alpha = 0.3,
+\end{equation}
+updated by EMA with $\beta = 0.95$ each time the Jacobian is recomputed. The
+loss itself is the Epps--Pulley characteristic-function (CF) test (SIGreg, from
+LeJEPA 2025) comparing the empirical distribution of random 1-D projections of
+$z_0$ against $\mathcal{N}(0, \Sigma_{\text{target}})$, using
+\texttt{sigreg\_num\_slices = 32} random projection directions and
+\texttt{sigreg\_num\_points = 9} CF evaluation points:
+\begin{equation}
+\loss{dynSIG} = \frac{1}{S}\sum_{s=1}^{S}
+\int \big| \hat\varphi_s(t) - \varphi_{\mathcal{N}(0,\sigma_s^2)}(t) \big|^2 \, w(t)\, dt,
+\end{equation}
+where $\hat\varphi_s$ is the empirical CF of the $s$-th projection
+$\langle z_0, \xi_s \rangle$ and $\sigma_s^2 = \xi_s^\top \Sigma_{\text{target}} \xi_s$.
+
+\textbf{Purpose:} the Gramian encodes which latent directions are reachable by
+the control input. Shaping $\Sigma_z$ toward $W_T$ biases the encoder to spread
+representational variance into the \emph{controllable} subspace, which should
+make downstream LQR/MPC more effective.
+
+\subsection{Total objective}
+\begin{equation}
+\boxed{
+\mathcal{L} =
+\underbrace{1.0}_{\lambda_{\text{pred}}} \loss{pred}
++ \underbrace{1.0}_{\lambda_{\text{inv}}} \loss{inv}
++ \underbrace{30.0}_{\lambda_{\text{fp}}} \loss{fp}
++ \underbrace{5.0}_{\lambda_{\text{spec}}} \loss{spec}
++ \underbrace{1.0}_{\lambda_{\text{PBH}}} \loss{PBH}
++ \underbrace{2.0}_{\lambda_{\text{dynSIG}}} \loss{dynSIG}
+}
+\end{equation}
+
+All other available losses
+($\loss{state}$, $\loss{mirror}$, $\loss{anchor}$, $\loss{enc\_anchor}$,
+$\loss{sigreg}$, $\loss{varfloor}$, $\loss{temp}$, $\loss{spec\_eig}$,
+$\loss{local}$, $\loss{unstable}$) are set to $\lambda = 0$ in
+\texttt{cartpole\_v2\_fullspec.yaml} and do not contribute.
+
+\subsection{Optimizer}
+
+Adam, with parameter groups:
+\begin{itemize}[leftmargin=2em]
+  \item encoder: $\text{lr} = 10^{-4}$, weight decay $= 10^{-4}$;
+  \item action encoder: $\text{lr} = 10^{-4}$, weight decay $= 0$;
+  \item predictor: $\text{lr} = 10^{-4}$ (\texttt{predictor\_lr\_mult=1.0}), weight decay $= 10^{-4}$;
+\end{itemize}
+with cosine-annealing schedule, $T_{\max} = 200$ epochs, $\eta_{\min} = 10^{-5}$.
+
+\section{Potential Failure Modes}
+
+Given the precise loss landscape above, the most likely sources of poor
+downstream control performance are:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Open-loop unrolling in $\loss{pred}$.} The predicted
+        $\hat z$ (not the re-encoded ground truth) fills the window buffer for
+        $k \geq 1$. Errors compound multiplicatively over the 10-step horizon;
+        gradient contributions from later steps are dominated by compounded
+        error rather than clean one-step dynamics signal.
+
+  \item \textbf{$z^*$ mismatch between training and evaluation.} At training,
+        $\text{obs}_{\text{eq},2f} = [\text{obs}_{\text{eq}}, \text{obs}_{\text{eq}}]$
+        (duplicated frame). At evaluation, the very first frame after
+        \texttt{reset\_to\_state(0)} may differ subtly (e.g.\ rendering jitter,
+        physics solver state). Any drift in the encoded $\zstar$ propagates
+        directly into $A_{\text{jac}}$, $B_{\text{jac}}$, and hence the LQR
+        gain.
+
+  \item \textbf{$\loss{spec}$ targets all 24 eigenvalues of $A_{\text{aug}}$,}
+        but the ground truth only specifies the \emph{physical} unstable
+        eigenvalue ($\lambda^\dagger \approx 1.18$). The remaining $\sim$23
+        "history" eigenvalues (artifacts of the companion-form padding
+        structure for $W=3$) receive gradient pressure toward the nearest GT
+        eigenvalue with no principled target, potentially distorting the
+        Jacobian's structure in directions irrelevant to control.
+
+  \item \textbf{$\lambda_{\text{fp}} = 30$ dominates the objective.} At 30$\times$
+        the weight of $\loss{pred}$, the predictor is primarily optimizing to
+        be a fixed point at $\zstar$ rather than to model dynamics broadly. It
+        may learn a narrow "gravity well" around $\zstar$ that satisfies
+        $\loss{fp}$ and the near-equilibrium portion of $\loss{pred}$, without
+        generalizing to states further away --- exactly where the
+        cart must operate during a swing-up or large-disturbance recovery.
+
+  \item \textbf{Companion-form Jacobian dimensionality.} With $W=3$, $d=8$,
+        the augmented system is $24$-dimensional, but the physical system is
+        $4$-dimensional (and the latent system is nominally $8$-dimensional,
+        $d = 2 \times n_{\text{state}}$ for frame-stacked position+velocity
+        encoding). The gap between "true" and "augmented" dimensionality means
+        most of $A_{\text{aug}}$'s spectral content has no physical
+        counterpart, yet $\loss{spec}$ and $\loss{PBH}$ both operate on the
+        full augmented matrix.
+\end{enumerate}
+
+\end{document}
