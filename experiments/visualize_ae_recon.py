@@ -156,6 +156,7 @@ def main():
                 ax.set_title(title, fontsize=8)
 
     plt.tight_layout()
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=150, bbox_inches='tight')
     print(f'[viz] Saved {args.output}')
 

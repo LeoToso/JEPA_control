@@ -223,6 +223,7 @@ def main():
         f'θ₀={np.degrees(args.init_angle):.1f}°, u={args.action:.1f}',
         fontsize=11, fontweight='bold', y=0.99)
 
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=150, bbox_inches='tight')
     print(f'[viz] Saved {args.output}')
 
