@@ -59,18 +59,28 @@ def _load_model(ckpt_path: str, cfg: dict, device):
     model_cfg = cfg['model']
     env_cfg   = cfg['environment']
     W         = int(model_cfg.get('predictor_window', 1))
+    frame_stack = int(model_cfg.get('frame_stack', 1))
+
+    ckpt  = torch.load(ckpt_path, map_location=device)
+    state = ckpt.get('model_state', ckpt) if isinstance(ckpt, dict) else ckpt
+    if 'encoder.net.0.weight' in state:
+        frame_stack = state['encoder.net.0.weight'].shape[1] // 3
+
     jepa_cfg  = JEPAConfig(
         latent_dim=int(model_cfg.get('latent_dim', 32)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 4)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
+        encoder_type=model_cfg.get('encoder_type', 'vit'),
         image_size=int(env_cfg.get('image_size', 64)),
         patch_size=int(model_cfg.get('patch_size', 8)),
+        frame_stack=frame_stack,
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
         predictor_hidden_dim=int(model_cfg.get('predictor_hidden_dim', 256)),
         predictor_n_layers=int(model_cfg.get('predictor_n_layers', 2)),
         predictor_window=W,
+        predictor_residual=bool(model_cfg.get('predictor_residual', False)),
     )
     # Try AEWorldModel first (has decoder); fall back to plain JEPAModel
     try:
@@ -79,19 +89,25 @@ def _load_model(ckpt_path: str, cfg: dict, device):
     except Exception:
         model = JEPAModel(jepa_cfg)
 
-    ckpt = torch.load(ckpt_path, map_location=device)
-    state = ckpt.get('model_state', ckpt) if isinstance(ckpt, dict) else ckpt
     model.load_state_dict(state, strict=False)
     model.to(device).eval()
-    return model
+    return model, frame_stack
 
 
-def _encode_states(model, states_np: np.ndarray, env, device) -> np.ndarray:
-    """Encode a list of physical states (N, 4) → latent (N, d)."""
+def _encode_states(model, states_np: np.ndarray, env, device, frame_stack: int = 1) -> np.ndarray:
+    """Encode a list of physical states (N, 4) → latent (N, d).
+
+    With frame_stack > 1, the same frame is duplicated to fill all channels —
+    matches the training-time convention (prev=curr at episode start), since
+    each state here is a fresh single-frame snapshot with no real "previous".
+    """
     zs = []
     for x in states_np:
         obs, _, _ = env.reset_to_state(x.astype(np.float32))
-        obs_t = torch.from_numpy(obs).float().permute(2, 0, 1).unsqueeze(0).to(device) / 255.0
+        t = torch.from_numpy(obs).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        if frame_stack > 1:
+            t = t.repeat(1, frame_stack, 1, 1)
+        obs_t = t.to(device)
         with torch.no_grad():
             z = model.encoder(obs_t).cpu().numpy()[0]
         zs.append(z)
@@ -131,7 +147,7 @@ def _gramian_ellipse_pca(W_T: np.ndarray, V_pca: np.ndarray,
 
 def make_figure(model, cfg, device, label: str = '',
                 theta_range=(-0.5, 0.5), n_theta=40, n_grid=20,
-                phase_extent=2.0):
+                phase_extent=2.0, frame_stack=1):
     """Build the 3-panel figure for one model.
 
     Returns (fig, axes).
@@ -153,7 +169,10 @@ def make_figure(model, cfg, device, label: str = '',
 
     # ── z* ────────────────────────────────────────────────────────────────
     obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
-    obs_eq_t = torch.from_numpy(obs_eq).float().permute(2,0,1).unsqueeze(0).to(device)/255.0
+    obs_eq_t = torch.from_numpy(obs_eq).float().permute(2,0,1).unsqueeze(0)/255.0
+    if frame_stack > 1:
+        obs_eq_t = obs_eq_t.repeat(1, frame_stack, 1, 1)
+    obs_eq_t = obs_eq_t.to(device)
     with torch.no_grad():
         z_star = model.encoder(obs_eq_t).squeeze(0)
     z_star_np = z_star.cpu().numpy()
@@ -191,10 +210,10 @@ def make_figure(model, cfg, device, label: str = '',
     states_all = np.vstack([states_theta, xs_extra])
 
     print(f'  [{label}] Encoding {len(states_theta)} θ-states...')
-    zs_theta = _encode_states(model, states_theta, env, device)
+    zs_theta = _encode_states(model, states_theta, env, device, frame_stack=frame_stack)
 
     print(f'  [{label}] Encoding {len(states_all)} mixed states for PCA...')
-    zs_all  = _encode_states(model, states_all, env, device)
+    zs_all  = _encode_states(model, states_all, env, device, frame_stack=frame_stack)
 
     env.close()
 
@@ -349,10 +368,11 @@ def main():
     if args.checkpoint2 is None:
         # Single checkpoint: 1×3 figure
         print(f'[viz] Loading {args.checkpoint}')
-        model1 = _load_model(args.checkpoint, cfg1, device)
+        model1, fs1 = _load_model(args.checkpoint, cfg1, device)
+        print(f'[viz] frame_stack={fs1}')
         fig, _ = make_figure(model1, cfg1, device, label=label1,
                              n_theta=args.n_theta, n_grid=args.n_grid,
-                             phase_extent=args.phase_extent)
+                             phase_extent=args.phase_extent, frame_stack=fs1)
         fig.savefig(args.output, dpi=150, bbox_inches='tight')
         print(f'[viz] Saved {args.output}')
     else:
@@ -363,20 +383,20 @@ def main():
         label2 = args.label2 or Path(args.checkpoint2).parent.name
 
         print(f'[viz] Loading model 1: {args.checkpoint}')
-        model1 = _load_model(args.checkpoint, cfg1, device)
+        model1, fs1 = _load_model(args.checkpoint, cfg1, device)
         print(f'[viz] Loading model 2: {args.checkpoint2}')
-        model2 = _load_model(args.checkpoint2, cfg2, device)
+        model2, fs2 = _load_model(args.checkpoint2, cfg2, device)
 
         fig, axes_all = plt.subplots(2, 3, figsize=(15, 10))
         fig.suptitle('Latent dynamics comparison', fontsize=14, fontweight='bold')
 
-        for row_i, (model_i, cfg_i, label_i) in enumerate(
-                [(model1, cfg1, label1), (model2, cfg2, label2)]):
+        for row_i, (model_i, cfg_i, label_i, fs_i) in enumerate(
+                [(model1, cfg1, label1, fs1), (model2, cfg2, label2, fs2)]):
             # Reuse make_figure but inject axes
             sub_fig, sub_axes = make_figure(
                 model_i, cfg_i, device, label=label_i,
                 n_theta=args.n_theta, n_grid=args.n_grid,
-                phase_extent=args.phase_extent)
+                phase_extent=args.phase_extent, frame_stack=fs_i)
             # Transfer content — easiest to save sub-figure and embed later;
             # instead we just re-run with direct axes injection not supported
             # here (keep it simple: save two files and note both).
