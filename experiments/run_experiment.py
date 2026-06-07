@@ -138,18 +138,30 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
         vit_num_heads=model_cfg.get('vit_num_heads', 4),
         predictor_hidden_dim=model_cfg['predictor_hidden_dim'],
         predictor_window=int(model_cfg.get('predictor_window', 1)),
+        predictor_residual=bool(model_cfg.get('predictor_residual', False)),
     )
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'[model] {encoder_variant}  {n_params:,} trainable params')
 
     # Train
-    from training.trainer import Trainer
     train_cfg_exp = dict(train_cfg)
     if epochs_override is not None:
         train_cfg_exp['epochs'] = int(epochs_override)
-    trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
-                      save_dir=str(ckpt_dir / 'checkpoints'), device=device, seed=seed)
+
+    trainer_kind = cfg.get('trainer', 'full')
+    if trainer_kind == 'minimal':
+        from training.trainer_minimal import MinimalTrainer
+        print('[train] using MinimalTrainer '
+              '(L = L_1step + beta(e)*L_multi + lambda_inv*L_inv '
+              '+ lambda_fp*L_fp + lambda_dynSIG*L_dynSIG)')
+        trainer = MinimalTrainer(model=model, config_dict=train_cfg_exp,
+                                 save_dir=str(ckpt_dir / 'checkpoints'),
+                                 device=device, seed=seed)
+    else:
+        from training.trainer import Trainer
+        trainer = Trainer(model=model, config_dict=train_cfg_exp, gt=gt,
+                          save_dir=str(ckpt_dir / 'checkpoints'), device=device, seed=seed)
 
     # Give trainer the exact equilibrium image so fp loss trains at encoder(obs_eq),
     # not at an EMA over near-eq batch samples. Eliminates train/eval z* mismatch.

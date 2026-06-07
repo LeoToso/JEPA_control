@@ -6,7 +6,7 @@ from typing import Optional, Dict
 import torch
 import torch.nn as nn
 from models.vit_encoder import ViTEncoder
-from models.predictor import MLPPredictor
+from models.predictor import MLPPredictor, ResidualMLPPredictor
 from models.action_encoder import make_action_encoder, IdentityActionEncoder
 
 
@@ -31,6 +31,7 @@ class JEPAConfig:
     predictor_hidden_dim: int = 256
     predictor_n_layers: int = 2
     predictor_window: int = 1      # window size W for windowed MLP predictor
+    predictor_residual: bool = False  # f(z,c) = z + g(z,c) - g(z*,0): exact fixed point
 
     @classmethod
     def from_dict(cls, d: dict) -> 'JEPAConfig':
@@ -72,13 +73,23 @@ class JEPAModel(nn.Module):
             action_dim=config.action_dim,
             latent_action_dim=config.action_latent_dim,
         )
-        self.predictor = MLPPredictor(
-            latent_dim=config.latent_dim,
-            action_dim=self.action_encoder.latent_action_dim,
-            hidden_dim=config.predictor_hidden_dim,
-            n_layers=config.predictor_n_layers,
-            window=config.predictor_window,
-        )
+        if config.predictor_residual:
+            assert config.predictor_window == 1, \
+                'predictor_residual requires predictor_window=1 (Markovian)'
+            self.predictor = ResidualMLPPredictor(
+                latent_dim=config.latent_dim,
+                action_dim=self.action_encoder.latent_action_dim,
+                hidden_dim=config.predictor_hidden_dim,
+                n_layers=config.predictor_n_layers,
+            )
+        else:
+            self.predictor = MLPPredictor(
+                latent_dim=config.latent_dim,
+                action_dim=self.action_encoder.latent_action_dim,
+                hidden_dim=config.predictor_hidden_dim,
+                n_layers=config.predictor_n_layers,
+                window=config.predictor_window,
+            )
 
         # EMA target encoder: same architecture as online encoder, not in optimizer.
         # Provides slowly-moving prediction targets that stabilise pred_loss training.
@@ -96,6 +107,12 @@ class JEPAModel(nn.Module):
     @property
     def latent_dim(self):
         return self.config.latent_dim
+
+    @torch.no_grad()
+    def set_predictor_z_star(self, z_star: torch.Tensor) -> None:
+        """Refresh the predictor's equilibrium anchor (residual predictor only)."""
+        if isinstance(self.predictor, ResidualMLPPredictor):
+            self.predictor.set_z_star(z_star)
 
     def predict(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
         """Windowed prediction: z_{t+1} = f([z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]).
@@ -160,6 +177,7 @@ class JEPAModel(nn.Module):
             'predictor_window': c.predictor_window,
             'predictor_hidden_dim': c.predictor_hidden_dim,
             'predictor_n_layers': c.predictor_n_layers,
+            'predictor_residual': c.predictor_residual,
         }
 
 

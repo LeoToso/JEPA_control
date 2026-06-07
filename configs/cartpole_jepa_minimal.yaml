@@ -1,0 +1,104 @@
+environment:
+  name: cartpole
+  frame_skip: 1
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 8
+  action_latent_dim: 1
+  action_encoder: linear
+  encoder_type: cnn
+  patch_size: 8
+  frame_stack: 2            # encoder sees position + velocity
+  predictor_window: 1       # Markovian: z_{t+1} = f(z_t, c_t)  (spec §1)
+  predictor_residual: true  # f(z,c) = z + g(z,c) - g(z*,0): exact fixed point (spec §5)
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_hidden_dim: 64
+  predictor_n_layers: 2
+
+# ── Minimal trainer ──────────────────────────────────────────────────────────
+# L = L_1step + beta(e)*L_multi + lambda_inv*L_inv + lambda_fp*L_fp + lambda_dynSIG*L_dynSIG
+# All other regularizers (spec, PBH, local, unstable, temporal, mirror, anchor,
+# state supervision, ...) are removed — see training/trainer_minimal.py.
+trainer: minimal
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 200
+  horizon: 10
+  multistep_warmup_epochs: 50    # beta(e) = min(1, e/50)  (spec §3)
+  lambda_inv: 1.0
+  inv_action_scale: 10.0
+  lambda_fp: 1.0                 # NOT 30 — residual predictor enforces fp by construction (spec §5)
+  lambda_dynSIG: 1.0
+  dynSIG_T_g: 5
+  dynSIG_alpha: 0.1
+  dynSIG_beta: 0.95
+  sigreg_num_slices: 128
+  sigreg_num_points: 17
+  jacobian_every: 50
+  checkpoint_every: 10
+
+# ── Diagnostics (spec §8) — logged, not optimized ───────────────────────────
+# 1. one-step prediction error           5. Jacobian spectral radius rho(A)
+# 2. multistep prediction error          6. ||B||
+# 3. fixed-point drift ||f(z*,0)-z*||    7. PBH sigma_min([lambda*I-A, B])
+# 4. action sensitivity ||f(z,u1)-f(z,u2)||  8. local-LQR closed-loop success
+# Failure -> fix mapping:
+#   B ~= 0                       -> strengthen inverse dynamics / PBH
+#   rho(A) < 1 but env unstable  -> add instability-margin loss
+#   LQR from (A,B) fails despite good prediction -> add local-linearization loss
+#   covariance collapses / ignores controllable directions -> strengthen dynSIG
+#   spectrum/growth info poor    -> add temporal covariance consistency
+diagnostics:
+  run_lqr_eval: false        # set true to run diagnostic #8 (expensive closed-loop rollouts)
+  lqr_eval_every: 20         # epochs between diagnostic #8 runs
+  n_trials: 20
+  T_rollout: 200
+  init_scale: 0.05
+
+# ── Evaluation: local stabilization ONLY (spec §9) ───────────────────────────
+# Reset near upright, encode two-frame obs into z_0, linearize (A,B) at z*,
+# design LQR, run closed-loop in the real env. Swing-up / nonlinear MPC / CEM
+# are deferred until local stabilization works.
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+  n_trials_control: 30
+  T_rollout: 200
+
+data:
+  train_frac: 0.8
+  val_frac: 0.1
+  n_random_episodes: 50
+  random_ep_len: 200
+  random_init_range: 1.0
+  n_lqr_episodes: 100
+  lqr_ep_len: 100
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.0
+  n_equilibrium: 500
+  eq_ep_len: 50
+  n_eq_selfloop: 200
+  eq_init_range: 0.002
+  eq_noise_std: 0.001
+  n_pe_episodes: 125
+  pe_ep_len: 40
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  n_passive_episodes: 40
+  passive_ep_len: 50
+  passive_init_range: 0.05
