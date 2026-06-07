@@ -15,7 +15,8 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
                    data_dir='data', results_dir='results',
                    device=None, skip_if_exists=True, eval_only=False,
                    epochs_override=None, cem_only=False, resume_from=None,
-                   checkpoint_path=None, no_control=False):
+                   checkpoint_path=None, no_control=False,
+                   use_wandb=False, wandb_project='JEPA_control'):
 
     t_start = time.time()
 
@@ -148,6 +149,11 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     train_cfg_exp = dict(train_cfg)
     if epochs_override is not None:
         train_cfg_exp['epochs'] = int(epochs_override)
+
+    # wandb: one run per experiment; the trainers' _log_wandb picks it up.
+    if use_wandb and not eval_only:
+        import wandb
+        wandb.init(project=wandb_project, name=exp_name, config=cfg)
 
     trainer_kind = cfg.get('trainer', 'full')
     if trainer_kind == 'minimal':
@@ -977,6 +983,11 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
     with open(results_file, 'w') as f:
         json.dump(_serial(results), f, indent=2)
     print(f'\n[done] {exp_name} in {time.time()-t_start:.1f}s')
+
+    if use_wandb and not eval_only:
+        import wandb
+        wandb.finish()
+
     return results
 
 
@@ -1005,6 +1016,10 @@ if __name__ == '__main__':
     p.add_argument('--checkpoint',  default=None,
                    help='Path to checkpoint file to load for --eval-only '
                         '(supports both bare state_dict and wrapped checkpoints)')
+    p.add_argument('--wandb',       action='store_true',
+                   help='Log per-epoch train/val metrics to Weights & Biases')
+    p.add_argument('--wandb-project', default='JEPA_control',
+                   help='wandb project name (with --wandb)')
     args = p.parse_args()
     run_experiment(
         encoder_variant=args.variant, dataset_name=args.dataset,
@@ -1018,4 +1033,6 @@ if __name__ == '__main__':
         no_control=args.no_control,
         resume_from=args.resume,
         checkpoint_path=args.checkpoint,
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project,
     )

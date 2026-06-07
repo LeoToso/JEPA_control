@@ -160,6 +160,20 @@ class MinimalTrainer:
                 info.get('dynSIG_loss', ''),
             ])
 
+    def _log_wandb(self, epoch, tr, val):
+        """Log per-epoch train/val metrics to wandb. No-op unless a wandb run
+        is active (run_experiment.py --wandb initialises one)."""
+        try:
+            import wandb
+        except ImportError:
+            return
+        if wandb.run is None:
+            return
+        log = {f'train/{k}': v for k, v in tr.items()}
+        log.update({f'val/{k}': v for k, v in val.items()})
+        log['lr'] = self.optimizer.param_groups[0]['lr']
+        wandb.log(log, step=epoch)
+
     # ── Loss computation ──────────────────────────────────────────────────────
     def _compute_loss(self, batch, is_train=True):
         # batch keys: obs_seq (B,H+1,C,h,w), actions (B,H,1)
@@ -332,6 +346,7 @@ class MinimalTrainer:
                 best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
+            self._log_wandb(epoch, tr, val)
             if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
                 self.save_checkpoint(tag=f'epoch{epoch+1:04d}')
             dt = time.time() - t0
