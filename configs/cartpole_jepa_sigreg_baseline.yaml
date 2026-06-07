@@ -54,7 +54,7 @@ training:
   vicreg_lambda: 25.0
   vicreg_nu: 1.0
   # ── EMA target encoder ───────────────────────────────────────────────────
-  use_target_encoder: true
+  use_target_encoder: false  # SIGreg already prevents collapse — EMA target would be redundant/competing
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0
   state_encoder_grad_scale: 1.0

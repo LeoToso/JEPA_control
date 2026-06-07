@@ -57,7 +57,7 @@ training:
   sigreg_num_points: 9
   vicreg_nu: 1.0
   ema_momentum: 0.996
-  use_target_encoder: true        # use EMA target encoder for z_rest targets
+  use_target_encoder: false       # dynSIG already prevents collapse — EMA target would be redundant/competing
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0              # disabled: saves one encoder pass/batch; VICReg handles collapse
   state_encoder_grad_scale: 0.50
