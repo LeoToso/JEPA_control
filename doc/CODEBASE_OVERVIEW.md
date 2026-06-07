@@ -13,26 +13,35 @@ Consecutive pixel frames (frame_stack=2) → [CNN Encoder] → latent z → [Pre
 ```
 
 ### 1. Representation learning (`models/`, `training/`)
-- `models/jepa.py` — encoder + MLP predictor + EMA target encoder (BYOL-style EMA; `target_encoder_momentum` = 0.99 in fullspec, model default 0.996). The target encoder supplies the prediction targets $z_{1..H}$ only when `use_target_encoder: true` (set in the JEPA configs, off in the AE configs and unused by the minimal trainer); otherwise targets are stop-gradient through the online encoder. Encoder is selectable via `encoder_type` (`cnn` | `vit`); predicts in latent space, no pixel reconstruction.
-- `models/cnn_encoder.py` — Bounou et al. (2021) 6-block CNN (Conv3×3→MaxPool→BN→ReLU; spatial 64→32→…→1). **Default for `cartpole_v2_fullspec`** (latent_dim=8, `frame_stack=2` → 6 input channels).
-- `models/vit_encoder.py` — Vision Transformer alternative: patch embedding → transformer blocks → mean-pooled latent projection (CLS token removed).
-- `models/cnn_decoder.py`, `models/decoder.py` — pixel decoders (AE / reconstruction variants).
-- `models/autoencoder.py` — AE baseline that adds a pixel decoder + reconstruction loss for comparison.
-- `models/action_encoder.py` — lifts scalar action u ∈ ℝ¹ → latent action c ∈ ℝ^da (Linear/MLP); da=1 in fullspec.
-- `models/predictor.py` — windowed MLP predictor z_{t+1} = f([z_{t-W+1..t}], [c_{t-W+1..t}]), window W=3. Also `ResidualMLPPredictor` (Markovian, W=1): $f(z,c) = z + g(z,c) - g(z^*,0)$, which makes $f(z^*,0)=z^*$ an **exact fixed point by construction** (enabled via `predictor_residual: true`; used by the minimal trainer).
 
-**Observability note:** with `frame_stack=2` the encoder input is two consecutive frames, so the latent `z` captures velocity, not just configuration (`x, θ`); the predictor additionally sees a window of W=3 latents.
+**The JEPA world model — what this repo does:**
+- `models/jepa.py` — encoder + MLP predictor + EMA target encoder (BYOL-style EMA; `target_encoder_momentum` = 0.99 in fullspec, model default 0.996). The target encoder supplies the prediction targets $z_{1..H}$ only when `use_target_encoder: true` (set in the JEPA configs, off in the AE configs and unused by the minimal trainer); otherwise targets are stop-gradient through the online encoder. Predicts in latent space, no pixel reconstruction.
+- `models/predictor.py` — windowed MLP predictor z_{t+1} = f([z_{t-W+1..t}], [c_{t-W+1..t}]), window W=3. Also `ResidualMLPPredictor` (Markovian, W=1): $f(z,c) = z + g(z,c) - g(z^*,0)$, which makes $f(z^*,0)=z^*$ an **exact fixed point by construction** (enabled via `predictor_residual: true`; used by the minimal trainer).
+- `models/action_encoder.py` — lifts scalar action u ∈ ℝ¹ → latent action c ∈ ℝ^da (Linear/MLP); da=1 in fullspec.
 - `training/trainer.py` — combines many losses (prediction, spectral matching, PBH, VICReg, SIGreg, dynamics-aware SIGreg), EMA target updates, Jacobian regularization, and online sliding-window DMDc identification.
-- `training/trainer_minimal.py` — **minimal baseline trainer** (selected with `trainer: minimal` in the config): only four loss terms,
+- `training/trainer_minimal.py` — **minimal trainer** (selected with `trainer: minimal` in the config), a stripped-down variant of the method: only four loss terms,
   $\mathcal{L} = \mathcal{L}_\text{1step} + \beta(e)\,\mathcal{L}_\text{multi} + \lambda_\text{inv}\mathcal{L}_\text{inv} + \lambda_\text{fp}\mathcal{L}_\text{fp} + \lambda_\text{dynSIG}\mathcal{L}_\text{dynSIG}$, where $\mathcal{L}_\text{multi}$ is an open-loop rollout loss (no re-encoding) warmed up by $\beta(e)=\min(1, e/50)$. Requires a Markovian (W=1) predictor; everything else (spec, PBH, local, unstable, temporal, mirror, anchors, state supervision, EMA targets) is deliberately omitted. The dynSIG target starts isotropic ($\Sigma_\text{tgt}=I$) and is EMA-shifted toward the Gramian target once the Jacobian is available.
 - `training/diagnostics.py` — standalone diagnostics for the minimal trainer (one-step/multi-step prediction error, fixed-point drift, action sensitivity, $\rho(A)$, $\lVert B\rVert$, PBH $\sigma_{\min}$, local-LQR closed-loop eval) with a documented failure→fix mapping (e.g. $B\approx0$ → strengthen inverse dynamics/PBH; $\rho(A)<1$ despite unstable env → add instability-margin loss).
 
-### 2. Control-aware losses (`losses/`) — the research contribution
+**Encoder options** (selected via `encoder_type: cnn | vit`):
+- `models/cnn_encoder.py` — Bounou et al. (2021) 6-block CNN (Conv3×3→MaxPool→BN→ReLU; spatial 64→32→…→1). **Default for `cartpole_v2_fullspec`** (latent_dim=8, `frame_stack=2` → 6 input channels); ~1000× better near-equilibrium sensitivity than the ViT.
+- `models/vit_encoder.py` — Vision Transformer alternative: patch embedding → transformer blocks → mean-pooled latent projection (CLS token removed).
+
+**Observability note:** with `frame_stack=2` the encoder input is two consecutive frames, so the latent `z` captures velocity, not just configuration (`x, θ`); the predictor additionally sees a window of W=3 latents.
+
+**Baselines (AE / Bounou et al.):**
+- `models/autoencoder.py` — AE baseline that adds a pixel decoder + reconstruction loss for comparison; trained by `experiments/train_ae.py` (the `cartpole_ae_*` configs: pixel-DMD + reconstruction, with `cartpole_ae_bounou` being the faithful Bounou et al. setup planned via global DMD-LQR). Its pixel decoders are the components in `models/cnn_decoder.py` / `models/decoder.py`.
+
+### 2. Losses (`losses/`)
+
+**Control-aware losses — the research contribution:**
 - `pbh.py` — PBH stabilisability. The **active** fullspec loss is a **cosine-alignment** variant computed in `trainer.py` (align the input direction with the unstable eigenvectors of the companion-form Jacobian — see the objective table). The file's `pbh_stabilizability_loss` is the older log-barrier on σ_min([λI − Â, B̂]) (DMDc-estimated Â, B̂).
 - `spectral.py` — spectral matching: pulls learned A eigenvalues toward the cartpole's true unstable eigenvalues.
+- `dyn_sigreg.py` — dynamics-aware SIGreg: SIGreg with the target covariance aligned to the controllability Gramian W_T (the control-aware twist on plain SIGreg).
+
+**Generic self-supervised losses:**
+- `prediction.py` — the JEPA prediction loss (`jepa_prediction_loss`, stop-gradient targets) plus optional VICReg (variance-invariance-covariance) collapse prevention (`vicreg_loss`, `vicreg_collapse_loss`).
 - `sigreg.py` — SIGreg (LeJEPA): collapse prevention via an Epps–Pulley goodness-of-fit test on random 1D projections of z, enforcing z ≈ N(0, I).
-- `dyn_sigreg.py` — dynamics-aware SIGreg: target covariance aligned with the controllability Gramian W_T.
-- `prediction.py` — VICReg (variance-invariance-covariance) collapse prevention.
 - `nmp.py`, `straightening.py` — additional manifold/straightening losses.
 
 #### Training objective
@@ -45,24 +54,24 @@ $$
 
 **Notation:** $z^*$ is the latent equilibrium; $f$ the predictor; $\mathrm{enc}$ the online encoder; $A, B$ the latent Jacobian of $f$ at $z^*$ (detached); $c = W_\text{enc}u$ the lifted action; $\mathrm{sg}(\cdot)$ stop-gradient; $\mathrm{sh}$ the state head; $H$ the prediction horizon; $\rho = \max_i|\lambda_i(A)|$ the spectral radius. For the SIGreg-family terms, $w_k$ are $K$ random unit projection directions, $\omega_p$ are $P$ frequency points in $[0.5, 3]$, and $\phi^{re}_{kp}, \phi^{im}_{kp}$ are the real/imaginary parts of the empirical characteristic function of the projected batch $w_k^\top z$.
 
-This table is the **full menu** of available terms; only those with non-zero weight in a given config are active (the active objective for `cartpole_v2_fullspec` is shown below the table). For example $\mathcal{L}_\text{mirror}$ is listed here but has `lambda_mirror = 0` in the current configs.
+This table is the **full menu** of available terms; only those with non-zero weight in a given config are active. The **first six rows are the active `cartpole_v2_fullspec` terms**, in the order they appear in the objective below the table; the remaining rows have zero weight in the current configs.
 
 | Term | Symbol | λ flag | Equation | Purpose |
 |------|--------|--------|----------|---------|
 | Prediction | $\mathcal{L}_\text{pred}$ | `lambda_pred` | $\dfrac{1}{H}\sum_{k=1}^{H}\lVert \hat z_k - \mathrm{sg}(z_k)\rVert^2,\ \ \hat z_k=f(z_{k-1},c_{k-1})$ | Latent multi-step prediction (main JEPA signal) |
-| Mirror | $\mathcal{L}_\text{mirror}$ | `lambda_mirror` | $\lVert \mathrm{enc}(o) + \mathrm{enc}(\mathrm{flip}(o)) - 2z^*\rVert^2$ | Break the $\lvert\theta\rvert$ vs $\theta$ sign degeneracy (no labels) |
+| Inverse dyn. | $\mathcal{L}_\text{inv}$ | `lambda_inv` | $\big\lVert \psi(z_0, z_H) - \bar u/s\big\rVert^2,\ \ \bar u=\tfrac1H\sum_k u_k$ | Recover mean action from $(z_0, z_H)$ (anti-collapse) |
 | Fixed point | $\mathcal{L}_\text{fp}$ | `lambda_fp` | $\lVert f(z^*, 0) - z^*\rVert^2$ | $z^*$ is an equilibrium under $u=0$ |
+| Spectral | $\mathcal{L}_\text{spec}$ | `lambda_spec` | $\sum_{\lambda^*}\min_i\lvert\lambda_i-\lambda^*\rvert^2 + 2(\rho-\rho^*)^2$ | Match learned eigenvalues to GT unstable set |
+| PBH | $\mathcal{L}_\text{PBH}$ | `lambda_PBH` | $1 - \max_{u}\cos^2\!\big(B_\text{aug},\, v_u\big)$, with $v_u$ = unstable eigenvectors of $A_\text{aug}$ | Input must excite the unstable modes: align $B_\text{aug}$ with the unstable eigenvectors of the companion-form Jacobian |
 | dynSIG | $\mathcal{L}_\text{dynSIG}$ | `lambda_dynSIG` | $\dfrac{1}{KP}\sum_{k,p}\big[(\phi^{re}_{kp} - e^{-\frac12\omega_p^2 v_k})^2 + (\phi^{im}_{kp})^2\big],\ \ v_k = w_k^\top\Sigma_\text{tgt}w_k$ | Shape $\mathrm{cov}(z)$ toward the Gramian target $\Sigma_\text{tgt}$ |
-| SIGreg | $\mathcal{L}_\text{sigreg}$ | `lambda_sigreg` | $\dfrac{1}{KP}\sum_{k,p}\big[(\phi^{re}_{kp} - e^{-\omega_p^2/2})^2 + (\phi^{im}_{kp})^2\big]$ | Isotropic collapse prevention ($z\sim\mathcal N(0,I)$) |
+| Mirror | $\mathcal{L}_\text{mirror}$ | `lambda_mirror` | $\lVert \mathrm{enc}(o) + \mathrm{enc}(\mathrm{flip}(o)) - 2z^*\rVert^2$ | Break the $\lvert\theta\rvert$ vs $\theta$ sign degeneracy (no labels). See [mirror_loss.md](mirror_loss.md)|
+| SIGreg | $\mathcal{L}_\text{sigreg}$ | `lambda_sigreg` | $\dfrac{1}{KP}\sum_{k,p}\big[(\phi^{re}_{kp} - e^{-\omega_p^2/2})^2 + (\phi^{im}_{kp})^2\big]$ | Isotropic collapse prevention ($z\sim\mathcal N(0,I)$). See [sigreg.md](sigreg.md) |
 | Variance floor | $\mathcal{L}_\text{varfloor}$ | `lambda_varfloor` | $\dfrac{1}{d}\sum_j \mathrm{relu}\!\big(\sqrt{\Sigma_{\text{tgt},jj}} - \sqrt{\mathrm{var}(z_j)+\epsilon}\big)^2$ | Anti-collapse gradient that stays finite at full collapse |
 | Spectral eigvec | $\mathcal{L}_\text{spec\_eig}$ | `lambda_spec_eig` | $\lVert A\,\hat v_u - \lambda^*\,\hat v_u\rVert^2$ | Align dominant unstable mode of $A$ with GT ($\hat v_u$ = latent GT eigvec, $\lambda^*$ its eigenvalue) |
 | State decode | $\mathcal{L}_\text{state}$ | `lambda_state` | $\dfrac{1}{H+1}\sum_{k=0}^{H}\mathrm{mean}\big(w\odot(\mathrm{sh}(z_k)-s_k)\big)^2$ | Decode physical state $s=(x,\dot x,\theta,\dot\theta)$, weights $w=[50,0.1,100,1]$ |
 | Eq. anchor | $\mathcal{L}_\text{anchor}$ | `lambda_anchor` | $\mathrm{mean}\big(w\odot \mathrm{sh}(z^*)^2\big)$ | $\mathrm{sh}(z^*)$ decodes to the zero state |
 | Encoder anchor | $\mathcal{L}_\text{enc\_anchor}$ | `lambda_enc_anchor` | $\mathrm{mean}\big(\mathrm{enc}(o_\text{eq})^2\big)$ | Pull $\mathrm{enc}(o_\text{eq})$ toward the origin |
-| Inverse dyn. | $\mathcal{L}_\text{inv}$ | `lambda_inv` | $\big\lVert \psi(z_0, z_H) - \bar u/s\big\rVert^2,\ \ \bar u=\tfrac1H\sum_k u_k$ | Recover mean action from $(z_0, z_H)$ (anti-collapse) |
-| Spectral (legacy) | $\mathcal{L}_\text{spec}$ | `lambda_spec` | $\sum_{\lambda^*}\min_i\lvert\lambda_i-\lambda^*\rvert^2 + 2(\rho-\rho^*)^2$ | Match learned eigenvalues to GT unstable set |
 | Spectral marginal | $\mathcal{L}_\text{spec\_marginal}$ | `lambda_spec_marginal` | $\sum_{i\in\mathcal{K}}\lvert\lambda_i - 1\rvert^2$ | Pull the $k$ near-marginal eigenvalues toward 1 |
-| PBH | $\mathcal{L}_\text{PBH}$ | `lambda_PBH` | $1 - \max_{u}\cos^2\!\big(B_\text{aug},\, v_u\big)$, with $v_u$ = unstable eigenvectors of $A_\text{aug}$ | Input must excite the unstable modes: align $B_\text{aug}$ with the unstable eigenvectors of the companion-form Jacobian |
 | Local linear. | $\mathcal{L}_\text{local}$ | `lambda_local` | $\big\lVert f(z,u) - \big(z^* + A(z-z^*) + Bu\big)\big\rVert^2$ | Enforce local linear dynamics near eq |
 | Unstable margin | $\mathcal{L}_\text{unstable}$ | `lambda_unstable` | $\mathrm{relu}(1+\eta-\rho)^2 + \mathrm{relu}(\rho-\rho_{\max})^2$ | Keep $\rho$ in $[1+\eta,\ \rho_{\max}]$ (data-driven, no GT) |
 | VICReg | $\mathcal{L}_\text{vicreg}$ | `use_vicreg` | $\lambda_\text{var}\,\dfrac1d\sum_j\mathrm{relu}\!\big(1-\sqrt{\mathrm{var}(z_j)+\epsilon}\big) + \nu\,\dfrac1d\big(\lVert\mathrm{Cov}(z)\rVert_F^2 - \textstyle\sum_j\mathrm{Cov}(z)_{jj}^2\big)$ | Variance + covariance collapse prevention |
@@ -72,7 +81,6 @@ This table is the **full menu** of available terms; only those with non-zero wei
 
 The Gramian target used by dynSIG / varfloor is $\Sigma_\text{tgt} = (1-\alpha)\bar W + \alpha I$, where $\bar W$ is the finite-horizon controllability Gramian $W_T = \sum_{k=0}^{T_g-1} A^k B B^\top (A^\top)^k$ normalised to unit mean-diagonal. It is computed on the augmented system and then **projected to the current-state $(d\times d)$ block** (last $d$ rows/cols) so it matches `z`. $\Sigma_\text{tgt}$ is `detach()`ed, so no gradient flows through $A, B$.
 
-$\mathcal{L}_\text{mirror}$ is currently disabled (`lambda_mirror = 0`) in all active configs. For why it takes the form $\mathrm{enc}(o) + \mathrm{enc}(\mathrm{flip}(o)) = 2z^*$, see [mirror_loss.md](mirror_loss.md).
 
 **Gating** (see `trainer.py`): `L_spec` / `L_PBH` require the GT unstable eigenvalues and the latent Jacobian, recomputed every `jacobian_every` steps (`jacobian_every: 1` in the JEPA configs — cost is negligible at d=8); `L_dynSIG` / `L_varfloor` require $\Sigma_\text{tgt}$, built from that Jacobian and inert before the first update; `L_spec_eig` (when on) fires every step via a forward-mode JVP after `epoch ≥ spec_eig_warmup_epochs`. An optional warm-up phase (`warmup_epochs`, = 0 in fullspec) disables pred/spec/PBH/fp and trains encoder + inverse-dynamics only.
 
@@ -161,9 +169,24 @@ How `Trainer.fit()` (`training/trainer.py:765`) actually runs the optimization:
 
 ```bash
 python -m experiments.run_experiment \
-  --config-path configs/cartpole_v2_fullspec.yaml \
-  --results-dir results --seed 42
+  --config configs/cartpole_v2_fullspec.yaml \
+  --results_dir results --seed 42
 ```
+
+#### What this run does, step by step
+
+1. **Skip check.** The experiment name is built as `v2_<variant>_<dataset>_fs<frame_skip>[_fstack<k>]_seed<seed>` (here `v2_E-full_mixed_fs1_fstack2_seed42`). If `results/<exp_name>/model_final.pt` already exists, the run **exits immediately and returns the latest cached `results.json`** — pass `--force` to retrain.
+2. **Ground truth.** Builds the analytical cartpole linearization (`ground_truth/cartpole_gt.py`) → true unstable eigenvalues for the spectral loss and probes.
+3. **Equilibrium image.** Renders the upright/centered frame $o_\text{eq}$ (the deterministic render of state $0$) — used for self-loop injection and as the fp-loss anchor ($z^* = \mathrm{enc}(o_\text{eq})$). It is **not saved anywhere**: it's re-rendered each run, and the `n_eq_selfloop` self-loop transitions built from it are injected into the train split in memory at load time (`data/dataset.py:_inject_eq_selfloops`) — they are not part of the h5 file.
+4. **Dataset — generate or load.** Looks for `data/<config_stem>_ep_fs<frame_skip>_seed<seed>.h5` (here `data/cartpole_v2_fullspec_ep_fs1_seed42.h5`). If it exists it is **loaded as-is** (no simulation). Otherwise `data/dataset.py:generate_dataset()` rolls out the real pygame env for every mix in the config's `data:` section (random / LQR expert / equilibrium / PRBS / passive), renders all frames to 64×64, and saves the h5 to that path. Note the cache key is only *(config stem, frame_skip, seed)* — editing the `data:` section of an existing config does **not** regenerate; delete the h5 first. (Exception: `n_eq_selfloop` is applied at load time, not baked into the h5, so editing it takes effect immediately.)
+5. **Model.** Builds the JEPA model from the `model:` section (CNN encoder, d=8, W=3 for fullspec).
+6. **Training.** `Trainer` (or `MinimalTrainer` if `trainer: minimal`) runs the [training phase](#training-phase); checkpoints go to `results/<exp_name>/checkpoints/`, final weights to `results/<exp_name>/model_final.pt`.
+7. **Identification.** $z^* = \mathrm{enc}(o_\text{eq})$; companion-form Jacobian at $z^*$ → slice the current-state block $A_\text{jac}$ ($d\times d$), $B_\text{jac}$ ($d\times m$).
+8. **Control evaluation.** LQR on $(A_\text{jac}, B_\text{jac})$ and CEM/MPC planning, executed closed-loop on the real env (skippable via `--no-control`, restrictable via `--cem-only`).
+9. **Probes.** P1 spectral / P2 PBH / P3 linearization residual / P4 decoder vs. ground truth.
+10. **Outputs.** Everything is written to a **timestamped** dir `results/<exp_name>/<YYYYMMDD_HHMMSS>/` — `results.json` (control success rate, settling time, cost, spectral-radius error, PBH μ_S, residuals, DMDc quality) plus eval artifacts (frames, videos, npy arrays). The timestamping means repeated runs never overwrite each other's results; only the model weights at `results/<exp_name>/model_final.pt` are a stable, overwritten path (so `--eval-only` always finds the latest model).
+
+Other useful flags: `--eval-only` (+ optionally `--checkpoint <path>`) re-runs steps 7–10 on saved weights; `--resume <ckpt>` continues training; `--epochs N` overrides the config.
 
 - **Configs** (`configs/*.yaml`) define the variants being compared:
   - `cartpole_v2_fullspec.yaml` — flagship: CNN encoder, frame_stack 2; pred + inv + fp + spec + PBH + dynSIG.
@@ -176,6 +199,18 @@ python -m experiments.run_experiment \
   - `cartpole_jepa_recon.yaml` — JEPA with reconstruction.
 - **Entry points** (`setup.py`): `jepa-run` → `experiments.run_experiment:main`, `jepa-grid` → `experiments.run_all:main`.
 - **Dependencies** (`requirements.txt`): `torch>=2.0`, `torchvision`, `numpy`, `scipy`, `gymnasium>=0.29`, `pygame`, `h5py`, `PyYAML`, `pandas`, `matplotlib`, `seaborn`, `scikit-learn`, `tqdm`, `pytest`.
+
+#### Oumayma's torch
+
+Personal setup: datasets and results go to scratch instead of the repo defaults (`JEPA_SCRATCH` is exported in `~/.bashrc` as `/scratch/ob2184/JEPA_control_scratch`):
+
+```bash
+python -m experiments.run_experiment \
+    --config configs/cartpole_v2_fullspec.yaml --seed 42 \
+    --data_dir "$JEPA_SCRATCH/data" --results_dir "$JEPA_SCRATCH/results"
+```
+
+(`train_ae.py` / `generate_data.py` take the same dirs with dash spelling: `--data-dir`, `--results-dir`.)
 
 ## Experiments & outputs
 
