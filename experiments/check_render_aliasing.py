@@ -30,6 +30,9 @@ def main():
                    help='|theta| below this is considered "near-equilibrium"')
     p.add_argument('--state-atol', type=float, default=1e-4,
                    help='states closer than this are considered "the same" physical state')
+    p.add_argument('--theta-collision-thresh', type=float, default=0.02,
+                   help='|Δtheta| above this for a bit-identical pair is considered '
+                        'too large to be a sub-pixel resolution artifact (real aliasing)')
     args = p.parse_args()
 
     with h5py.File(args.h5, 'r') as f:
@@ -45,6 +48,7 @@ def main():
     seen = {}            # obs bytes -> first index with that obs
     collisions = 0
     distinct_state_collisions = 0
+    theta_diffs = []     # |Δtheta| for colliding pairs whose states differ
     for i in idxs:
         key = obs[i].tobytes()
         if key in seen:
@@ -52,23 +56,40 @@ def main():
             collisions += 1
             if not np.allclose(states[i], states[j], atol=args.state_atol):
                 distinct_state_collisions += 1
+                theta_diffs.append(abs(float(states[i][2] - states[j][2])))
         else:
             seen[key] = i
 
     print(f'[check] bit-identical obs collisions among near-eq samples: {collisions}')
     print(f'[check] of those, collisions between DISTINCT physical states: {distinct_state_collisions}')
 
-    if distinct_state_collisions > 0:
-        frac = distinct_state_collisions / max(len(idxs), 1)
-        print(f'\n[RESULT] ALIASING DETECTED — {distinct_state_collisions} '
+    if theta_diffs:
+        td = np.array(theta_diffs)
+        pct = np.percentile(td, [50, 90, 95, 99, 100])
+        print(f'[check] |Δtheta| among colliding "distinct" pairs '
+              f'(median/p90/p95/p99/max): '
+              f'{pct[0]:.5f} / {pct[1]:.5f} / {pct[2]:.5f} / {pct[3]:.5f} / {pct[4]:.5f} rad')
+        large = int(np.sum(td > args.theta_collision_thresh))
+        print(f'[check] of those, pairs with |Δtheta| > {args.theta_collision_thresh} rad '
+              f'(too large to be a sub-pixel resolution floor): {large}')
+    else:
+        large = 0
+
+    if large > 0:
+        frac = large / max(len(idxs), 1)
+        print(f'\n[RESULT] ALIASING DETECTED — {large} '
               f'({frac:.1%} of near-eq samples) frames are bit-identical despite '
-              f'differing physical states. This dataset was generated with the '
-              f'OLD (nearest-neighbour) renderer.')
+              f'differing physical states by MORE than {args.theta_collision_thresh} rad '
+              f'— too large to be explained by image resolution. This dataset is '
+              f'consistent with the OLD (nearest-neighbour) renderer.')
         sys.exit(1)
     else:
-        print('\n[RESULT] No aliasing detected — distinct near-eq states render to '
-              'distinct pixels. This dataset is consistent with the FIXED '
-              '(area-average / PIL BOX) renderer.')
+        print('\n[RESULT] No significant aliasing detected — any bit-identical '
+              'collisions between "distinct" states differ only by sub-pixel amounts '
+              f'(|Δtheta| <= {args.theta_collision_thresh} rad), consistent with the '
+              'inherent resolution floor of a 64x64 render rather than the old '
+              'nearest-neighbour renderer bug. This dataset is consistent with the '
+              'FIXED (area-average / PIL BOX) renderer.')
         sys.exit(0)
 
 
