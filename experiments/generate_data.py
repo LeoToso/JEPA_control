@@ -34,10 +34,12 @@ def main():
     data_cfg   = cfg['data']
     frame_skip = int(env_cfg.get('frame_skip', 1))
 
-    # Use the same h5 path the training scripts look for
+    # Use the same h5 path the training scripts look for. Keyed by config stem
+    # (not just "ae"/"v2") so configs with different data mixes (e.g. noLQR vs
+    # withLQR vs bounou) don't collide on the same cached dataset file.
     config_stem = Path(args.config).stem
     if 'ae' in config_stem:
-        h5_name = f'cartpole_ae_ep_seed{args.seed}.h5'
+        h5_name = f'{config_stem}_ep_seed{args.seed}.h5'
     else:
         h5_name = f'cartpole_v2_ep_fs{frame_skip}_seed{args.seed}.h5'
 
