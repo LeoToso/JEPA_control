@@ -108,6 +108,17 @@ class Trainer:
         self.use_target_encoder = bool(self.cfg.get('use_target_encoder', False))
         self.target_encoder_momentum = float(
             self.cfg.get('target_encoder_momentum', self.ema_momentum))
+        # EMA target encoder and SIGreg-family losses are both anti-collapse
+        # mechanisms (slowly-moving targets vs. distributional regularisation);
+        # combining them is redundant and can fight each other — pick one.
+        if self.use_target_encoder and (self.lambda_sigreg > 0 or self.lambda_dynSIG > 0):
+            raise ValueError(
+                'use_target_encoder=True together with lambda_sigreg>0 or '
+                'lambda_dynSIG>0 is not supported: EMA target encoder and '
+                'SIGreg-family regularisation are redundant/competing '
+                'collapse-prevention mechanisms. Set use_target_encoder=False '
+                'when using SIGreg/dynSIG, or lambda_sigreg=lambda_dynSIG=0 '
+                'when using the EMA target encoder.')
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
