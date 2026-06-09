@@ -509,6 +509,8 @@ class Trainer:
             mirror_loss = F.mse_loss(z_0 + z_flip, target)
             total_loss = total_loss + self.lambda_mirror * mirror_loss
             info['mirror_loss'] = mirror_loss.item()
+            info['mirror_zstar_norm'] = self._z_star_ema.detach().norm().item()
+            info['mirror_residual_norm'] = (z_0 + z_flip - target).detach().norm(dim=-1).mean().item()
 
         # ── spec_eig via JVP: fires every training step after warmup ─────────
         # Computes A_jac @ v̂_u in ONE forward pass (forward-mode JVP), avoiding
@@ -884,7 +886,10 @@ class Trainer:
             varfloor_str = f"  vf={tr.get('varfloor_loss',  0):.4f}" if 'varfloor_loss'  in tr else ''
             temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
             pbh_str      = f"  pbh={tr.get('pbh_loss',       0):.4f}" if 'pbh_loss'       in tr else ''
-            mirror_str   = f"  mir={tr.get('mirror_loss',    0):.4f}" if 'mirror_loss'    in tr else ''
+            mirror_str   = (f"  mir={tr.get('mirror_loss', 0):.4f}"
+                            f"(z*={tr.get('mirror_zstar_norm', 0):.3f}"
+                            f",res={tr.get('mirror_residual_norm', 0):.3f})"
+                            ) if 'mirror_loss' in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
@@ -903,16 +908,19 @@ class Trainer:
             return history
 
         # Choose model for Jacobian / control evaluation:
-        #   • If spectral reg converged at or before best-val epoch → best-val model
+        #   • No spectral reg (lambda_spec=0): always use best-val — spec is irrelevant.
+        #   • Spectral reg converged at or before best-val epoch → best-val model
         #     has both low val loss AND correct spectral properties.
         #   • Otherwise spectral convergence lags best-val → keep final-epoch weights.
-        if (_spec_conv_epoch is not None
-                and _spec_conv_epoch <= _best_val_epoch):
+        no_spec = (self.lambda_spec <= 0 and float(self.cfg.get('lambda_spec_marginal', 0)) <= 0
+                   and float(self.cfg.get('lambda_spec_eig', 0)) <= 0)
+        if no_spec or (_spec_conv_epoch is not None and _spec_conv_epoch <= _best_val_epoch):
             self.model.load_state_dict({k: v.to(self.device)
                                          for k, v in best_state.items()})
+            spec_note = 'no spec reg' if no_spec else f'spec converged epoch {_spec_conv_epoch+1}'
             print(f'[train] Using best-val model  '
                   f'epoch={_best_val_epoch+1}  val={self.best_val_loss:.4f}  '
-                  f'(spec converged epoch {_spec_conv_epoch+1})')
+                  f'({spec_note})')
         else:
             print(f'[train] Using final-epoch model  '
                   f'(spec converged epoch '
