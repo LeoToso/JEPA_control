@@ -78,6 +78,11 @@ class Trainer:
         self.lambda_sigreg      = float(self.cfg.get('lambda_sigreg', 0.0))
         self.sigreg_num_slices  = int(self.cfg.get('sigreg_num_slices', 128))
         self.sigreg_num_points  = int(self.cfg.get('sigreg_num_points', 17))
+        # When True, SIGreg operates on the full trajectory (B*(H+1), d) rather than
+        # z_0 only. Needed when use_target_encoder=False: the Epps-Pulley gradient
+        # vanishes at z=0 (sin(ωy)→0), so having H+1 gradient paths instead of 1
+        # provides enough signal to bootstrap encoder diversity before pred collapses.
+        self.sigreg_all_steps   = bool(self.cfg.get('sigreg_all_steps', False))
         # ── Dynamics-aware regularization ─────────────────────────────────────
         self.lambda_dynSIG  = float(self.cfg.get('lambda_dynSIG', 0.0))
         self.dynSIG_T_g     = int(  self.cfg.get('dynSIG_T_g',    5))
@@ -356,8 +361,9 @@ class Trainer:
         # Prevents collapse without stop-gradient or teacher networks.
         if self.lambda_sigreg > 0:
             from losses.sigreg import sigreg_loss
+            z_sig = z_all.reshape(-1, d) if self.sigreg_all_steps else z_all[:, 0]
             sig_loss = sigreg_loss(
-                z_all[:, 0],
+                z_sig,
                 num_slices=self.sigreg_num_slices,
                 num_points=self.sigreg_num_points,
             )

@@ -1,0 +1,128 @@
+environment:
+  name: cartpole
+  frame_skip: 1
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 8
+  action_latent_dim: 1
+  action_encoder: linear
+  patch_size: 8
+  frame_stack: 2            # 2 consecutive frames → encoder sees position + velocity
+  predictor_window: 3
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_hidden_dim: 64
+  predictor_n_layers: 2
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 200
+  horizon: 10
+  # ── Active losses ────────────────────────────────────────────────────────
+  lambda_pred: 1.0          # JEPA prediction loss
+  lambda_sigreg: 1.0        # SIGreg: isotropic N(0,I) collapse prevention
+  sigreg_num_slices: 32
+  sigreg_num_points: 9
+  sigreg_all_steps: true    # apply SIGreg to all H+1 trajectory positions, not just z_0
+  # ── Run J: mirror antisymmetry replaces state supervision ────────────────
+  # Horizontal flip of the cartpole image negates all state components:
+  #   (x, ẋ, θ, θ̇) → (-x, -ẋ, -θ, -θ̇)
+  # Enforcing encoder(obs) + encoder(flip(obs)) ≈ 2z* breaks the |θ| vs θ
+  # sign degeneracy without any state labels — the encoder must be
+  # antisymmetric around z*, which forces it to encode θ with correct sign.
+  lambda_mirror: 1.0
+  lambda_fp: 0.0
+  # ── All other losses off ─────────────────────────────────────────────────
+  lambda_state: 0.0
+  lambda_anchor: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0
+  inv_action_scale: 10.0
+  lambda_mirror_weight: 0.0
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_spec_eig: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_varfloor: 0.0
+  lambda_temp: 0.0
+  use_vicreg: false
+  vicreg_lambda: 25.0
+  vicreg_nu: 1.0
+  # ── No EMA target encoder — SIGreg + sigreg_all_steps prevent collapse ───
+  use_target_encoder: false
+  target_encoder_momentum: 0.99
+  aug_noise_std: 0.0
+  state_encoder_grad_scale: 1.0
+  # Slow predictor so SIGreg can bootstrap encoder diversity before pred collapses.
+  # Epps-Pulley gradient ∝ sin(ωy) → 0 at z=0; predictor would win the race
+  # at predictor_lr_mult=1.0 (pred→0 in 2 epochs). 0.1x gives SIGreg ~20 epochs.
+  predictor_lr_mult: 0.1
+  predictor_window: 3
+  checkpoint_every: 10
+  warmup_epochs: 0
+  warmup_lambda_state: 0.0
+  freeze_encoder_epochs: 0
+  encoder_lr_unfreeze_mult: 0.1
+  jacobian_every: 10
+  rho_max_init: 1.3
+  local_state_threshold: 0.05
+  unstable_eta: 0.05
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+cem:
+  horizon: 25
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 3.0
+  n_trials: 50
+
+data:
+  train_frac: 0.8
+  val_frac: 0.1
+  n_random_episodes: 50
+  random_ep_len: 200
+  random_init_range: 1.0
+  n_lqr_episodes: 100
+  lqr_ep_len: 100
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.0
+  n_equilibrium: 500
+  eq_ep_len: 50
+  n_eq_selfloop: 200
+  eq_init_range: 0.002
+  eq_noise_std: 0.001
+  n_pe_episodes: 50
+  pe_ep_len: 40
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  n_passive_episodes: 200
+  passive_ep_len: 50
+  passive_init_range: 0.05
