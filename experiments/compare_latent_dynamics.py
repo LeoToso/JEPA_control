@@ -230,27 +230,32 @@ def plot_pearson(ax, R: np.ndarray, title: str):
 
 def compute_gramian_eigenvalues(model, z_star: np.ndarray, device,
                                 T: int = 20) -> np.ndarray:
-    """Controllability Gramian W_T = Σ A^k B_eff B_eff^T (A^T)^k, return sorted eigvals."""
-    from control.jacobian import compute_jacobian_np
-    A, B_jac = compute_jacobian_np(model, z_star, device)
+    """Controllability Gramian in the augmented (W*d)-dimensional state space.
 
-    # B_eff: project B_jac through W_enc for raw scalar action
+    Uses the full augmented Jacobian A_aug so that rho(A_aug) and the
+    Gramian eigenspectrum are correct for windowed predictors (W > 1).
+    For W=1 this is identical to the previous behaviour.
+    """
+    from control.jacobian import compute_augmented_jacobian_np
+    A_aug, B_aug = compute_augmented_jacobian_np(model, z_star, device)
+
+    # B_eff_aug: project encoded-action columns through W_enc → scalar action
     if hasattr(model.action_encoder, 'W'):
         W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
-        B_eff = B_jac @ W_enc  # (d, 1)
+        B_eff = B_aug @ W_enc   # (W*d, 1)
     else:
-        B_eff = B_jac  # (d, 1) already
+        B_eff = B_aug            # (W*d, 1) already
 
-    # Gramian accumulation
-    d = A.shape[0]
-    W_gram = np.zeros((d, d))
+    # Gramian accumulation in augmented space
+    Wd = A_aug.shape[0]
+    W_gram = np.zeros((Wd, Wd))
     AB = B_eff.copy()
     for _ in range(T):
         W_gram += AB @ AB.T
-        AB = A @ AB
+        AB = A_aug @ AB
 
     eigvals = np.linalg.eigvalsh(W_gram)
-    return np.sort(np.abs(eigvals))[::-1], A, B_eff
+    return np.sort(np.abs(eigvals))[::-1], A_aug, B_eff
 
 
 def plot_gramian(ax, eigvals: np.ndarray, title: str):
@@ -418,10 +423,10 @@ def main():
 
         print(f'    computing Gramian (T={args.gramian_T}) ...')
         try:
-            gramian_eigvals, A_jac, B_eff = compute_gramian_eigenvalues(
+            gramian_eigvals, A_aug, B_eff = compute_gramian_eigenvalues(
                 model, z_star, device, T=args.gramian_T)
-            rho = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
-            print(f'    rho(A_jac)={rho:.4f}  ||B_eff||={np.linalg.norm(B_eff):.4f}')
+            rho = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
+            print(f'    rho(A_aug)={rho:.4f}  ||B_eff||={np.linalg.norm(B_eff[:len(z_star)]):.4f}')
         except Exception as exc:
             print(f'    Gramian failed: {exc}')
             gramian_eigvals = None
