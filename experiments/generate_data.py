@@ -23,6 +23,8 @@ def main():
     p.add_argument('--config',   default='configs/cartpole_ae_baseline.yaml')
     p.add_argument('--data-dir', default='data')
     p.add_argument('--seed',     type=int, default=42)
+    p.add_argument('--output',   default=None,
+                   help='Custom h5 output path (overrides auto-naming)')
     p.add_argument('--force',    action='store_true',
                    help='Regenerate even if h5 already exists')
     args = p.parse_args()
@@ -34,14 +36,15 @@ def main():
     data_cfg   = cfg['data']
     frame_skip = int(env_cfg.get('frame_skip', 1))
 
-    # Use the same h5 path the training scripts look for
-    config_stem = Path(args.config).stem
-    if 'ae' in config_stem:
-        h5_name = f'cartpole_ae_ep_seed{args.seed}.h5'
+    if args.output:
+        h5_path = Path(args.output)
     else:
-        h5_name = f'cartpole_v2_ep_fs{frame_skip}_seed{args.seed}.h5'
-
-    h5_path = Path(args.data_dir) / h5_name
+        config_stem = Path(args.config).stem
+        if 'ae' in config_stem:
+            h5_name = f'cartpole_ae_ep_seed{args.seed}.h5'
+        else:
+            h5_name = f'cartpole_v2_ep_fs{frame_skip}_seed{args.seed}.h5'
+        h5_path = Path(args.data_dir) / h5_name
     if h5_path.exists() and not args.force:
         print(f'[data] {h5_path} already exists. Use --force to regenerate.')
         return

@@ -111,6 +111,7 @@ class Trainer:
         # the online encoder (via EMA), so pred_loss stays non-zero even when the
         # online encoder starts to collapse.
         self.use_target_encoder = bool(self.cfg.get('use_target_encoder', False))
+        self.detach_targets = bool(self.cfg.get('detach_targets', True))
         self.target_encoder_momentum = float(
             self.cfg.get('target_encoder_momentum', self.ema_momentum))
         self.state_encoder_grad_scale = float(
@@ -286,15 +287,15 @@ class Trainer:
         else:
             z_0_aug = z_0
         d   = z_0.shape[-1]
-        with torch.no_grad():
-            obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
-            # Use EMA target encoder for targets when enabled: provides slowly-
-            # moving targets that remain diverse even if the online encoder begins
-            # to collapse, keeping pred_loss non-zero and its gradient active.
-            _target_enc = (self.model.target_encoder
-                           if self.use_target_encoder
-                           else self.model.encoder)
-            z_rest   = _target_enc(obs_rest).view(B, H, d)
+        obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
+        if self.detach_targets:
+            with torch.no_grad():
+                _target_enc = (self.model.target_encoder
+                               if self.use_target_encoder
+                               else self.model.encoder)
+                z_rest = _target_enc(obs_rest).view(B, H, d)
+        else:
+            z_rest = self.model.encoder(obs_rest).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
@@ -319,9 +320,7 @@ class Trainer:
                 else:
                     self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
 
-        # Stop-gradient targets (from EMA target encoder for z_{1..H}).
-        # Detach so backward only updates via z_0 (online encoder).
-        z_targets = z_all[:, 1:].detach()              # (B, H, d)
+        z_targets = z_all[:, 1:].detach() if self.detach_targets else z_all[:, 1:]
 
         # Multi-step unrolled prediction loss with optional window context.
         # Convention (matches CEM): window = [z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]

@@ -271,6 +271,10 @@ def generate_dataset(
     data['splits']                      = splits
     data['action_cov']                  = np.atleast_2d(action_cov)
     data['action_cov_condition_number'] = kappa
+    data['action_scale'] = np.float32(max(abs(action_low), abs(action_high)))
+    train_states = data['states'][splits['train']]
+    data['state_mean'] = train_states.mean(axis=0).astype(np.float32)
+    data['state_std']  = np.maximum(train_states.std(axis=0), 1e-8).astype(np.float32)
 
     total_eps = next_ep_id
     print(f'[data] Total: {N:,} transitions  '
@@ -288,6 +292,12 @@ def _save_hdf5(data, path, splits):
             f.create_dataset(key, data=data[key], compression='gzip', compression_opts=4)
         f.create_dataset('action_cov', data=data['action_cov'])
         f.attrs['action_cov_condition_number'] = float(data['action_cov_condition_number'])
+        if 'action_scale' in data:
+            f.attrs['action_scale'] = float(data['action_scale'])
+        if 'state_mean' in data:
+            f.create_dataset('state_mean', data=data['state_mean'])
+        if 'state_std' in data:
+            f.create_dataset('state_std', data=data['state_std'])
         grp = f.create_group('splits')
         for split_name, idx in splits.items():
             grp.create_dataset(split_name, data=idx)
@@ -297,11 +307,12 @@ def load_dataset(path):
     data = {}
     with h5py.File(path, 'r') as f:
         for key in ['obs', 'states', 'actions', 'next_obs', 'next_states',
-                    'action_cov', 'episode_ids']:
+                    'action_cov', 'episode_ids', 'state_mean', 'state_std']:
             if key in f:
                 data[key] = f[key][:]
         data['action_cov_condition_number'] = float(
             f.attrs.get('action_cov_condition_number', 1.0))
+        data['action_scale'] = float(f.attrs.get('action_scale', 1.0))
         splits = {}
         if 'splits' in f:
             for split_name in f['splits']:
@@ -355,7 +366,9 @@ class TrajectoryDataset(Dataset):
     """
 
     def __init__(self, data, split='train', horizon: int = 20, frame_stack: int = 1,
-                 obs_eq: np.ndarray = None, n_eq_selfloop: int = 0):
+                 obs_eq: np.ndarray = None, n_eq_selfloop: int = 0,
+                 action_scale: float = 1.0, state_mean: np.ndarray = None,
+                 state_std: np.ndarray = None):
         splits = data.get('splits', {})
         idx    = (splits[split] if splits and split in splits
                   else np.arange(len(data['obs'])))
@@ -369,6 +382,9 @@ class TrajectoryDataset(Dataset):
                            else np.arange(len(idx), dtype=np.int32))
         self.horizon     = horizon
         self.frame_stack = frame_stack
+        self.action_scale = action_scale
+        self.state_mean = state_mean
+        self.state_std  = state_std
         if obs_eq is not None and n_eq_selfloop > 0:
             self._inject_eq_selfloops(obs_eq, n_eq_selfloop)
         self.valid_starts = self._find_valid_starts()
@@ -427,16 +443,22 @@ class TrajectoryDataset(Dataset):
         obs_seq = torch.stack(frames)                                  # (H+1, 3*FS, h, w)
 
         actions = torch.from_numpy(self.actions[start:start + H])     # (H, 1)
+        if self.action_scale != 1.0:
+            actions = actions / self.action_scale
 
         states_list = [self.states[start + k] for k in range(H)]
         states_list.append(self.next_states[start + H - 1])
         states = torch.from_numpy(np.stack(states_list))               # (H+1, 4)
+        if self.state_mean is not None and self.state_std is not None:
+            states = (states - torch.from_numpy(self.state_mean)) / torch.from_numpy(self.state_std)
 
         return {'obs_seq': obs_seq, 'actions': actions, 'states': states}
 
 
 def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack=1,
-                     obs_eq: np.ndarray = None, n_eq_selfloop: int = 0):
+                     obs_eq: np.ndarray = None, n_eq_selfloop: int = 0,
+                     action_scale: float = 1.0,
+                     state_mean: np.ndarray = None, state_std: np.ndarray = None):
     """Return dataloaders. horizon=1 -> TransitionDataset; horizon>1 -> TrajectoryDataset."""
     loaders = {}
     for split in ('train', 'val', 'test'):
@@ -446,7 +468,9 @@ def make_dataloaders(data, batch_size=256, num_workers=0, horizon=1, frame_stack
             ds = TrajectoryDataset(data, split=split, horizon=horizon,
                                    frame_stack=frame_stack,
                                    obs_eq=(obs_eq if split == 'train' else None),
-                                   n_eq_selfloop=(n_eq_selfloop if split == 'train' else 0))
+                                   n_eq_selfloop=(n_eq_selfloop if split == 'train' else 0),
+                                   action_scale=action_scale,
+                                   state_mean=state_mean, state_std=state_std)
         else:
             ds = TransitionDataset(data, split=split)
         loaders[split] = DataLoader(
