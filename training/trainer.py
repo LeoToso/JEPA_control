@@ -149,14 +149,18 @@ class Trainer:
         else:
             self.state_head = None
 
-        # Inverse dynamics head: ψ(z_t, z_{t+1}) → u_t.
-        # Trains encoder (when unfrozen) to capture action-relevant features
-        # without requiring state labels — only actions, which are always available.
-        # After encoder freeze, keeps ψ calibrated as a persistent diagnostic.
+        # Inverse dynamics head: ψ(z_0, z_H) → [u_0, ..., u_{H-1}].
+        # Predicts the full action sequence from the latent gap, forcing the
+        # encoder to capture action-relevant temporal structure.
         if self.lambda_inv > 0:
             d_lat = model.config.latent_dim
+            H_inv = int(self.cfg.get('horizon', 10))
+            inv_hidden = int(self.cfg.get('inv_hidden_dim', d_lat))
             self.inv_head = nn.Sequential(
-                nn.Linear(2 * d_lat, d_lat), nn.ReLU(), nn.Linear(d_lat, 1)
+                nn.Linear(2 * d_lat, inv_hidden), nn.ReLU(),
+                nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
+                nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
+                nn.Linear(inv_hidden, H_inv),
             ).to(self.device)
             self.optimizer.add_param_group({'params': self.inv_head.parameters()})
         else:
@@ -426,17 +430,14 @@ class Trainer:
                 total_loss = total_loss + self.lambda_temp * temp_loss
                 info['temp_loss'] = temp_loss.item()
 
-        # Multi-step inverse dynamics: ψ(z_0, z_H) → mean(u_0…u_{H-1}).
-        # Using the full-horizon gap (H steps apart) instead of consecutive pairs
-        # makes the "copy" shortcut impossible: z_0 and z_H differ substantially
-        # even when individual steps are small, satisfying the persistent-excitation
-        # condition that RichID requires for collapse prevention.
+        # Multi-step inverse dynamics: ψ(z_0, z_H) → [u_0, ..., u_{H-1}].
+        # Predicts the full action sequence from the latent gap (z_0, z_H).
         if self.lambda_inv > 0 and self.inv_head is not None:
             scale  = self.inv_action_scale
             z_pair = torch.cat([z_all[:, 0], z_all[:, H]], dim=-1)  # (B, 2d)
-            u_mean = actions.mean(dim=1) / scale                      # (B, 1)
-            u_hat  = self.inv_head(z_pair)                            # (B, 1)
-            inv_loss = F.mse_loss(u_hat, u_mean)
+            u_seq  = actions.squeeze(-1) / scale                      # (B, H)
+            u_hat  = self.inv_head(z_pair)                            # (B, H)
+            inv_loss = F.mse_loss(u_hat, u_seq)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
 

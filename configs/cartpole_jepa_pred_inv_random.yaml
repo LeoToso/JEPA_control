@@ -34,14 +34,15 @@ training:
   sigreg_num_slices: 32
   sigreg_num_points: 9
   sigreg_all_steps: true
+  lambda_inv: 1.0
+  inv_action_scale: 1.0
+  inv_hidden_dim: 64
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_fp: 0.0
   lambda_state: 0.0
   lambda_mirror: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  lambda_inv: 0.0
-  inv_action_scale: 1.0
   lambda_spec: 0.0
   lambda_spec_marginal: 0.0
   lambda_spec_eig: 0.0
