@@ -206,22 +206,18 @@ def compute_pearson_matrix(z: np.ndarray, states: np.ndarray) -> np.ndarray:
 
 
 def plot_pearson(ax, R: np.ndarray, title: str):
-    """Heatmap of Pearson r. Feature dims sorted by max |r| across state vars.
-
-    R is expected to be (4, 2d) where the feature is [z_t | z_t - z_{t-1}]:
-    the first d columns probe position encoding; the next d probe velocity encoding.
-    """
+    """Heatmap of Pearson r. Feature dims sorted by max |r| across state vars."""
     sort_idx = np.argsort(-np.max(np.abs(R), axis=0))
     R_sorted = R[:, sort_idx]
     im = ax.imshow(R_sorted, aspect='auto', cmap='RdBu_r', vmin=-1, vmax=1)
     ax.set_yticks(range(4))
     ax.set_yticklabels(['x', 'ẋ', 'θ', 'θ̇'], fontsize=9)
-    ax.set_xlabel('Feature dim (sorted by |r|)  [z_t | Δz_t]', fontsize=8)
+    ax.set_xlabel('Latent dim (sorted by max |r|)', fontsize=8)
     ax.set_title(title, fontsize=9)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     for j in range(4):
-        best = int(np.argmax(R_sorted[j]))   # max positive r
-        if R_sorted[j, best] > 0.05:         # only mark if meaningfully positive
+        best = int(np.argmax(np.abs(R_sorted[j])))
+        if np.abs(R_sorted[j, best]) > 0.05:
             ax.add_patch(plt.Rectangle((best - 0.5, j - 0.5), 1, 1,
                                        fill=False, edgecolor='lime', lw=1.5))
 
@@ -278,80 +274,79 @@ def plot_gramian(ax, eigvals: np.ndarray, title: str):
     ax.legend(fontsize=7)
 
 
-# ── Near-equilibrium encodings for phase portrait PCA ────────────────────────
+# ── (collect_near_eq_encodings removed — phase portrait now uses physical coords)
 
-def collect_near_eq_encodings(env, model, frame_stack: int, device,
-                               theta_range: float = 0.5, n_theta: int = 40) -> np.ndarray:
-    """Encode states sweeping θ ∈ [-theta_range, theta_range] at rest (x=ẋ=θ̇=0).
 
-    Returns (n_theta, d).  Used as the PCA basis for the phase portrait so that
-    z* (encoded at θ=0) lands near the centre of the projection rather than at
-    the edge of a wide random-rollout distribution.
+# ── Panel 3: Phase portrait in physical (θ, θ̇) space ─────────────────────────
+
+def plot_phase_portrait(ax, model, frame_stack: int, device, env,
+                        zs: np.ndarray, states: np.ndarray, title: str,
+                        theta_range: float = 0.5, thetadot_range: float = 2.0,
+                        grid_size: int = 14):
+    """Phase portrait of learned dynamics in (θ, θ̇) space with GT overlay.
+
+    For each grid point: render obs → encode z → predict z_next → decode
+    Δz to (Δθ, Δθ̇) via least-squares fit on rollout data.
+    Colored arrows = learned, thin black arrows = ground truth (env.step).
     """
-    thetas = np.linspace(-theta_range, theta_range, n_theta)
-    zs = []
-    for th in thetas:
-        x0 = np.array([0.0, 0.0, float(th), 0.0], dtype=np.float32)
-        obs, _, _ = env.reset_to_state(x0)
-        obs_t = _to_tensor(obs, device)
-        if frame_stack > 1:
-            obs_t = torch.cat([obs_t, obs_t], dim=1)
-        with torch.no_grad():
-            z = model.encoder(obs_t).cpu().numpy()[0]
-        zs.append(z)
-    return np.array(zs)
-
-
-# ── Panel 3: Phase portrait ───────────────────────────────────────────────────
-
-def plot_phase_portrait(ax, model, frame_stack: int, device,
-                        z_star: np.ndarray, zs: np.ndarray, title: str,
-                        grid_size: int = 14, zs_near_eq: np.ndarray = None):
-    """2D phase portrait of f(z, u=0) - z in the PC1-PC2 subspace around z*.
-
-    PCA basis is computed from near-equilibrium encodings (zs_near_eq) so that
-    z* sits near the centre of the projection.  Falls back to rollout data if
-    zs_near_eq is not provided.
-    """
-    # PCA from near-eq data so z* is centred; fall back to rollout data
-    pca_src = zs_near_eq if zs_near_eq is not None else zs
-    z_centered = pca_src - z_star[np.newaxis, :]
-    _, _, Vt = np.linalg.svd(z_centered, full_matrices=False)
-    v1, v2 = Vt[0], Vt[1]   # (d,) each
-
-    # Grid range from near-eq spread (tight, centred on z*)
-    c1_all = z_centered @ v1
-    c2_all = z_centered @ v2
-    r1 = float(np.percentile(np.abs(c1_all), 95)) * 1.2
-    r2 = float(np.percentile(np.abs(c2_all), 95)) * 1.2
-
-    c1_vals = np.linspace(-r1, r1, grid_size)
-    c2_vals = np.linspace(-r2, r2, grid_size)
-    C1, C2 = np.meshgrid(c1_vals, c2_vals)
-    dC1 = np.zeros_like(C1)
-    dC2 = np.zeros_like(C2)
-
-    W = getattr(model.config, 'predictor_window', 1)
+    W_pred = getattr(model.config, 'predictor_window', 1)
     model.eval()
+
+    w_decode, _, _, _ = np.linalg.lstsq(zs, states[:, 2:4], rcond=None)
+
+    theta_vals = np.linspace(-theta_range, theta_range, grid_size)
+    thetadot_vals = np.linspace(-thetadot_range, thetadot_range, grid_size)
+    TH, THD = np.meshgrid(theta_vals, thetadot_vals)
+    DTH_l  = np.zeros_like(TH)
+    DTHD_l = np.zeros_like(THD)
+    DTH_gt  = np.zeros_like(TH)
+    DTHD_gt = np.zeros_like(THD)
 
     for i in range(grid_size):
         for j in range(grid_size):
-            z = z_star + float(C1[i, j]) * v1 + float(C2[i, j]) * v2
-            z_t = torch.tensor(z, dtype=torch.float32, device=device).unsqueeze(0)
-            z_win = z_t.unsqueeze(1).expand(1, W, -1)
-            u_win = torch.zeros(1, W, 1, device=device)
-            with torch.no_grad():
-                z_next = model.predict(z_win, u_win).cpu().numpy()[0]
-            dz = z_next - z
-            dC1[i, j] = float(dz @ v1)
-            dC2[i, j] = float(dz @ v2)
+            th  = float(TH[i, j])
+            thd = float(THD[i, j])
+            x0 = np.array([0.0, 0.0, th, thd], dtype=np.float32)
 
-    speed = np.sqrt(dC1 ** 2 + dC2 ** 2) + 1e-9
-    ax.quiver(C1, C2, dC1 / speed, dC2 / speed, speed,
-              cmap='plasma', alpha=0.85, scale=grid_size * 1.2)
-    ax.plot(0, 0, 'r*', markersize=12, zorder=5, label='z*')
-    ax.set_xlabel(f'PC1', fontsize=8)
-    ax.set_ylabel(f'PC2', fontsize=8)
+            obs, _, _ = env.reset_to_state(x0)
+            obs_t = _to_tensor(obs, device)
+            if frame_stack > 1:
+                obs_t = torch.cat([obs_t, obs_t], dim=1)
+
+            with torch.no_grad():
+                z = model.encoder(obs_t)
+                z_win = z.unsqueeze(1).expand(1, W_pred, -1)
+                u_win = torch.zeros(1, W_pred, 1, device=device)
+                z_next = model.predict(z_win, u_win)
+                dz = (z_next - z).cpu().numpy()[0]
+
+            d_phys = dz @ w_decode
+            DTH_l[i, j]  = d_phys[0]
+            DTHD_l[i, j] = d_phys[1]
+
+            env.reset_to_state(x0)
+            _, state_next, _, _, _ = env.step(0.0)
+            DTH_gt[i, j]  = state_next[2] - th
+            DTHD_gt[i, j] = state_next[3] - thd
+
+    TH_d  = np.degrees(TH)
+    THD_d = np.degrees(THD)
+
+    speed_gt = np.sqrt(np.degrees(DTH_gt)**2 + np.degrees(DTHD_gt)**2) + 1e-9
+    ax.quiver(TH_d, THD_d,
+              np.degrees(DTH_gt) / speed_gt, np.degrees(DTHD_gt) / speed_gt,
+              color='black', alpha=0.25, scale=grid_size * 1.4,
+              width=0.003, zorder=1, label='GT')
+
+    speed_l = np.sqrt(np.degrees(DTH_l)**2 + np.degrees(DTHD_l)**2) + 1e-9
+    ax.quiver(TH_d, THD_d,
+              np.degrees(DTH_l) / speed_l, np.degrees(DTHD_l) / speed_l,
+              speed_l, cmap='plasma', alpha=0.85, scale=grid_size * 1.2,
+              zorder=2, label='Learned')
+
+    ax.plot(0, 0, 'r*', markersize=12, zorder=5, label='eq')
+    ax.set_xlabel('θ (deg)', fontsize=8)
+    ax.set_ylabel('θ̇ (deg/s)', fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.legend(fontsize=7, loc='upper right')
 
@@ -406,15 +401,15 @@ def main():
         zs, zs_vel, states, states_vel = collect_rollouts(
             env, model, frame_stack, device,
             n_rollouts=args.n_rollouts, rollout_len=args.rollout_len)
-        print(f'    collected {len(zs)} steps, {len(zs_vel)} paired steps')
+        print(f'    collected {len(zs)} steps')
 
-        # Pearson on [z_t | Δz_t] feature — captures both position and velocity
-        R = compute_pearson_matrix(zs_vel, states_vel)
+        R = compute_pearson_matrix(zs, states)
         max_r_per_state = np.max(np.abs(R), axis=1)
-        print(f'    max |r|: x={max_r_per_state[0]:.3f}  ẋ={max_r_per_state[1]:.3f}  '
-              f'θ={max_r_per_state[2]:.3f}  θ̇={max_r_per_state[3]:.3f}')
+        print(f'    max |r|: x={max_r_per_state[0]:.3f}  '
+              f'xdot={max_r_per_state[1]:.3f}  '
+              f'theta={max_r_per_state[2]:.3f}  '
+              f'thetadot={max_r_per_state[3]:.3f}')
 
-        # z* for Gramian
         obs_eq_t = _to_tensor(obs_eq, device)
         if frame_stack > 1:
             obs_eq_t = torch.cat([obs_eq_t, obs_eq_t], dim=1)
@@ -431,18 +426,11 @@ def main():
             print(f'    Gramian failed: {exc}')
             gramian_eigvals = None
 
-        print(f'    collecting near-eq encodings for phase portrait PCA ...')
-        zs_near_eq = collect_near_eq_encodings(env, model, frame_stack, device)
-
         all_data.append({
-            'label': label, 'zs': zs, 'zs_vel': zs_vel,
-            'states': states, 'states_vel': states_vel,
+            'label': label, 'zs': zs, 'states': states,
             'R': R, 'gramian_eigvals': gramian_eigvals,
             'model': model, 'frame_stack': frame_stack, 'z_star': z_star,
-            'zs_near_eq': zs_near_eq,
         })
-
-    env.close()
 
     # ── Plot ──────────────────────────────────────────────────────────────
     print('\n[plot] Generating figure ...')
@@ -453,25 +441,23 @@ def main():
     for row, d in enumerate(all_data):
         label = d['label']
 
-        # Col 0: Pearson heatmap
         plot_pearson(axes[row, 0], d['R'],
                      title=f'{label}\nPearson r(z, state)')
 
-        # Col 1: Gramian spectrum
         if d['gramian_eigvals'] is not None:
             plot_gramian(axes[row, 1], d['gramian_eigvals'],
-                         title=f'{label}\nControllability Gramian λ')
+                         title=f'{label}\nControllability Gramian')
         else:
             axes[row, 1].text(0.5, 0.5, 'Gramian N/A', ha='center', va='center',
                               transform=axes[row, 1].transAxes)
-            axes[row, 1].set_title(f'{label}\nControllability Gramian λ', fontsize=9)
+            axes[row, 1].set_title(f'{label}\nControllability Gramian', fontsize=9)
 
-        # Col 2: Phase portrait — PCA centred on z* via near-eq encodings
         print(f'  [{label}] computing phase portrait ...')
         plot_phase_portrait(axes[row, 2], d['model'], d['frame_stack'], device,
-                            d['z_star'], d['zs'],
-                            title=f'{label}\nPhase portrait (u=0)',
-                            zs_near_eq=d['zs_near_eq'])
+                            env, d['zs'], d['states'],
+                            title=f'{label}\nPhase portrait (u=0, GT=black)')
+
+    env.close()
 
     fig.suptitle('Latent Dynamics Structure Comparison', fontsize=13, y=1.01)
     fig.tight_layout()
