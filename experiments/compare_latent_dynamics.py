@@ -211,7 +211,7 @@ def plot_pearson(ax, R: np.ndarray, title: str):
     R_sorted = R[:, sort_idx]
     im = ax.imshow(R_sorted, aspect='auto', cmap='RdBu_r', vmin=-1, vmax=1)
     ax.set_yticks(range(4))
-    ax.set_yticklabels(['x', 'ẋ', 'θ', 'θ̇'], fontsize=9)
+    ax.set_yticklabels([r'$x$', r'$\dot{x}$', r'$\theta$', r'$\dot{\theta}$'], fontsize=9)
     ax.set_xlabel('Latent dim (sorted by max |r|)', fontsize=8)
     ax.set_title(title, fontsize=9)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -345,8 +345,8 @@ def plot_phase_portrait(ax, model, frame_stack: int, device, env,
               zorder=2, label='Learned')
 
     ax.plot(0, 0, 'r*', markersize=12, zorder=5, label='eq')
-    ax.set_xlabel('θ (deg)', fontsize=8)
-    ax.set_ylabel('θ̇ (deg/s)', fontsize=8)
+    ax.set_xlabel(r'$\theta$ (deg)', fontsize=8)
+    ax.set_ylabel(r'$\dot{\theta}$ (deg/s)', fontsize=8)
     ax.set_title(title, fontsize=9)
     ax.legend(fontsize=7, loc='upper right')
 
@@ -442,24 +442,25 @@ def main():
         label = d['label']
 
         plot_pearson(axes[row, 0], d['R'],
-                     title=f'{label}\nPearson r(z, state)')
+                     title='Pearson Correlation')
 
         if d['gramian_eigvals'] is not None:
             plot_gramian(axes[row, 1], d['gramian_eigvals'],
-                         title=f'{label}\nControllability Gramian')
+                         title='Controllability Gramian')
         else:
             axes[row, 1].text(0.5, 0.5, 'Gramian N/A', ha='center', va='center',
                               transform=axes[row, 1].transAxes)
-            axes[row, 1].set_title(f'{label}\nControllability Gramian', fontsize=9)
+            axes[row, 1].set_title('Controllability Gramian', fontsize=9)
 
         print(f'  [{label}] computing phase portrait ...')
         plot_phase_portrait(axes[row, 2], d['model'], d['frame_stack'], device,
                             env, d['zs'], d['states'],
-                            title=f'{label}\nPhase portrait (u=0, GT=black)')
+                            title='Phase Portrait')
 
     env.close()
 
-    fig.suptitle('Latent Dynamics Structure Comparison', fontsize=13, y=1.01)
+    if n_models > 1:
+        fig.suptitle('Latent Dynamics Comparison', fontsize=13, y=1.01)
     fig.tight_layout()
 
     out_path = Path(args.out)
