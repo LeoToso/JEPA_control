@@ -306,6 +306,13 @@ class Trainer:
                                 use_reentrant=False).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
+        # Collapse diagnostic: mean step-size and norm of latent trajectory.
+        with torch.no_grad():
+            z_step = (z_all[:, 1:] - z_all[:, :-1]).norm(dim=-1).mean().item()
+            z_norm = z_all.norm(dim=-1).mean().item()
+            info['z_step'] = z_step
+            info['z_norm'] = z_norm
+
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
         # Using the exact equilibrium image eliminates the train/eval z* mismatch that
         # caused high fp_err at eval despite low fp_loss during training.
@@ -893,6 +900,9 @@ class Trainer:
             spec_eig_str = f"  spec_eig={tr.get('spec_eig_loss', 0):.4f}" if 'spec_eig_loss' in tr else ''
             anchor_str   = f"  anc={tr.get('anchor_loss',   0):.4f}" if 'anchor_loss'    in tr else ''
             sig_str      = f"  sig={tr.get('sigreg_loss',   0):.4f}" if 'sigreg_loss'    in tr else ''
+            zmove_str    = (f"  dz={tr.get('z_step', 0):.4f}"
+                            f"(|z|={tr.get('z_norm', 0):.3f})"
+                            ) if 'z_step' in tr else ''
             dynsig_str   = f"  dynSIG={tr.get('dynSIG_loss', 0):.4f}" if 'dynSIG_loss'   in tr else ''
             varfloor_str = f"  vf={tr.get('varfloor_loss',  0):.4f}" if 'varfloor_loss'  in tr else ''
             temp_str     = f"  temp={tr.get('temp_loss',     0):.4f}" if 'temp_loss'      in tr else ''
@@ -905,7 +915,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
