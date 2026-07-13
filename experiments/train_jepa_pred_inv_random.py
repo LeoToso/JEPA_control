@@ -37,6 +37,8 @@ def main():
     p.add_argument('--device',    default=None)
     p.add_argument('--batch-size', type=int, default=None,
                    help='Override batch_size from config')
+    p.add_argument('--init-checkpoint', default=None,
+                   help='Load encoder+predictor weights from this .pt file before training')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -105,6 +107,17 @@ def main():
         predictor_residual=bool(model_cfg.get('predictor_residual', False)),
     )
     model.to(device)
+
+    if args.init_checkpoint is not None:
+        ckpt = torch.load(args.init_checkpoint, map_location=device)
+        state = ckpt.get('model_state_dict', ckpt)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(f'[init] loaded encoder+predictor from {args.init_checkpoint}')
+        if missing:
+            print(f'[init]   missing keys  : {missing}')
+        if unexpected:
+            print(f'[init]   unexpected keys: {unexpected}')
+
     n_params = sum(p_.numel() for p_ in model.parameters() if p_.requires_grad)
     print(f'[model] JEPA (E-full)  {n_params:,} trainable params  '
           f'latent_dim={model_cfg["latent_dim"]}  frame_stack={frame_stack}  '
