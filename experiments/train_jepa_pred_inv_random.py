@@ -35,6 +35,8 @@ def main():
     p.add_argument('--seed',      type=int, default=42)
     p.add_argument('--save-dir',  default='results/jepa_pred_inv_random_seed42')
     p.add_argument('--device',    default=None)
+    p.add_argument('--batch-size', type=int, default=None,
+                   help='Override batch_size from config')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -51,6 +53,8 @@ def main():
     if args.epochs is not None:
         train_cfg['epochs'] = args.epochs
     epochs = int(train_cfg.get('epochs', 200))
+    if args.batch_size is not None:
+        train_cfg['batch_size'] = args.batch_size
 
     from data.dataset import load_dataset, make_dataloaders
     print(f'[data] loading {args.data}')
