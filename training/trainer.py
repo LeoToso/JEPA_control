@@ -149,18 +149,18 @@ class Trainer:
         else:
             self.state_head = None
 
-        # Inverse dynamics head: ψ(z_0, z_H) → [u_0, ..., u_{H-1}].
-        # Predicts the full action sequence from the latent gap, forcing the
-        # encoder to capture action-relevant temporal structure.
+        # Single-step inverse dynamics head: ψ(z_t, z_{t+1}) → u_t.
+        # Predicts each action from the consecutive latent pair, which is
+        # always identifiable (unlike multi-step where (z_0,z_H) underdetermines
+        # the individual actions for random iid inputs).
         if self.lambda_inv > 0:
             d_lat = model.config.latent_dim
-            H_inv = int(self.cfg.get('horizon', 10))
             inv_hidden = int(self.cfg.get('inv_hidden_dim', d_lat))
             self.inv_head = nn.Sequential(
                 nn.Linear(2 * d_lat, inv_hidden), nn.ReLU(),
                 nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
                 nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
-                nn.Linear(inv_hidden, H_inv),
+                nn.Linear(inv_hidden, 1),
             ).to(self.device)
             self.optimizer.add_param_group({'params': self.inv_head.parameters()})
         else:
@@ -432,14 +432,14 @@ class Trainer:
                 total_loss = total_loss + self.lambda_temp * temp_loss
                 info['temp_loss'] = temp_loss.item()
 
-        # Multi-step inverse dynamics: ψ(z_0, z_H) → [u_0, ..., u_{H-1}].
-        # Predicts the full action sequence from the latent gap (z_0, z_H).
+        # Single-step inverse dynamics: ψ(z_t, z_{t+1}) → u_t for each t.
+        # Gives H gradient signals per trajectory and is always identifiable.
         if self.lambda_inv > 0 and self.inv_head is not None:
-            scale  = self.inv_action_scale
-            z_pair = torch.cat([z_all[:, 0], z_all[:, H]], dim=-1)  # (B, 2d)
-            u_seq  = actions.squeeze(-1) / scale                      # (B, H)
-            u_hat  = self.inv_head(z_pair)                            # (B, H)
-            inv_loss = F.mse_loss(u_hat, u_seq)
+            scale      = self.inv_action_scale
+            z_pairs    = torch.cat([z_all[:, :-1], z_all[:, 1:]], dim=-1)  # (B, H, 2d)
+            u_seq      = actions.squeeze(-1) / scale                         # (B, H)
+            u_hat      = self.inv_head(z_pairs.view(B * H, 2 * d)).view(B, H)
+            inv_loss   = F.mse_loss(u_hat, u_seq)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
 
