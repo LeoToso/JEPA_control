@@ -27,6 +27,10 @@ def main():
                    help='Custom h5 output path (overrides auto-naming)')
     p.add_argument('--force',    action='store_true',
                    help='Regenerate even if h5 already exists')
+    p.add_argument('--n-random', type=int, default=None,
+                   help='Override n_random_episodes from config')
+    p.add_argument('--n-lqr',   type=int, default=None,
+                   help='Override n_lqr_episodes from config')
     args = p.parse_args()
 
     with open(args.config) as f:
@@ -50,6 +54,11 @@ def main():
         return
 
     Path(args.data_dir).mkdir(parents=True, exist_ok=True)
+
+    if args.n_random is not None:
+        data_cfg['n_random_episodes'] = args.n_random
+    if args.n_lqr is not None:
+        data_cfg['n_lqr_episodes'] = args.n_lqr
 
     from data.dataset import generate_dataset
     generate_dataset(
