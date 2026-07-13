@@ -299,7 +299,9 @@ class Trainer:
                                else self.model.encoder)
                 z_rest = _target_enc(obs_rest).view(B, H, d)
         else:
-            z_rest = self.model.encoder(obs_rest).view(B, H, d)
+            from torch.utils.checkpoint import checkpoint
+            z_rest = checkpoint(self.model.encoder, obs_rest,
+                                use_reentrant=False).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
