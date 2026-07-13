@@ -306,13 +306,6 @@ class Trainer:
                                 use_reentrant=False).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
-        # Collapse diagnostic: mean step-size and norm of latent trajectory.
-        with torch.no_grad():
-            z_step = (z_all[:, 1:] - z_all[:, :-1]).norm(dim=-1).mean().item()
-            z_norm = z_all.norm(dim=-1).mean().item()
-            info['z_step'] = z_step
-            info['z_norm'] = z_norm
-
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
         # Using the exact equilibrium image eliminates the train/eval z* mismatch that
         # caused high fp_err at eval despite low fp_loss during training.
@@ -357,6 +350,11 @@ class Trainer:
 
         total_loss = self.lambda_pred * pred_loss
         info = {'pred_loss': pred_loss.item()}
+
+        # Collapse diagnostic: mean step-size and norm of latent trajectory.
+        with torch.no_grad():
+            info['z_step'] = (z_all[:, 1:] - z_all[:, :-1]).norm(dim=-1).mean().item()
+            info['z_norm'] = z_all.norm(dim=-1).mean().item()
 
         # VICReg collapse prevention on online encoder outputs
         if self.use_vicreg:

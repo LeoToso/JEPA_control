@@ -110,7 +110,9 @@ def main():
 
     if args.init_checkpoint is not None:
         ckpt = torch.load(args.init_checkpoint, map_location=device)
-        state = ckpt.get('model_state_dict', ckpt)
+        # Support both model_final.pt (flat state dict) and checkpoint_epochNNNN.pt
+        # (which wraps the state dict under 'model_state')
+        state = ckpt.get('model_state', ckpt.get('model_state_dict', ckpt))
         missing, unexpected = model.load_state_dict(state, strict=False)
         print(f'[init] loaded encoder+predictor from {args.init_checkpoint}')
         if missing:
