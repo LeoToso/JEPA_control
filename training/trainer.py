@@ -149,15 +149,17 @@ class Trainer:
         else:
             self.state_head = None
 
-        # Single-step inverse dynamics head: ψ(z_t, z_{t+1}) → u_t.
-        # Predicts each action from the consecutive latent pair, which is
-        # always identifiable (unlike multi-step where (z_0,z_H) underdetermines
-        # the individual actions for random iid inputs).
+        # 3-frame inverse dynamics head: ψ(z_{t-1}, z_t, z_{t+1}) → u_t.
+        # Cartpole is a 2nd-order system: action affects acceleration, not position.
+        # z_{t+1}-z_t encodes velocity (1st-order, action-independent at this dt).
+        # The 2nd difference z_{t+1}-2z_t+z_{t-1} encodes acceleration ∝ u_t.
+        # Three frames give the network both velocity AND its change, making u_t
+        # identifiable even with random iid actions.
         if self.lambda_inv > 0:
             d_lat = model.config.latent_dim
             inv_hidden = int(self.cfg.get('inv_hidden_dim', d_lat))
             self.inv_head = nn.Sequential(
-                nn.Linear(2 * d_lat, inv_hidden), nn.ReLU(),
+                nn.Linear(3 * d_lat, inv_hidden), nn.ReLU(),
                 nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
                 nn.Linear(inv_hidden, inv_hidden), nn.ReLU(),
                 nn.Linear(inv_hidden, 1),
@@ -432,14 +434,21 @@ class Trainer:
                 total_loss = total_loss + self.lambda_temp * temp_loss
                 info['temp_loss'] = temp_loss.item()
 
-        # Single-step inverse dynamics: ψ(z_t, z_{t+1}) → u_t for each t.
-        # Gives H gradient signals per trajectory and is always identifiable.
+        # 3-frame inverse dynamics: ψ(z_{t-1}, z_t, z_{t+1}) → u_t, t in [1, H-1].
+        # The triplet lets the network estimate velocity AND its change (acceleration),
+        # which is necessary to recover u_t in a 2nd-order system like cartpole.
+        # Gives H-1 gradient signals per trajectory.
         if self.lambda_inv > 0 and self.inv_head is not None:
-            scale      = self.inv_action_scale
-            z_pairs    = torch.cat([z_all[:, :-1], z_all[:, 1:]], dim=-1)  # (B, H, 2d)
-            u_seq      = actions.squeeze(-1) / scale                         # (B, H)
-            u_hat      = self.inv_head(z_pairs.view(B * H, 2 * d)).view(B, H)
-            inv_loss   = F.mse_loss(u_hat, u_seq)
+            scale       = self.inv_action_scale
+            # z_all: (B, H+1, d) → triplets for t = 1, ..., H-1
+            z_prev  = z_all[:, :-2]   # z_{t-1}, shape (B, H-1, d)
+            z_curr  = z_all[:, 1:-1]  # z_t,     shape (B, H-1, d)
+            z_next  = z_all[:, 2:]    # z_{t+1}, shape (B, H-1, d)
+            z_trips = torch.cat([z_prev, z_curr, z_next], dim=-1)  # (B, H-1, 3d)
+            u_mid   = actions[:, 1:, 0] / scale                     # (B, H-1)
+            Hm1     = H - 1
+            u_hat   = self.inv_head(z_trips.view(B * Hm1, 3 * d)).view(B, Hm1)
+            inv_loss   = F.mse_loss(u_hat, u_mid)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
 
