@@ -50,7 +50,7 @@ training:
   lambda_local: 0.0
   lambda_unstable: 0.0
   lambda_dynSIG: 0.0
-  lambda_varfloor: 0.0
+  lambda_varfloor: 5.0
   lambda_temp: 0.0
   use_vicreg: false
   vicreg_lambda: 25.0
