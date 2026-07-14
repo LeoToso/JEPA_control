@@ -133,15 +133,17 @@ def main():
 
     # Jacobian
     from control.jacobian import compute_jacobian_np
-    A_jac, B_jac = compute_jacobian_np(model.predictor, model.action_encoder, z_star, device)
+    A_jac, B_jac = compute_jacobian_np(model, z_star, device)
     rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
     print(f'[control] ρ(A_jac)={rho_jac:.4f}  ||B||={np.linalg.norm(B_jac):.4f}')
 
-    # Fixed-point drift
+    # Fixed-point drift using windowed predict
+    W = getattr(model.config, 'predictor_window', 1)
     with torch.no_grad():
-        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
-        a_zero    = model.action_encoder(torch.zeros(1, 1, device=device))
-        z_pred_eq = model.predictor(z_star_t, a_zero)
+        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)  # (1, d)
+        z_win_eq  = z_star_t.unsqueeze(1).expand(1, W, -1)   # (1, W, d)
+        u_win_eq  = torch.zeros(1, W, 1, device=device)
+        z_pred_eq = model.predict(z_win_eq, u_win_eq)         # (1, d)
         fp_err    = float(torch.norm(z_pred_eq - z_star_t).item())
     c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]
     print(f'[control] fp_err={fp_err:.4f}')
