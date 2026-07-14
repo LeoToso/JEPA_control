@@ -131,39 +131,71 @@ def main():
     d = len(z_star)
     print(f'[control] d={d}  ||z*||={np.linalg.norm(z_star):.3f}')
 
-    # Jacobian
-    from control.jacobian import compute_jacobian_np
+    # Jacobian — partial (d×d) and augmented (Wd×Wd)
+    from control.jacobian import compute_jacobian_np, compute_augmented_jacobian_np
+    W = getattr(model.config, 'predictor_window', 1)
     A_jac, B_jac = compute_jacobian_np(model, z_star, device)
-    rho_jac = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
-    print(f'[control] ρ(A_jac)={rho_jac:.4f}  ||B||={np.linalg.norm(B_jac):.4f}')
+    rho_partial = float(np.max(np.abs(np.linalg.eigvals(A_jac))))
+    A_aug, B_aug = compute_augmented_jacobian_np(model, z_star, device)
+    rho_aug = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
+    print(f'[control] W={W}  d={d}  ||z*||={np.linalg.norm(z_star):.3f}')
+    print(f'[control] ρ(A_partial,{d}×{d})={rho_partial:.4f}  '
+          f'ρ(A_aug,{W*d}×{W*d})={rho_aug:.4f}  '
+          f'||B_partial||={np.linalg.norm(B_jac):.4f}  '
+          f'||B_aug||={np.linalg.norm(B_aug):.4f}')
 
     # Fixed-point drift using windowed predict
-    W = getattr(model.config, 'predictor_window', 1)
     with torch.no_grad():
-        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)  # (1, d)
-        z_win_eq  = z_star_t.unsqueeze(1).expand(1, W, -1)   # (1, W, d)
+        z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
+        z_win_eq  = z_star_t.unsqueeze(1).expand(1, W, -1)
         u_win_eq  = torch.zeros(1, W, 1, device=device)
-        z_pred_eq = model.predict(z_win_eq, u_win_eq)         # (1, d)
+        z_pred_eq = model.predict(z_win_eq, u_win_eq)
         fp_err    = float(torch.norm(z_pred_eq - z_star_t).item())
-    c_drift = (z_pred_eq - z_star_t).cpu().numpy()[0]
+    # Drift in partial (d) and augmented (W*d) spaces
+    c_drift_partial = (z_pred_eq - z_star_t).cpu().numpy()[0]          # (d,)
+    c_drift_aug     = np.concatenate([c_drift_partial,
+                                      np.zeros((W - 1) * d)])           # (W*d,)
     print(f'[control] fp_err={fp_err:.4f}')
 
-    # Pre-stabilise A
+    # Pre-stabilise: try augmented first; fall back to partial if no unstable modes found
     from control.lqr import pre_stabilize_A
-    A_stab, n_def = pre_stabilize_A(A_jac, gt.unstable_eigenvalues, tol=0.05, target=0.9)
-    print(f'[control] A pre-stab: deflated={n_def}  '
+    A_aug_stab, n_def_aug = pre_stabilize_A(A_aug, gt.unstable_eigenvalues,
+                                             tol=0.05, target=0.9)
+    A_stab,     n_def     = pre_stabilize_A(A_jac, gt.unstable_eigenvalues,
+                                             tol=0.05, target=0.9)
+    print(f'[control] partial pre-stab: deflated={n_def}  '
           f'ρ={np.max(np.abs(np.linalg.eigvals(A_stab))):.4f}')
+    print(f'[control] augmented pre-stab: deflated={n_def_aug}  '
+          f'ρ={np.max(np.abs(np.linalg.eigvals(A_aug_stab))):.4f}')
+
+    # Use augmented Jacobian if it found unstable modes; else fall back to partial
+    use_aug = (n_def_aug > 0)
+    if use_aug:
+        print(f'[control] → using augmented ({W*d}D) Jacobian for CEM')
+        A_plan   = A_aug_stab
+        B_plan   = B_aug
+        c_plan   = c_drift_aug
+        d_plan   = W * d
+        z_star_plan = np.tile(z_star, W)
+    else:
+        print(f'[control] → using partial ({d}D) Jacobian for CEM '
+              f'(augmented found no unstable modes either)')
+        A_plan   = A_stab
+        B_plan   = B_jac
+        c_plan   = c_drift_partial
+        d_plan   = d
+        z_star_plan = z_star
 
     # CEM
     from control.cem import CEMLatentPlanner
     from control.rollout import evaluate_stabilization_mpc
 
-    Q  = args.alpha * np.eye(d)
-    Qf = args.alpha * np.eye(d)
+    Q  = args.alpha * np.eye(d_plan)
+    Qf = args.alpha * np.eye(d_plan)
     R  = args.beta  * np.eye(1)
 
     cem = CEMLatentPlanner(
-        A=A_stab, B=B_jac, c_offset=c_drift,
+        A=A_plan, B=B_plan, c_offset=c_plan,
         Q=Q, R=R, Q_f=Qf,
         horizon=horizon, chunk_size=1,
         n_samples=args.n_samples,
@@ -189,7 +221,7 @@ def main():
         init_scale=init_scale,
         stabilization_threshold=stab_thr,
         settling_threshold=sett_thr,
-        seed=args.seed, device=device, z_star=z_star,
+        seed=args.seed, device=device, z_star=z_star_plan,
         vis_trial=0,
         frame_stack=frame_stack,
     )
