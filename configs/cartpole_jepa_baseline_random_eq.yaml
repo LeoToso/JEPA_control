@@ -35,7 +35,7 @@ training:
   sigreg_num_points: 9
   sigreg_all_steps: true
   # ── All other losses off ─────────────────────────────────────────────────
-  lambda_fp: 0.0
+  lambda_fp: 0.1
   lambda_state: 0.0
   lambda_mirror: 0.0
   lambda_anchor: 0.0
@@ -107,12 +107,12 @@ data:
   lqr_ep_len: 200
   lqr_init_range: 0.30
   lqr_noise_std: 0.25
-  n_equilibrium: 20
-  eq_ep_len: 100
+  n_equilibrium: 5
+  eq_ep_len: 50
   n_eq_selfloop: 0
   eq_init_range: 0.05
   eq_noise_std: 0.001
-  n_pe_episodes: 10
+  n_pe_episodes: 5
   pe_ep_len: 40
   pe_init_range: 0.05
   pe_action_amplitude: 3.0
