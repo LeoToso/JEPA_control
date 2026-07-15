@@ -949,7 +949,7 @@ if __name__ == '__main__':
     p.add_argument('--variant',   default='E-full',
                    choices=['E-full', 'E-noact'])
     p.add_argument('--dataset',   default='mixed',
-                   choices=['random', 'lqr', 'mixed'])
+                   choices=['random', 'lqr', 'mixed', 'random_eq'])
     p.add_argument('--frame_skip',type=int, default=1)
     p.add_argument('--seed',      type=int, default=42)
     p.add_argument('--config',    default='configs/cartpole_v2.yaml')
