@@ -15,7 +15,7 @@ model:
   action_encoder: linear
   patch_size: 8
   frame_stack: 2
-  predictor_window: 5
+  predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
@@ -26,7 +26,7 @@ training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
   batch_size: 64
-  epochs: 200
+  epochs: 500
   horizon: 30
   # ── Active losses ────────────────────────────────────────────────────────
   lambda_pred: 1.0
@@ -62,7 +62,7 @@ training:
   aug_noise_std: 0.0
   state_encoder_grad_scale: 1.0
   predictor_lr_mult: 0.1
-  predictor_window: 5
+  predictor_window: 3
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
