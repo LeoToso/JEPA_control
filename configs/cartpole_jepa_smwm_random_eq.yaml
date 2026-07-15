@@ -37,7 +37,7 @@ training:
   lambda_inv: 1.0
   inv_frames: 2
   inv_action_scale: 10.0
-  inv_hidden_dim: 64
+  inv_hidden_dim: 256
   # ── fp anchor to keep rho(A_aug) > 1 ────────────────────────────────────
   lambda_fp: 0.1
   # ── All other losses off ─────────────────────────────────────────────────
