@@ -168,18 +168,22 @@ def main():
     print(f'[control] augmented pre-stab: deflated={n_def_aug}  '
           f'ρ={np.max(np.abs(np.linalg.eigvals(A_aug_stab))):.4f}')
 
-    # Use augmented Jacobian if it found unstable modes; else fall back to partial
-    use_aug = (n_def_aug > 0)
+    # Use augmented Jacobian when rho(A_aug) > 1 — the unstable mode lives in the
+    # history coupling and the partial 8×8 Jacobian misses it entirely.
+    # Note: n_def_aug=0 is CORRECT when the unstable mode is physical (within tol
+    # of GT eigenvalue); pre_stabilize_A leaves physical modes for DARE to handle.
+    use_aug = (rho_aug > 1.0)
     if use_aug:
-        print(f'[control] → using augmented ({W*d}D) Jacobian for CEM')
+        print(f'[control] → using augmented ({W*d}D) Jacobian for CEM  '
+              f'ρ={rho_aug:.4f}>1  phantom_deflated={n_def_aug}')
         A_plan   = A_aug_stab
         B_plan   = B_aug
         c_plan   = c_drift_aug
         d_plan   = W * d
         z_star_plan = np.tile(z_star, W)
     else:
-        print(f'[control] → using partial ({d}D) Jacobian for CEM '
-              f'(augmented found no unstable modes either)')
+        print(f'[control] → using partial ({d}D) Jacobian for CEM  '
+              f'ρ(aug)={rho_aug:.4f}≤1')
         A_plan   = A_stab
         B_plan   = B_jac
         c_plan   = c_drift_partial
