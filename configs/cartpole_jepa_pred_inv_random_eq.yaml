@@ -25,7 +25,7 @@ model:
 training:
   lr: 1.0e-4
   weight_decay: 1.0e-4
-  batch_size: 64
+  batch_size: 32
   epochs: 500
   horizon: 30
   # ── Active losses ────────────────────────────────────────────────────────
