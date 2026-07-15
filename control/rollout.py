@@ -17,12 +17,14 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
     encoder.eval()
 
     d_mpc   = mpc.A.shape[0]
-    d_lat   = d_mpc // 2 if d_mpc % 2 == 0 else d_mpc
-    if z_star is None:
-        z_star = np.zeros(d_lat)
     x_star       = np.zeros(4)
     settling_time= T
-    use_aug_state= False
+    # W_aug is resolved after the first encoder call once d_lat is known.
+    W_aug   = None   # window size for augmented state (1 = no augmentation)
+    z_history: List = []   # ring buffer, newest last; length <= W_aug
+
+    if z_star is None:
+        z_star = np.zeros(d_mpc)
 
     # Reset warm-start state so each episode begins with a fresh prior
     if hasattr(mpc, 'reset'):
@@ -35,8 +37,7 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
     frames: List     = []
     all_obs: List    = []
     pending: List    = []
-    z_t = np.zeros(d_lat)
-    z_prev = None
+    z_t = None
     prev_obs_t = None   # for frame stacking: previous step's observation tensor
 
     t = 0
@@ -54,22 +55,30 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
             z_t = encoder(enc_input).cpu().numpy()[0]
         latent_states.append(z_t.copy())
 
-        if t == 0:
-            use_aug_state = (d_mpc == 2 * len(z_t))
+        # Resolve augmentation window on first step
+        if W_aug is None:
+            d_lat = len(z_t)
+            if d_mpc % d_lat == 0:
+                W_aug = d_mpc // d_lat   # e.g. 24//8=3
+            else:
+                W_aug = 1
+            # Initialise history with copies of first z
+            z_history = [z_t.copy()] * W_aug
+
+        z_history.append(z_t.copy())
 
         if len(pending) == 0:
-            if use_aug_state:
-                z_p   = z_t if z_prev is None else z_prev
-                s_t   = np.concatenate([z_t, z_p])
-                s_star= np.concatenate([z_star, z_star])
-                chunk, pred_zs = mpc.plan(s_t, s_star)
+            if W_aug > 1:
+                # Augmented state: [z_t, z_{t-1}, ..., z_{t-W+1}], newest first
+                hist = z_history[-W_aug:]
+                s_t  = np.concatenate(hist[::-1])   # reverse so newest is first
+                chunk, pred_zs = mpc.plan(s_t, z_star)
             else:
                 chunk, pred_zs = mpc.plan(z_t, z_star)
             pending = list(chunk)
             if save_frames:
                 frames.append({'obs': obs.copy(), 'pred_zs': pred_zs, 't': t})
 
-        z_prev = z_t
         prev_obs_t = obs_t
         u_vec  = pending.pop(0)
         u_s    = float(np.clip(u_vec[0], mpc.action_lb, mpc.action_ub))
