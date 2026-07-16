@@ -445,23 +445,31 @@ class Trainer:
                 info['temp_loss'] = temp_loss.item()
 
         # Inverse dynamics loss.
-        # inv_frames=2 (SMWM paper): ψ(z_t, z_{t+1}) → u_t for t=0,...,H-1 (H pairs).
-        # inv_frames=3 (default):    ψ(z_{t-1}, z_t, z_{t+1}) → u_t for t=1,...,H-1 (H-1 triplets).
+        # inv_frames=2: forward pair  ψ(z_t, z_{t+1}) → u_t   (SMWM / paper)
+        # inv_frames=N (odd, N≥3): centered window of N frames → u_center
+        #   e.g. N=3: (z_{t-1}, z_t, z_{t+1}) → u_t
+        #        N=5: (z_{t-2}, z_{t-1}, z_t, z_{t+1}, z_{t+2}) → u_t
+        # Wider windows give the IDM more context to subtract state-dependent
+        # drift and isolate the action effect, at the cost of fewer valid targets.
         if self.lambda_inv > 0 and self.inv_head is not None:
             scale = self.inv_action_scale
-            if self.inv_frames == 2:
-                z_curr  = z_all[:, :-1]                                # (B, H, d)
-                z_next  = z_all[:, 1:]                                 # (B, H, d)
-                z_pairs = torch.cat([z_curr, z_next], dim=-1)          # (B, H, 2d)
-                u_tgt   = actions[:, :, 0] / scale                     # (B, H)
-                u_hat   = self.inv_head(z_pairs.view(B * H, 2 * d)).view(B, H)
+            F_inv = self.inv_frames
+            if F_inv == 2:
+                # Forward pair (even window, non-centered)
+                z_windows = torch.cat([z_all[:, :-1], z_all[:, 1:]], dim=-1)  # (B, H, 2d)
+                u_tgt  = actions[:, :, 0] / scale                              # (B, H)
+                n_pred = H
             else:
-                z_prev  = z_all[:, :-2]                                # (B, H-1, d)
-                z_curr  = z_all[:, 1:-1]                               # (B, H-1, d)
-                z_next  = z_all[:, 2:]                                 # (B, H-1, d)
-                z_trips = torch.cat([z_prev, z_curr, z_next], dim=-1)  # (B, H-1, 3d)
-                u_tgt   = actions[:, 1:, 0] / scale                    # (B, H-1)
-                u_hat   = self.inv_head(z_trips.view(B * (H-1), 3 * d)).view(B, H-1)
+                # Centered odd window: predict u_t from [z_{t-k},...,z_{t+k}]
+                half   = F_inv // 2
+                n_pred = H + 2 - F_inv           # = H - 2*half + 1
+                z_windows = torch.cat(
+                    [z_all[:, i:i + n_pred] for i in range(F_inv)], dim=-1
+                )                                # (B, n_pred, F_inv*d)
+                u_tgt = actions[:, half:half + n_pred, 0] / scale  # (B, n_pred)
+            u_hat = self.inv_head(
+                z_windows.reshape(B * n_pred, F_inv * d)
+            ).reshape(B, n_pred)
             inv_loss   = F.mse_loss(u_hat, u_tgt)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()

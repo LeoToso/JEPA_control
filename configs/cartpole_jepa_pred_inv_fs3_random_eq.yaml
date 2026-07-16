@@ -1,6 +1,6 @@
 environment:
   name: cartpole
-  frame_skip: 1
+  frame_skip: 3
   image_size: 64
   mass_cart: 1.0
   mass_pole: 0.1
@@ -34,21 +34,19 @@ training:
   sigreg_num_slices: 32
   sigreg_num_points: 9
   sigreg_all_steps: true
+  # ── Multi-step centered IDM: (z_{t-2}, z_{t-1}, z_t, z_{t+1}, z_{t+2}) → u_t
+  # With frame_skip=3 (dt_eff=0.06s), consecutive frames are 3× more different
+  # visually → encoder learns xdot/thetadot better → stronger IDM signal.
+  # 5-frame window gives context to subtract state-dependent drift around t.
   lambda_inv: 1.0
-  inv_frames: 3
+  inv_frames: 5
   inv_action_scale: 10.0
-  inv_hidden_dim: 64
-  # ── State supervision: velocity-focused weights ───────────────────────────
-  # Diagnosis: IDM can't learn because r(z, xdot)=0.37 gives only ~1.35%
-  # action-latent correlation. Boosting xdot and thetadot supervision brings
-  # these to r>0.8, enabling IDM to learn (expected R2~15-30%).
-  # Weights: [x, xdot, theta, thetadot]
-  lambda_state: 0.5
-  state_loss_weights: [1.0, 100.0, 1.0, 100.0]
-  state_encoder_grad_scale: 1.0
+  inv_hidden_dim: 128
   # ── fp anchor to keep rho(A_aug) > 1 ────────────────────────────────────
+  # With frame_skip=3: true unstable eig ≈ exp(4.43*0.06) ≈ 1.305 (more unstable).
   lambda_fp: 0.1
   # ── All other losses off ─────────────────────────────────────────────────
+  lambda_state: 0.0
   lambda_mirror: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
@@ -69,6 +67,7 @@ training:
   detach_targets: false
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0
+  state_encoder_grad_scale: 1.0
   predictor_lr_mult: 0.1
   predictor_window: 3
   checkpoint_every: 10
@@ -77,7 +76,7 @@ training:
   freeze_encoder_epochs: 0
   encoder_lr_unfreeze_mult: 0.1
   jacobian_every: 10
-  rho_max_init: 1.3
+  rho_max_init: 1.5
   local_state_threshold: 0.05
   unstable_eta: 0.05
   # ── Normalization ────────────────────────────────────────────────────────
