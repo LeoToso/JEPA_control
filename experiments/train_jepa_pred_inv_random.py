@@ -60,6 +60,23 @@ def main():
     if args.batch_size is not None:
         train_cfg['batch_size'] = args.batch_size
 
+    # When resuming, override model architecture from the checkpoint's saved config
+    # so that changes to the yaml (e.g. predictor_n_layers) don't break loading.
+    if args.resume is not None:
+        _ckpt_peek = torch.load(args.resume, map_location='cpu')
+        _ckpt_cfg  = _ckpt_peek.get('config', {})
+        if _ckpt_cfg:
+            _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
+                          'encoder_type', 'patch_size', 'frame_stack',
+                          'vit_embed_dim', 'vit_depth', 'vit_num_heads',
+                          'predictor_hidden_dim', 'predictor_n_layers', 'predictor_window')
+            for _k in _arch_keys:
+                if _k in _ckpt_cfg and _ckpt_cfg[_k] != model_cfg.get(_k):
+                    print(f'[resume] arch override: {_k}={_ckpt_cfg[_k]}  '
+                          f'(yaml had {model_cfg.get(_k)})')
+                    model_cfg[_k] = _ckpt_cfg[_k]
+        del _ckpt_peek, _ckpt_cfg
+
     from data.dataset import load_dataset, make_dataloaders
     print(f'[data] loading {args.data}')
     data = load_dataset(args.data)
