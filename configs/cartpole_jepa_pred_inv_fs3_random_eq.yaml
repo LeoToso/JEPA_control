@@ -75,10 +75,13 @@ training:
   predictor_lr_mult: 5.0
   predictor_window: 3
   checkpoint_every: 10
-  warmup_epochs: 0
+  # warmup_epochs=1: one pred-free epoch (SIG+IDM only, no collapse pressure)
+  # triggers the freeze mechanism. Encoder is then frozen for 5 epochs so the
+  # predictor (lr=5e-4) fully adapts to fixed z. After epoch 6 the encoder
+  # unfreezes with a pre-trained predictor → pred gradient is structured
+  # (prediction error), never "E[f(z)]≈0 → shrink z to 0".
+  warmup_epochs: 1
   warmup_lambda_state: 0.0
-  # Freeze encoder for 5 epochs so predictor fully warms up on fixed z before
-  # encoder starts moving. After unfreeze, encoder trains at full lr (×1.0).
   freeze_encoder_epochs: 5
   encoder_lr_unfreeze_mult: 1.0
   jacobian_every: 10
