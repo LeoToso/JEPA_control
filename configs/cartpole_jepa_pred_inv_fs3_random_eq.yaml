@@ -29,10 +29,8 @@ training:
   epochs: 500
   horizon: 30
   # ── Active losses ─────────────────────────────────────────────────────────
-  # lambda_pred reduced to 0.1 so SIGreg dominates at init (ratio sig/pred > 6x
-  # needed to prevent collapse; pred/sig was 6.1 at lambda=1 → collapse).
-  lambda_pred: 0.1
-  lambda_sigreg: 2.0
+  lambda_pred: 1.0
+  lambda_sigreg: 1.0
   sigreg_num_slices: 32
   sigreg_num_points: 9
   sigreg_all_steps: true
@@ -70,13 +68,19 @@ training:
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0
   state_encoder_grad_scale: 1.0
-  predictor_lr_mult: 0.1
+  # Predictor must be FASTER than encoder (detach_targets=False): slow predictor
+  # means E[f(z)]≈0 for many epochs → pred gradient acts as z→0 regularization
+  # → collapse. With predictor 5× faster, it adapts within epoch 1 so pred
+  # gradient becomes true prediction error (structured), not "shrink z to 0".
+  predictor_lr_mult: 5.0
   predictor_window: 3
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
-  freeze_encoder_epochs: 0
-  encoder_lr_unfreeze_mult: 0.1
+  # Freeze encoder for 5 epochs so predictor fully warms up on fixed z before
+  # encoder starts moving. After unfreeze, encoder trains at full lr (×1.0).
+  freeze_encoder_epochs: 5
+  encoder_lr_unfreeze_mult: 1.0
   jacobian_every: 10
   rho_max_init: 1.5
   local_state_threshold: 0.05
