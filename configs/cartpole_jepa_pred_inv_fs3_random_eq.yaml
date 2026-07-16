@@ -29,8 +29,10 @@ training:
   epochs: 500
   horizon: 30
   # ── Active losses ─────────────────────────────────────────────────────────
-  lambda_pred: 1.0
-  lambda_sigreg: 1.0
+  # lambda_pred reduced to 0.1 so SIGreg dominates at init (ratio sig/pred > 6x
+  # needed to prevent collapse; pred/sig was 6.1 at lambda=1 → collapse).
+  lambda_pred: 0.1
+  lambda_sigreg: 2.0
   sigreg_num_slices: 32
   sigreg_num_points: 9
   sigreg_all_steps: true
