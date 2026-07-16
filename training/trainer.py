@@ -977,12 +977,15 @@ class Trainer:
 
     def save_checkpoint(self, tag='latest'):
         path = self.save_dir / f'checkpoint_{tag}.pt'
-        torch.save({'epoch': self.epoch, 'global_step': self.global_step,
-                    'model_state': self.model.state_dict(),
-                    'optimizer_state': self.optimizer.state_dict(),
-                    'scheduler_state': self.scheduler.state_dict(),
-                    'best_val_loss': self.best_val_loss,
-                    'config': self.model.get_config_dict()}, path)
+        payload = {'epoch': self.epoch, 'global_step': self.global_step,
+                   'model_state': self.model.state_dict(),
+                   'optimizer_state': self.optimizer.state_dict(),
+                   'scheduler_state': self.scheduler.state_dict(),
+                   'best_val_loss': self.best_val_loss,
+                   'config': self.model.get_config_dict()}
+        if self.inv_head is not None:
+            payload['inv_head_state'] = self.inv_head.state_dict()
+        torch.save(payload, path)
         # Always keep a 'latest' copy for easy resume
         if tag != 'latest':
             latest = self.save_dir / 'checkpoint_latest.pt'
@@ -999,4 +1002,6 @@ class Trainer:
         self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
         self.epoch       = ckpt.get('epoch', 0)
         self.global_step = ckpt.get('global_step', 0)
+        if 'inv_head_state' in ckpt and self.inv_head is not None:
+            self.inv_head.load_state_dict(ckpt['inv_head_state'])
         print(f'[ckpt] resumed from {path}  (epoch={self.epoch}, step={self.global_step})')
