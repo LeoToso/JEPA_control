@@ -39,6 +39,8 @@ def main():
                    help='Override batch_size from config')
     p.add_argument('--init-checkpoint', default=None,
                    help='Load encoder+predictor weights from this .pt file before training')
+    p.add_argument('--resume', default=None,
+                   help='Resume full training state (model+optimizer+scheduler) from this .pt checkpoint')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -136,7 +138,8 @@ def main():
 
     print(f'[train] training for {epochs} epochs ...')
     trainer.fit(loaders['train'], loaders['val'], epochs=epochs,
-                checkpoint_every=int(train_cfg.get('checkpoint_every', 10)))
+                checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),
+                resume_from=args.resume)
 
     torch.save(trainer.final_state, save_dir / 'model_final.pt')
     print(f'[done] saved -> {save_dir / "model_final.pt"}')
