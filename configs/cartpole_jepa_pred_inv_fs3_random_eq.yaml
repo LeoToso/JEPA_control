@@ -30,7 +30,11 @@ training:
   horizon: 30
   # ── Active losses ─────────────────────────────────────────────────────────
   lambda_pred: 1.0
-  lambda_sigreg: 1.0
+  # SIGreg contracts z-mean (bias) toward 0 but gradient vanishes at small
+  # variance → z collapses even with pred disabled. VICReg variance term is
+  # stronger: grad ∝ (z-mean)/std which expands inter-sample variance even at
+  # tiny std (gradient ~2.45/elem vs SIG ~0.047/elem at std=0.02).
+  lambda_sigreg: 0.0
   sigreg_num_slices: 32
   sigreg_num_points: 9
   sigreg_all_steps: true
@@ -59,9 +63,9 @@ training:
   lambda_dynSIG: 0.0
   lambda_varfloor: 0.0
   lambda_temp: 0.0
-  use_vicreg: false
-  vicreg_lambda: 25.0
-  vicreg_nu: 1.0
+  use_vicreg: true
+  vicreg_lambda: 25.0   # strong variance floor: forces std(z_i)≥1 per dim
+  vicreg_nu: 1.0        # covariance decorrelation weight
   # ── No EMA, no stop-gradient ─────────────────────────────────────────────
   use_target_encoder: false
   detach_targets: false
