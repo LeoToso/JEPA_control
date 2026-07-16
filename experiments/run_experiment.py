@@ -115,9 +115,15 @@ def run_experiment(encoder_variant='E-full', dataset_name='mixed', frame_skip=1,
             save_path=str(h5_path),
             seed=seed,
         )
+    normalize_states = bool(train_cfg.get('normalize_states', False))
+    state_mean = data.get('state_mean') if normalize_states else None
+    state_std  = data.get('state_std')  if normalize_states else None
+    if normalize_states and state_mean is not None:
+        print(f'[data] normalize_states=True  mean={np.round(state_mean, 3)}')
     loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
                                horizon=horizon, frame_stack=frame_stack,
-                               obs_eq=_obs_eq, n_eq_selfloop=n_eq_selfloop)
+                               obs_eq=_obs_eq, n_eq_selfloop=n_eq_selfloop,
+                               state_mean=state_mean, state_std=state_std)
     print(f'[data] train={len(loaders["train"].dataset)}  '
           f'val={len(loaders["val"].dataset)}  horizon={horizon}'
           + (f'  (+{n_eq_selfloop} eq-selfloops)' if n_eq_selfloop > 0 else ''))

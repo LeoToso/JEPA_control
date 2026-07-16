@@ -483,8 +483,12 @@ class Trainer:
         # All H+1 trajectory frames contribute state loss for denser supervision.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device).float()  # (B, H+1, 4)
-            # x gets 50x weight so encoder must encode cart position, not just theta
-            w      = torch.tensor([50., 0.1, 100., 1.], device=self.device)
+            # Configurable per-dim weights [x, xdot, theta, thetadot].
+            # Default: prioritise position & angle (visually prominent).
+            # For IDM to learn, set high weights on xdot & thetadot
+            # (state_loss_weights: [1, 100, 1, 100] in config).
+            _w_cfg = self.cfg.get('state_loss_weights', [50., 0.1, 100., 1.])
+            w      = torch.tensor(_w_cfg, dtype=torch.float32, device=self.device)
             alpha  = self.state_encoder_grad_scale
             state_loss = torch.zeros(1, device=self.device)
             for k in range(H + 1):
