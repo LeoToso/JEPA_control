@@ -153,11 +153,14 @@ def evaluate_stabilization_mpc(encoder, mpc, env, n_trials=100, T=200,
             ep_lengths.append(0)
             frac_stables.append(0.0)
 
+    ep_arr = np.array(ep_lengths, dtype=float)
+    inv_sq = np.mean(1.0 / np.maximum(ep_arr, 1) ** 2)
     return {
-        'success_rate':       float(np.mean(successes)),
-        'mean_episode_length':float(np.mean(ep_lengths)),
-        'mean_fraction_stable':float(np.mean(frac_stables)),
-        'mean_cost':          float(np.mean(costs)) if costs else float('nan'),
-        'n_trials':           n_trials,
-        'vis_result':         vis_result,
+        'success_rate':            float(np.mean(successes)),
+        'mean_episode_length':     float(np.mean(ep_arr)),
+        'mean_inv_sq_ep_length':   float(inv_sq),
+        'mean_fraction_stable':    float(np.mean(frac_stables)),
+        'mean_cost':               float(np.mean(costs)) if costs else float('nan'),
+        'n_trials':                n_trials,
+        'vis_result':              vis_result,
     }

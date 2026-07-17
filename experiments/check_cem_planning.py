@@ -243,11 +243,12 @@ def main():
         frame_stack=frame_stack,
     )
 
-    print(f'\n[result] success_rate      = {cr["success_rate"]:.3f}')
-    print(f'[result] mean_ep_length    = {cr["mean_episode_length"]:.1f}')
-    print(f'[result] mean_frac_stable  = {cr["mean_fraction_stable"]:.3f}')
+    print(f'\n[result] success_rate          = {cr["success_rate"]:.3f}')
+    print(f'[result] mean_ep_length        = {cr["mean_episode_length"]:.1f}')
+    print(f'[result] mean(1/ep_length²)    = {cr["mean_inv_sq_ep_length"]:.6f}  (lower = better)')
+    print(f'[result] mean_frac_stable      = {cr["mean_fraction_stable"]:.3f}')
     if 'mean_cost' in cr:
-        print(f'[result] mean_cost         = {cr["mean_cost"]:.2f}')
+        print(f'[result] mean_cost             = {cr["mean_cost"]:.2f}')
 
     # Save visualizations
     vis = cr.get('vis_result')
