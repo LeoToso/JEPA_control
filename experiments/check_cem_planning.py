@@ -30,9 +30,19 @@ def main():
     p.add_argument('--horizon',    type=int,   default=None,
                    help='CEM planning horizon (default: from config cem.horizon)')
     p.add_argument('--alpha',      type=float, default=1.0,
-                   help='Q = alpha * I  (state cost scale)')
+                   help='Q = alpha * Q_shape  (state cost scale)')
     p.add_argument('--beta',       type=float, default=0.01,
                    help='R = beta  * I  (action cost scale)')
+    p.add_argument('--pearson-Q',  action='store_true',
+                   help='Build Q from Pearson correlations: Q = alpha*(C@W_phys@Cᵀ + eps*I)')
+    p.add_argument('--w-phys',     type=float, nargs=4,
+                   default=[1.0, 0.5, 10.0, 5.0],
+                   metavar=('W_X','W_XDOT','W_THETA','W_THETADOT'),
+                   help='Physical state weights for Pearson Q (default: 1 0.5 10 5)')
+    p.add_argument('--pearson-eps', type=float, default=0.05,
+                   help='Regularization added to Pearson Q before scaling (default: 0.05)')
+    p.add_argument('--pearson-rollouts', type=int, default=60,
+                   help='Rollouts used to estimate Pearson correlation matrix (default: 60)')
     p.add_argument('--n-samples',  type=int,   default=500)
     p.add_argument('--n-elites',   type=int,   default=50)
     p.add_argument('--n-iter',     type=int,   default=10)
@@ -207,8 +217,52 @@ def main():
     from control.cem import CEMLatentPlanner
     from control.rollout import evaluate_stabilization_mpc
 
-    Q  = args.alpha * np.eye(d_plan)
-    Qf = args.alpha * np.eye(d_plan)
+    if args.pearson_Q:
+        # Collect rollouts to estimate Pearson correlation matrix C (d×4)
+        print(f'[pearson-Q] collecting {args.pearson_rollouts} rollouts to estimate C ...')
+        rng_p = np.random.RandomState(0)
+        zs_p, states_p = [], []
+        for _ in range(args.pearson_rollouts):
+            theta0 = rng_p.uniform(-0.6, 0.6)
+            x0 = np.array([rng_p.uniform(-0.3, 0.3), 0., theta0, 0.], dtype=np.float32)
+            obs, state, _ = env.reset_to_state(x0)
+            prev_obs = obs.copy()
+            for _ in range(50):
+                obs_t = _make_obs_t(obs, prev_obs)
+                with torch.no_grad():
+                    z = model.encoder(obs_t).cpu().numpy()[0]
+                zs_p.append(z); states_p.append(state.copy())
+                action = env.sample_action()
+                obs_next, state_next, _, done, _ = env.step(action)
+                prev_obs = obs.copy(); obs = obs_next; state = state_next
+                if done: break
+        Z = np.array(zs_p)      # (N, d)
+        S = np.array(states_p)  # (N, 4)
+        # Pearson correlation matrix C: (d, 4)
+        C = np.zeros((d, 4))
+        for i in range(d):
+            for j in range(4):
+                zi, sj = Z[:, i] - Z[:, i].mean(), S[:, j] - S[:, j].mean()
+                C[i, j] = np.dot(zi, sj) / (np.linalg.norm(zi) * np.linalg.norm(sj) + 1e-12)
+        W_phys = np.diag(args.w_phys)
+        Q_base = C @ W_phys @ C.T + args.pearson_eps * np.eye(d)
+        # Normalise so trace = d (same as I), then apply alpha for overall scale
+        Q_base = Q_base / (np.trace(Q_base) / d)
+        Q_base = args.alpha * Q_base
+        # Tile block-diagonally for augmented (W*d) state if needed
+        Q  = np.kron(np.eye(W if use_aug else 1), Q_base)
+        Qf = Q.copy()
+        print(f'[pearson-Q] C max|r|: x={np.max(np.abs(C[:,0])):.3f}  '
+              f'xdot={np.max(np.abs(C[:,1])):.3f}  '
+              f'theta={np.max(np.abs(C[:,2])):.3f}  '
+              f'thetadot={np.max(np.abs(C[:,3])):.3f}')
+        eigvals = np.linalg.eigvalsh(Q_base)
+        print(f'[pearson-Q] Q_base eigs: min={eigvals[0]:.4f}  max={eigvals[-1]:.4f}  '
+              f'cond={eigvals[-1]/(eigvals[0]+1e-12):.1f}  '
+              f'w_phys={args.w_phys}')
+    else:
+        Q  = args.alpha * np.eye(d_plan)
+        Qf = args.alpha * np.eye(d_plan)
     R  = args.beta  * np.eye(1)
 
     cem = CEMLatentPlanner(
@@ -229,7 +283,8 @@ def main():
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
-    print(f'\n[eval] CEM  H={horizon}  α={args.alpha}  β={args.beta}  '
+    q_desc = f'PearsonQ(w={args.w_phys})' if args.pearson_Q else 'αI'
+    print(f'\n[eval] CEM  H={horizon}  Q={q_desc}  α={args.alpha}  β={args.beta}  '
           f'n_trials={args.n_trials}  T={args.T}')
 
     cr = evaluate_stabilization_mpc(
