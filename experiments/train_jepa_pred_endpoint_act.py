@@ -1,15 +1,24 @@
-"""Pred + VICReg + local inverse dynamics — no EMA, no stop-gradient.
+"""Pred + VICReg + endpoint action reconstruction — no EMA, no stop-gradient.
 
-Random-only dataset, normalized actions/states, 3-layer predictor MLP,
-window=3, horizon=30.  The inverse dynamics head (inv_head) predicts u_t
-from a local window of latents: ψ(z_{t-k}, …, z_{t+k}) → u_t.
-For endpoint-only action sequence reconstruction (no intermediate states)
-see experiments/train_jepa_pred_endpoint_act.py.
+The endpoint action decoder receives ONLY (z_start, z_end) and predicts the
+action sequence of length H_act between them.  No intermediate latent states,
+physical states, or observations are passed to the decoder.  This tests whether
+endpoint latent representations encode full action-induced trajectory information.
+
+Supported action_reconstruction_mode values:
+    endpoint_sequence  — random subwindow of H_act steps (main mode)
+    local_window       — same as endpoint_sequence (small H_act)
+    local_pair         — adjacent pair only (H_act forced to 1)
+
+A physical-state endpoint decoder is trained in parallel as a diagnostic upper
+bound on what can be inferred from endpoints alone.
 
 Usage:
-    python experiments/train_jepa_pred_inv_random.py \\
-        --data data/cartpole_random_seed42.h5 --epochs 200 \\
-        --save-dir results/jepa_pred_inv_random_seed42
+    python experiments/train_jepa_pred_endpoint_act.py \\
+        --data   data/cartpole_random_fs3_seed42.h5 \\
+        --config configs/cartpole_jepa_pred_endpoint_act_vicreg.yaml \\
+        --epochs 500 \\
+        --save-dir results_endpoint_act_v1/run_seed42
 """
 from __future__ import annotations
 import argparse, sys
@@ -31,19 +40,20 @@ def _find_near_eq_obs(data, split='train'):
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--data',      default='data/cartpole_random_seed42.h5')
-    p.add_argument('--config',    default='configs/cartpole_jepa_pred_inv_random.yaml')
+    p = argparse.ArgumentParser(
+        description='Train JEPA with endpoint action reconstruction')
+    p.add_argument('--data',      default='data/cartpole_random_fs3_seed42.h5')
+    p.add_argument('--config',    default='configs/cartpole_jepa_pred_endpoint_act_vicreg.yaml')
     p.add_argument('--epochs',    type=int, default=None)
     p.add_argument('--seed',      type=int, default=42)
-    p.add_argument('--save-dir',  default='results/jepa_pred_inv_random_seed42')
+    p.add_argument('--save-dir',  default='results_endpoint_act_v1/run_seed42')
     p.add_argument('--device',    default=None)
     p.add_argument('--batch-size', type=int, default=None,
                    help='Override batch_size from config')
     p.add_argument('--init-checkpoint', default=None,
                    help='Load encoder+predictor weights from this .pt file before training')
     p.add_argument('--resume', default=None,
-                   help='Resume full training state (model+optimizer+scheduler) from this .pt checkpoint')
+                   help='Resume full training state from this .pt checkpoint')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -55,16 +65,16 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    env_cfg   = cfg['environment']
     model_cfg = cfg['model']
     train_cfg = dict(cfg['training'])
     if args.epochs is not None:
         train_cfg['epochs'] = args.epochs
-    epochs = int(train_cfg.get('epochs', 200))
+    epochs = int(train_cfg.get('epochs', 500))
     if args.batch_size is not None:
         train_cfg['batch_size'] = args.batch_size
 
-    # When resuming, override model architecture from the checkpoint's saved config
-    # so that changes to the yaml (e.g. predictor_n_layers) don't break loading.
+    # When resuming, override model architecture from checkpoint's saved config
     if args.resume is not None:
         _ckpt_peek = torch.load(args.resume, map_location='cpu')
         _ckpt_cfg  = _ckpt_peek.get('config', {})
@@ -86,12 +96,18 @@ def main():
     horizon     = int(train_cfg.get('horizon', 30))
     frame_stack = int(model_cfg.get('frame_stack', 2))
 
+    H_act = int(train_cfg.get('action_reconstruction_horizon', 5))
+    ar_mode = train_cfg.get('action_reconstruction_mode', 'endpoint_sequence')
+    if horizon < H_act:
+        raise ValueError(
+            f'action_reconstruction_horizon={H_act} must be ≤ training horizon={horizon}')
+
     obs_eq, state_eq = _find_near_eq_obs(data, split='train')
     print(f'[data] near-eq anchor: ||state||={np.linalg.norm(state_eq):.4f}  '
           f'state={np.round(state_eq, 4)}')
 
-    normalize_actions = bool(train_cfg.get('normalize_actions', False))
-    normalize_states  = bool(train_cfg.get('normalize_states', False))
+    normalize_actions = bool(train_cfg.get('normalize_actions', True))
+    normalize_states  = bool(train_cfg.get('normalize_states', True))
     action_scale = float(data.get('action_scale', 1.0)) if normalize_actions else 1.0
     state_mean = data.get('state_mean') if normalize_states else None
     state_std  = data.get('state_std')  if normalize_states else None
@@ -101,14 +117,17 @@ def main():
         print(f'[data] state normalization: mean={np.round(state_mean, 4)}  '
               f'std={np.round(state_std, 4)}')
 
-    loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
-                               horizon=horizon, frame_stack=frame_stack,
-                               obs_eq=obs_eq,
-                               n_eq_selfloop=int(cfg.get('data', {}).get('n_eq_selfloop', 0)),
-                               action_scale=action_scale,
-                               state_mean=state_mean, state_std=state_std)
+    loaders = make_dataloaders(
+        data, batch_size=train_cfg['batch_size'],
+        horizon=horizon, frame_stack=frame_stack,
+        obs_eq=obs_eq,
+        n_eq_selfloop=int(cfg.get('data', {}).get('n_eq_selfloop', 0)),
+        action_scale=action_scale,
+        state_mean=state_mean, state_std=state_std,
+    )
     print(f'[data] train={len(loaders["train"].dataset)}  '
-          f'val={len(loaders["val"].dataset)}  horizon={horizon}  frame_stack={frame_stack}')
+          f'val={len(loaders["val"].dataset)}  '
+          f'horizon={horizon}  frame_stack={frame_stack}')
 
     from models.jepa import make_jepa
     model = make_jepa(
@@ -117,7 +136,7 @@ def main():
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
-        image_size=64,
+        image_size=int(env_cfg.get('image_size', 64)),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=frame_stack,
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
@@ -125,41 +144,51 @@ def main():
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
         predictor_hidden_dim=int(model_cfg.get('predictor_hidden_dim', 64)),
         predictor_n_layers=int(model_cfg.get('predictor_n_layers', 3)),
-        predictor_window=int(model_cfg.get('predictor_window', 5)),
-        predictor_residual=bool(model_cfg.get('predictor_residual', False)),
+        predictor_window=int(model_cfg.get('predictor_window', 3)),
     )
     model.to(device)
 
     if args.init_checkpoint is not None:
-        ckpt = torch.load(args.init_checkpoint, map_location=device)
-        # Support both model_final.pt (flat state dict) and checkpoint_epochNNNN.pt
-        # (which wraps the state dict under 'model_state')
+        ckpt  = torch.load(args.init_checkpoint, map_location=device)
         state = ckpt.get('model_state', ckpt.get('model_state_dict', ckpt))
         missing, unexpected = model.load_state_dict(state, strict=False)
-        print(f'[init] loaded encoder+predictor from {args.init_checkpoint}')
+        print(f'[init] loaded from {args.init_checkpoint}')
         if missing:
-            print(f'[init]   missing keys  : {missing}')
+            print(f'[init]   missing   : {missing}')
         if unexpected:
-            print(f'[init]   unexpected keys: {unexpected}')
+            print(f'[init]   unexpected: {unexpected}')
 
     n_params = sum(p_.numel() for p_ in model.parameters() if p_.requires_grad)
     print(f'[model] JEPA (E-full)  {n_params:,} trainable params  '
           f'latent_dim={model_cfg["latent_dim"]}  frame_stack={frame_stack}  '
           f'window={model_cfg["predictor_window"]}  n_layers={model_cfg["predictor_n_layers"]}  '
-          f'horizon={horizon}  lambda_inv={train_cfg.get("lambda_inv", 0.0)}  '
-          f'detach_targets={train_cfg.get("detach_targets", True)}')
+          f'horizon={horizon}  mode={ar_mode}  H_act={H_act}  '
+          f'lambda_ar={train_cfg.get("lambda_action_reconstruction", 1.0)}  '
+          f'lambda_inv={train_cfg.get("lambda_inv", 0.0)}')
 
     from training.trainer import Trainer
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    trainer = Trainer(model=model, config_dict=train_cfg, gt=None,
-                      save_dir=str(save_dir / 'checkpoints'), device=device, seed=args.seed)
+    trainer = Trainer(
+        model=model, config_dict=train_cfg, gt=None,
+        save_dir=str(save_dir / 'checkpoints'),
+        device=device, seed=args.seed,
+    )
     trainer.set_obs_eq(obs_eq)
 
+    if trainer.endpoint_action_decoder is not None:
+        n_dec = sum(p.numel() for p in trainer.endpoint_action_decoder.parameters())
+        n_phys = sum(p.numel() for p in trainer.phys_endpoint_decoder.parameters())
+        print(f'[model] endpoint decoder  {n_dec:,} params  '
+              f'phys decoder (diagnostic)  {n_phys:,} params  '
+              f'use_delta={trainer.endpoint_action_decoder.use_delta}')
+
     print(f'[train] training for {epochs} epochs ...')
-    trainer.fit(loaders['train'], loaders['val'], epochs=epochs,
-                checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),
-                resume_from=args.resume)
+    trainer.fit(
+        loaders['train'], loaders['val'], epochs=epochs,
+        checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),
+        resume_from=args.resume,
+    )
 
     torch.save(trainer.final_state, save_dir / 'model_final.pt')
     print(f'[done] saved -> {save_dir / "model_final.pt"}')

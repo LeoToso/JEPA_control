@@ -149,9 +149,11 @@ class Trainer:
         else:
             self.state_head = None
 
-        # Inverse dynamics head.
+        # Local inverse dynamics head (local_pair / local_window modes).
         # inv_frames=2 (paper/SMWM): ψ(z_t, z_{t+1}) → u_t  — 2-layer MLP, H pairs.
         # inv_frames=3 (default):    ψ(z_{t-1}, z_t, z_{t+1}) → u_t — 4-layer MLP, H-1 triplets.
+        # This head receives intermediate latent states.  For endpoint-only reconstruction
+        # (no intermediate states) see EndpointActionDecoder and lambda_action_reconstruction.
         self.inv_frames = int(self.cfg.get('inv_frames', 3))
         if self.lambda_inv > 0:
             d_lat = model.config.latent_dim
@@ -172,6 +174,49 @@ class Trainer:
             self.optimizer.add_param_group({'params': self.inv_head.parameters()})
         else:
             self.inv_head = None
+
+        # Endpoint action decoder (endpoint_sequence / local_pair / local_window modes).
+        # Distinct from inv_head: receives ONLY (z_start, z_end) — no intermediate latents —
+        # testing whether endpoint representations encode the full action-induced trajectory.
+        # Gradient flows through both encoder calls (z_start and z_end) into the online encoder.
+        self.lambda_action_reconstruction = float(
+            self.cfg.get('lambda_action_reconstruction', 0.0))
+        self.action_reconstruction_mode = str(
+            self.cfg.get('action_reconstruction_mode', 'endpoint_sequence'))
+        self.action_reconstruction_horizon = int(
+            self.cfg.get('action_reconstruction_horizon', 5))
+        self.ar_action_scale = float(
+            self.cfg.get('action_reconstruction_action_scale', 1.0))
+
+        if self.lambda_action_reconstruction > 0:
+            from models.endpoint_action_decoder import EndpointActionDecoder
+            d_lat = model.config.latent_dim
+            # local_pair always reconstructs a single action; other modes use configured H_act
+            _H_act = (1 if self.action_reconstruction_mode == 'local_pair'
+                      else self.action_reconstruction_horizon)
+            _ar_hidden = int(self.cfg.get('action_reconstruction_hidden_dim', 256))
+            _ar_layers = int(self.cfg.get('action_reconstruction_n_layers', 3))
+            _ar_delta  = bool(self.cfg.get('action_reconstruction_use_delta', True))
+            self.endpoint_action_decoder = EndpointActionDecoder(
+                latent_dim=d_lat, action_dim=1, H_act=_H_act,
+                hidden_dim=_ar_hidden, n_layers=_ar_layers, use_delta=_ar_delta,
+            ).to(self.device)
+            self.optimizer.add_param_group(
+                {'params': self.endpoint_action_decoder.parameters(), 'weight_decay': 0.0})
+            # Physical-state endpoint decoder: trained alongside the latent decoder using
+            # ground-truth states as inputs.  Its val loss upper-bounds what endpoint
+            # representations can possibly achieve, since states contain more information
+            # than latents.  Its gradient never reaches the encoder.
+            self.phys_endpoint_decoder = EndpointActionDecoder(
+                latent_dim=4,   # cartpole physical state dim
+                action_dim=1, H_act=_H_act,
+                hidden_dim=_ar_hidden, n_layers=_ar_layers, use_delta=_ar_delta,
+            ).to(self.device)
+            self.optimizer.add_param_group(
+                {'params': self.phys_endpoint_decoder.parameters(), 'weight_decay': 0.0})
+        else:
+            self.endpoint_action_decoder = None
+            self.phys_endpoint_decoder   = None
 
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -473,6 +518,69 @@ class Trainer:
             inv_loss   = F.mse_loss(u_hat, u_tgt)
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
+
+        # Endpoint action reconstruction (endpoint_sequence | local_pair | local_window).
+        # Unlike inv_head, the decoder receives ONLY (z_start, z_end) — no intermediate
+        # latent states.  Both endpoints are re-encoded here with grad enabled so the
+        # loss shapes the encoder even when detach_targets=True (which would stop grad
+        # through z_rest).
+        if self.lambda_action_reconstruction > 0 and self.endpoint_action_decoder is not None:
+            mode  = self.action_reconstruction_mode
+            H_act = self.endpoint_action_decoder.H_act
+
+            if mode == 'local_pair':
+                # Random adjacent pair: (z_t, z_{t+1}) → u_t
+                k = int(torch.randint(0, H, (1,)).item())
+                obs_s   = obs_seq[:, k]          # (B, C, h, w)
+                obs_e   = obs_seq[:, k + 1]      # (B, C, h, w)
+                act_tgt = actions[:, k:k+1] / self.ar_action_scale   # (B, 1, 1)
+                _start  = k                      # for physical decoder lookup below
+                _end    = k + 1
+            else:
+                # local_window / endpoint_sequence: random subwindow of length H_act
+                # start_idx ~ Uniform{0, …, H - H_act}
+                max_start = H - H_act
+                _start  = int(torch.randint(0, max_start + 1, (1,)).item()) if max_start > 0 else 0
+                _end    = _start + H_act
+                obs_s   = obs_seq[:, _start]     # (B, C, h, w)
+                obs_e   = obs_seq[:, _end]       # (B, C, h, w)
+                act_tgt = actions[:, _start:_end] / self.ar_action_scale  # (B, H_act, 1)
+
+            # Explicit re-encode with grad enabled.  z_rest is under no_grad when
+            # detach_targets=True, so we cannot reuse z_all for z_end.
+            z_s = self.model.encoder(obs_s)   # (B, d)  grad enabled → flows to encoder
+            z_e = self.model.encoder(obs_e)   # (B, d)  grad enabled → flows to encoder
+            action_hat = self.endpoint_action_decoder(z_s, z_e)  # (B, H_act, 1)
+            ep_act_loss = F.mse_loss(action_hat, act_tgt)
+            total_loss  = total_loss + self.lambda_action_reconstruction * ep_act_loss
+            info['endpoint_action_loss'] = ep_act_loss.item()
+
+            with torch.no_grad():
+                info['endpoint_action_mae'] = (action_hat - act_tgt).abs().mean().item()
+                ss_res = ((action_hat - act_tgt) ** 2).sum()
+                ss_tot = ((act_tgt - act_tgt.mean()) ** 2).sum() + 1e-12
+                info['endpoint_action_r2'] = float(1.0 - ss_res / ss_tot)
+                # Baseline MSE: predict zero (= mean of normalized actions for random data)
+                baseline_mse = (act_tgt ** 2).mean()
+                info['endpoint_action_baseline_mse']    = baseline_mse.item()
+                info['endpoint_action_normalized_mse']  = float(
+                    ep_act_loss / (baseline_mse + 1e-12))
+                # Per-step MSE: error profile along the reconstructed sequence
+                step_mse = ((action_hat - act_tgt) ** 2).mean(dim=(0, 2))  # (H_act,)
+                for _k in range(H_act):
+                    info[f'action_mse_step_{_k}'] = step_mse[_k].item()
+
+            # Physical-state endpoint decoder: diagnostic upper bound.
+            # Uses ground-truth states (not encoder outputs) → gradient never reaches encoder.
+            # Trained jointly so val loss tracks a meaningful ceiling each epoch.
+            if 'states' in batch and self.phys_endpoint_decoder is not None:
+                states_b = batch['states'].to(self.device).float()  # (B, H+1, 4)
+                s_s = states_b[:, _start]   # (B, 4)
+                s_e = states_b[:, _end]     # (B, 4)
+                phys_hat = self.phys_endpoint_decoder(s_s, s_e)     # (B, H_act, 1)
+                phys_ep_loss = F.mse_loss(phys_hat, act_tgt)
+                total_loss   = total_loss + self.lambda_action_reconstruction * phys_ep_loss
+                info['endpoint_phys_action_loss'] = phys_ep_loss.item()
 
         # Encoder anchor: push encoder(obs_eq) toward the origin.
         # During warmup (encoder trainable) gradients flow into encoder params,
@@ -779,6 +887,10 @@ class Trainer:
             params = list(self.model.parameters())
             if self.state_head is not None:
                 params += list(self.state_head.parameters())
+            if self.endpoint_action_decoder is not None:
+                params += list(self.endpoint_action_decoder.parameters())
+            if self.phys_endpoint_decoder is not None:
+                params += list(self.phys_endpoint_decoder.parameters())
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             self.optimizer.step()
             if self.use_target_encoder:
@@ -930,11 +1042,17 @@ class Trainer:
                             f"(z*={tr.get('mirror_zstar_norm', 0):.3f}"
                             f",res={tr.get('mirror_residual_norm', 0):.3f})"
                             ) if 'mirror_loss' in tr else ''
+            ep_act_str   = (f"  ep_act={tr.get('endpoint_action_loss', 0):.4f}"
+                            + (f"(phys={tr.get('endpoint_phys_action_loss', 0):.4f})"
+                               if 'endpoint_phys_action_loss' in tr else '')
+                            + (f" nMSE={tr.get('endpoint_action_normalized_mse', 0):.3f}"
+                               if 'endpoint_action_normalized_mse' in tr else '')
+                            ) if 'endpoint_action_loss' in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{zmove_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
@@ -985,6 +1103,10 @@ class Trainer:
                    'config': self.model.get_config_dict()}
         if self.inv_head is not None:
             payload['inv_head_state'] = self.inv_head.state_dict()
+        if self.endpoint_action_decoder is not None:
+            payload['endpoint_action_decoder_state'] = self.endpoint_action_decoder.state_dict()
+        if self.phys_endpoint_decoder is not None:
+            payload['phys_endpoint_decoder_state'] = self.phys_endpoint_decoder.state_dict()
         torch.save(payload, path)
         # Always keep a 'latest' copy for easy resume
         if tag != 'latest':
@@ -997,11 +1119,20 @@ class Trainer:
         """Load model, optimizer, scheduler state from a checkpoint file."""
         ckpt = torch.load(path, map_location=self.device)
         self.model.load_state_dict(ckpt['model_state'])
-        self.optimizer.load_state_dict(ckpt['optimizer_state'])
+        # Optimizer param groups may differ across configs (e.g. endpoint decoder added
+        # mid-run); load gracefully rather than crashing on group-count mismatch.
+        try:
+            self.optimizer.load_state_dict(ckpt['optimizer_state'])
+        except (ValueError, KeyError) as _exc:
+            warnings.warn(f'[ckpt] optimizer state mismatch ({_exc}) — starting optimizer fresh')
         self.scheduler.load_state_dict(ckpt['scheduler_state'])
         self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
         self.epoch       = ckpt.get('epoch', 0)
         self.global_step = ckpt.get('global_step', 0)
         if 'inv_head_state' in ckpt and self.inv_head is not None:
             self.inv_head.load_state_dict(ckpt['inv_head_state'])
+        if 'endpoint_action_decoder_state' in ckpt and self.endpoint_action_decoder is not None:
+            self.endpoint_action_decoder.load_state_dict(ckpt['endpoint_action_decoder_state'])
+        if 'phys_endpoint_decoder_state' in ckpt and self.phys_endpoint_decoder is not None:
+            self.phys_endpoint_decoder.load_state_dict(ckpt['phys_endpoint_decoder_state'])
         print(f'[ckpt] resumed from {path}  (epoch={self.epoch}, step={self.global_step})')
