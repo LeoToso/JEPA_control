@@ -71,7 +71,30 @@ def main():
     )
     print(f'[GT] unstable eigenvalues: {np.round(gt.unstable_eigenvalues, 4)}')
 
-    # Build and load model
+    # Load checkpoint first so we can read the saved architecture config
+    ckpt_path = Path(args.checkpoint)
+    print(f'[model] Loading {ckpt_path}')
+    raw = torch.load(ckpt_path, map_location=device)
+    # Handle both epoch checkpoints (model_state key) and flat model_final.pt
+    if isinstance(raw, dict) and 'model_state' in raw:
+        state = raw['model_state']
+    elif isinstance(raw, dict) and 'model_state_dict' in raw:
+        state = raw['model_state_dict']
+    else:
+        state = raw
+    # Override model_cfg arch keys from checkpoint's saved config so that
+    # changes to the yaml after training don't cause size mismatches.
+    if isinstance(raw, dict) and 'config' in raw:
+        _ckpt_cfg = raw['config']
+        _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
+                      'encoder_type', 'patch_size', 'frame_stack',
+                      'vit_embed_dim', 'vit_depth', 'vit_num_heads',
+                      'predictor_hidden_dim', 'predictor_n_layers', 'predictor_window')
+        for _k in _arch_keys:
+            if _k in _ckpt_cfg and _ckpt_cfg[_k] != model_cfg.get(_k):
+                print(f'[model] arch override: {_k}={_ckpt_cfg[_k]}  (yaml had {model_cfg.get(_k)})')
+                model_cfg[_k] = _ckpt_cfg[_k]
+
     from models.jepa import make_jepa
     model = make_jepa(
         variant='E-full',
@@ -90,16 +113,6 @@ def main():
         predictor_window=int(model_cfg.get('predictor_window', 5)),
         predictor_residual=bool(model_cfg.get('predictor_residual', False)),
     )
-    ckpt_path = Path(args.checkpoint)
-    print(f'[model] Loading {ckpt_path}')
-    raw = torch.load(ckpt_path, map_location=device)
-    # Handle both epoch checkpoints (model_state key) and flat model_final.pt
-    if isinstance(raw, dict) and 'model_state' in raw:
-        state = raw['model_state']
-    elif isinstance(raw, dict) and 'model_state_dict' in raw:
-        state = raw['model_state_dict']
-    else:
-        state = raw
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
         print(f'[model]  missing   : {missing}')
