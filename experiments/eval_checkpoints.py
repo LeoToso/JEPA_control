@@ -170,8 +170,6 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     from envs.cartpole_visual import ContinuousCartpoleVisual
-    env = ContinuousCartpoleVisual(image_size=64, action_range=(-10, 10))
-    obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
 
     STATE_NAMES = ['x', 'xdot', 'theta', 'thetadot']
     SCORE_COL   = 'sum_max_r'
@@ -179,6 +177,25 @@ def main():
     all_results = {}  # label -> list of row dicts
 
     for ckpt_dir, cfg_yaml, label in zip(args.ckpt_dirs, args.cfgs, labels):
+        import yaml as _yaml
+        with open(cfg_yaml) as _f:
+            _full_cfg = _yaml.safe_load(_f)
+        _env_cfg = _full_cfg.get('environment', {})
+        _frame_skip = int(_env_cfg.get('frame_skip', 1))
+        _image_size = int(_env_cfg.get('image_size', 64))
+        print(f'\n[{label}]  env: frame_skip={_frame_skip}  image_size={_image_size}')
+        env = ContinuousCartpoleVisual(
+            frame_skip=_frame_skip,
+            image_size=_image_size,
+            mass_cart=_env_cfg.get('mass_cart', 1.0),
+            mass_pole=_env_cfg.get('mass_pole', 0.1),
+            pole_length=_env_cfg.get('pole_length', 0.5),
+            gravity=_env_cfg.get('gravity', 9.8),
+            dt=_env_cfg.get('dt', 0.02),
+            action_range=(_env_cfg.get('action_range', [-10, 10])[0],
+                          _env_cfg.get('action_range', [-10, 10])[1]),
+        )
+        obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
         ckpt_dir = Path(ckpt_dir)
         ckpts = sorted(
             [f for f in ckpt_dir.glob('checkpoint_epoch*.pt')],
@@ -226,8 +243,7 @@ def main():
             w.writeheader()
             w.writerows(rows)
         print(f'  → saved {csv_path}')
-
-    env.close()
+        env.close()
 
     # ── Print combined summary table ──────────────────────────────────────────
     print('\n' + '='*90)

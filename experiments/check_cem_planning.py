@@ -43,6 +43,9 @@ def main():
                    help='Regularization added to Pearson Q before scaling (default: 0.05)')
     p.add_argument('--pearson-rollouts', type=int, default=60,
                    help='Rollouts used to estimate Pearson correlation matrix (default: 60)')
+    p.add_argument('--nonlinear',  action='store_true',
+                   help='Use the actual nonlinear predictor (windowed MLP) for CEM '
+                        'instead of the linearized Jacobian. Q stays d-dimensional.')
     p.add_argument('--n-samples',  type=int,   default=500)
     p.add_argument('--n-elites',   type=int,   default=50)
     p.add_argument('--n-iter',     type=int,   default=10)
@@ -213,6 +216,12 @@ def main():
         d_plan   = d
         z_star_plan = z_star
 
+    # Override to nonlinear d-dim planning if requested
+    if args.nonlinear:
+        d_plan = d
+        z_star_plan = z_star
+        print(f'[control] → nonlinear CEM mode  predictor_window={W}  Q is {d}×{d}')
+
     # CEM
     from control.cem import CEMLatentPlanner
     from control.rollout import evaluate_stabilization_mpc
@@ -249,8 +258,9 @@ def main():
         # Normalise so trace = d (same as I), then apply alpha for overall scale
         Q_base = Q_base / (np.trace(Q_base) / d)
         Q_base = args.alpha * Q_base
-        # Tile block-diagonally for augmented (W*d) state if needed
-        Q  = np.kron(np.eye(W if use_aug else 1), Q_base)
+        # Tile block-diagonally for augmented (W*d) state if needed; skip for nonlinear mode
+        tile = W if (use_aug and not args.nonlinear) else 1
+        Q  = np.kron(np.eye(tile), Q_base)
         Qf = Q.copy()
         print(f'[pearson-Q] C max|r|: x={np.max(np.abs(C[:,0])):.3f}  '
               f'xdot={np.max(np.abs(C[:,1])):.3f}  '
@@ -265,27 +275,43 @@ def main():
         Qf = args.alpha * np.eye(d_plan)
     R  = args.beta  * np.eye(1)
 
-    cem = CEMLatentPlanner(
-        A=A_plan, B=B_plan, c_offset=c_plan,
-        Q=Q, R=R, Q_f=Qf,
-        horizon=horizon, chunk_size=1,
-        n_samples=args.n_samples,
-        n_elites=args.n_elites,
-        n_iter=args.n_iter,
-        init_std=args.init_std,
-        warm_start_sigma=0.5,
-        action_lb=action_lb,
-        action_ub=action_ub,
-        device=device,
-    )
+    if args.nonlinear:
+        cem = CEMLatentPlanner(
+            predictor=model, action_encoder=model.action_encoder, predictor_window=W,
+            Q=Q, R=R, Q_f=Qf,
+            horizon=horizon, chunk_size=1,
+            n_samples=args.n_samples,
+            n_elites=args.n_elites,
+            n_iter=args.n_iter,
+            init_std=args.init_std,
+            warm_start_sigma=0.5,
+            action_lb=action_lb,
+            action_ub=action_ub,
+            device=device,
+        )
+    else:
+        cem = CEMLatentPlanner(
+            A=A_plan, B=B_plan, c_offset=c_plan,
+            Q=Q, R=R, Q_f=Qf,
+            horizon=horizon, chunk_size=1,
+            n_samples=args.n_samples,
+            n_elites=args.n_elites,
+            n_iter=args.n_iter,
+            init_std=args.init_std,
+            warm_start_sigma=0.5,
+            action_lb=action_lb,
+            action_ub=action_ub,
+            device=device,
+        )
 
     init_scale = float(ctrl_cfg.get('init_scale', 0.05))
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
     q_desc = f'PearsonQ(w={args.w_phys})' if args.pearson_Q else 'αI'
+    dyn_desc = 'nonlinear-predictor' if args.nonlinear else 'linear-jacobian'
     print(f'\n[eval] CEM  H={horizon}  Q={q_desc}  α={args.alpha}  β={args.beta}  '
-          f'n_trials={args.n_trials}  T={args.T}')
+          f'dynamics={dyn_desc}  n_trials={args.n_trials}  T={args.T}')
 
     cr = evaluate_stabilization_mpc(
         encoder=model.encoder, mpc=cem, env=env,
