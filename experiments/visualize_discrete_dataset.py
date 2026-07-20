@@ -102,6 +102,8 @@ def main():
         h, w   = frames[0]['obs'].shape[:2]
         fig, axes = plt.subplots(args.n_rows, args.n_cols,
                                  figsize=(args.n_cols * 1.4, args.n_rows * 1.6))
+        if args.n_rows == 1:
+            axes = axes[np.newaxis, :]
         _draw_grid(frames, f'{args.data}  ({args.split})  {h}×{w}', axes,
                    args.n_rows, args.n_cols)
     else:
@@ -110,13 +112,6 @@ def main():
         frames_b = _load_episode_sample(cmp_hdf5, n, args.seed, args.sequential)
         h_a, w_a = frames_a[0]['obs'].shape[:2]
         h_b, w_b = frames_b[0]['obs'].shape[:2]
-        fig, (top, bot) = plt.subplots(
-            2 * args.n_rows, args.n_cols,
-            figsize=(args.n_cols * 1.4, 2 * args.n_rows * 1.6))
-        top_axes = top.reshape(args.n_rows, args.n_cols) if hasattr(top, 'reshape') else \
-                   np.array(fig.axes[:args.n_rows * args.n_cols]).reshape(args.n_rows, args.n_cols)
-        # Simpler: just use gridspec
-        plt.close(fig)
         fig, all_axes = plt.subplots(
             2 * args.n_rows, args.n_cols,
             figsize=(args.n_cols * 1.4, 2 * args.n_rows * 1.6 + 0.5))
