@@ -44,24 +44,24 @@ def resize_split(src_path: Path, dst_path: Path, size: int) -> None:
             ep_src = ep_grp_src[ep_key]
             ep_dst = ep_grp_dst.create_group(ep_key)
 
-            # Copy non-obs datasets verbatim
+            # Copy non-observation datasets verbatim
             for ds_name in ep_src.keys():
-                if ds_name == 'obs':
+                if ds_name == 'observations':
                     continue
                 ep_src.copy(ds_name, ep_dst)
 
             # Resize observations: (T+1, H, W, C) uint8 → (T+1, size, size, C) uint8
-            obs = ep_src['obs'][:]                            # (T+1, H, W, C) uint8
+            obs = ep_src['observations'][:]                   # (T+1, H, W, C) uint8
             T1, H, W, C = obs.shape
             if H == size and W == size:
-                ep_dst.create_dataset('obs', data=obs, compression='lzf')
+                ep_dst.create_dataset('observations', data=obs, compression='lzf')
                 continue
 
             t = torch.from_numpy(obs).permute(0, 3, 1, 2).float()  # (T+1, C, H, W)
             t = torch.nn.functional.interpolate(
                 t, size=(size, size), mode='bilinear', align_corners=False)
             obs_small = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()  # (T+1, s, s, C)
-            ep_dst.create_dataset('obs', data=obs_small, compression='lzf')
+            ep_dst.create_dataset('observations', data=obs_small, compression='lzf')
 
 
 def main():
