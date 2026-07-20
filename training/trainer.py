@@ -137,7 +137,7 @@ class Trainer:
             param_groups, lr=lr, weight_decay=weight_decay)
 
         self._amp_enabled = (self.device.type == 'cuda')
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self._amp_enabled)
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
 
@@ -901,7 +901,7 @@ class Trainer:
             _t0 = time.time()
 
             self.optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+            with torch.amp.autocast('cuda', enabled=self._amp_enabled):
                 loss, info = self._compute_loss(batch, is_train=True)
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
@@ -934,7 +934,7 @@ class Trainer:
         metrics = {}
         for batch in tqdm(val_loader, desc=f'Epoch {self.epoch} [val]',
                           leave=False, dynamic_ncols=True):
-            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+            with torch.amp.autocast('cuda', enabled=self._amp_enabled):
                 _, info = self._compute_loss(batch, is_train=False)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
