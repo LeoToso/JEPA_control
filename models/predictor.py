@@ -59,7 +59,7 @@ class _PredTransformerBlock(nn.Module):
 
 
 class TransformerPredictor(nn.Module):
-    """Transformer predictor: window of (z, a) tokens → next latent.
+    """Transformer predictor with DINO-WM-style action lifting.
 
     Drop-in replacement for MLPPredictor — identical call signature:
         forward(z, a)
@@ -67,8 +67,12 @@ class TransformerPredictor(nn.Module):
             a : (B, W*action_dim)   window of encoded actions, flattened
         returns (B, latent_dim)
 
-    Internally reshapes to (B, W, *) token sequences, runs Pre-LN
-    transformer blocks, and reads the last token as the prediction.
+    Action lifting (following DINO-WM §3.1.2): state tokens and action
+    embeddings are projected **separately** to embed_dim and **added**
+    per timestep, so each token is conditioned on its action before
+    self-attention. This differs from a joint [z‖a] projection.
+
+        z_proj(z_t) + a_proj(a_t)  →  token_t  ∈ R^embed_dim
     """
 
     def __init__(
@@ -87,8 +91,11 @@ class TransformerPredictor(nn.Module):
         self.window     = window
         self.embed_dim  = embed_dim
 
-        self.token_proj = nn.Linear(latent_dim + action_dim, embed_dim)
-        self.pos_emb    = nn.Parameter(torch.zeros(1, window, embed_dim))
+        # Separate projections: state and action are lifted independently
+        self.z_proj = nn.Linear(latent_dim, embed_dim)
+        self.a_proj = nn.Linear(action_dim, embed_dim)   # action lifting
+
+        self.pos_emb = nn.Parameter(torch.zeros(1, window, embed_dim))
         nn.init.trunc_normal_(self.pos_emb, std=0.02)
 
         self.blocks = nn.ModuleList([
@@ -110,15 +117,14 @@ class TransformerPredictor(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def forward(self, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        B  = z.shape[0]
-        W  = self.window
-        z_seq = z.reshape(B, W, self.latent_dim)           # (B, W, d)
-        a_seq = a.reshape(B, W, self.action_dim)           # (B, W, d_a)
-        tokens = self.token_proj(
-            torch.cat([z_seq, a_seq], dim=-1)              # (B, W, d+d_a)
-        )                                                   # (B, W, embed_dim)
+        B = z.shape[0]
+        W = self.window
+        z_seq = z.reshape(B, W, self.latent_dim)          # (B, W, d)
+        a_seq = a.reshape(B, W, self.action_dim)          # (B, W, d_a)
+        # Action lifting: add per-token action embedding to state token
+        tokens = self.z_proj(z_seq) + self.a_proj(a_seq)  # (B, W, embed_dim)
         tokens = tokens + self.pos_emb
         for blk in self.blocks:
             tokens = blk(tokens)
         tokens = self.norm(tokens)
-        return self.head(tokens[:, -1])                    # (B, latent_dim)
+        return self.head(tokens[:, -1])                   # (B, latent_dim)
