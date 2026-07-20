@@ -163,9 +163,12 @@ def main():
             print(f'[init]   unexpected keys: {unexpected}')
 
     n_params = sum(p_.numel() for p_ in model.parameters() if p_.requires_grad)
+    pred_type = model_cfg.get('predictor_type', 'mlp')
+    pred_info  = (f'depth={model_cfg["predictor_depth"]}' if pred_type == 'transformer'
+                  else f'n_layers={model_cfg.get("predictor_n_layers", "?")}')
     print(f'[model] JEPA (E-full)  {n_params:,} trainable params  '
           f'latent_dim={model_cfg["latent_dim"]}  frame_stack={frame_stack}  '
-          f'window={model_cfg["predictor_window"]}  n_layers={model_cfg["predictor_n_layers"]}  '
+          f'predictor={pred_type}  window={model_cfg["predictor_window"]}  {pred_info}  '
           f'horizon={horizon}  lambda_inv={train_cfg.get("lambda_inv", 0.0)}  '
           f'detach_targets={train_cfg.get("detach_targets", True)}')
 
