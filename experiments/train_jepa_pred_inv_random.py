@@ -137,16 +137,20 @@ def main():
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
-        image_size=64,
+        image_size=int(model_cfg.get('image_size', 64)),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=frame_stack,
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
+        predictor_type=model_cfg.get('predictor_type', 'mlp'),
         predictor_hidden_dim=int(model_cfg.get('predictor_hidden_dim', 64)),
         predictor_n_layers=int(model_cfg.get('predictor_n_layers', 3)),
         predictor_window=int(model_cfg.get('predictor_window', 5)),
-        predictor_residual=bool(model_cfg.get('predictor_residual', False)),
+        predictor_embed_dim=int(model_cfg.get('predictor_embed_dim', 128)),
+        predictor_depth=int(model_cfg.get('predictor_depth', 4)),
+        predictor_num_heads=int(model_cfg.get('predictor_num_heads', 4)),
+        predictor_mlp_ratio=float(model_cfg.get('predictor_mlp_ratio', 4.0)),
     )
     model.to(device)
 
