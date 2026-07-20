@@ -34,7 +34,7 @@ training:
   # Weighted MSE: theta (index 2) gets highest weight — it's the key visual cue.
   # state_encoder_grad_scale controls how much gradient flows back into encoder.
   lambda_state: 1.0
-  state_loss_weights: [50., 0.1, 100., 1.]   # [x, xdot, theta, thetadot]
+  state_loss_weights: [1., 1., 1., 1.]       # uniform — states already normalized
   state_encoder_grad_scale: 1.0
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
