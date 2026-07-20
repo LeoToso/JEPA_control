@@ -80,37 +80,53 @@ def main():
                     model_cfg[_k] = _ckpt_cfg[_k]
         del _ckpt_peek, _ckpt_cfg
 
-    from data.dataset import load_dataset, load_discrete_dataset, make_dataloaders
+    from data.dataset import (load_dataset, load_discrete_dataset_meta,
+                              make_dataloaders, make_discrete_dataloaders)
     print(f'[data] loading {args.data}')
-    if Path(args.data).is_dir():
-        data = load_discrete_dataset(args.data)
-    else:
-        data = load_dataset(args.data)
     horizon     = int(train_cfg.get('horizon', 30))
     frame_stack = int(model_cfg.get('frame_stack', 2))
-
-    obs_eq, state_eq = _find_near_eq_obs(data, split='train')
-    print(f'[data] near-eq anchor: ||state||={np.linalg.norm(state_eq):.4f}  '
-          f'state={np.round(state_eq, 4)}')
+    num_workers = int(train_cfg.get('num_workers', 0))
 
     normalize_actions = bool(train_cfg.get('normalize_actions', False))
     normalize_states  = bool(train_cfg.get('normalize_states', False))
-    action_scale = float(data.get('action_scale', 1.0)) if normalize_actions else 1.0
-    state_mean = data.get('state_mean') if normalize_states else None
-    state_std  = data.get('state_std')  if normalize_states else None
-    if normalize_actions:
-        print(f'[data] action normalization: scale={action_scale}')
-    if normalize_states and state_mean is not None:
-        print(f'[data] state normalization: mean={np.round(state_mean, 4)}  '
-              f'std={np.round(state_std, 4)}')
 
-    loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
-                               horizon=horizon, frame_stack=frame_stack,
-                               obs_eq=obs_eq,
-                               n_eq_selfloop=int(cfg.get('data', {}).get('n_eq_selfloop', 0)),
-                               action_scale=action_scale,
-                               state_mean=state_mean, state_std=state_std,
-                               num_workers=int(train_cfg.get('num_workers', 0)))
+    if Path(args.data).is_dir():
+        # Discrete CartPole HDF5 dataset — lazy loading, no obs pre-load
+        meta = load_discrete_dataset_meta(args.data)
+        action_scale = float(meta.get('action_scale', 1.0)) if normalize_actions else 1.0
+        state_mean   = meta['state_mean'] if normalize_states else None
+        state_std    = meta['state_std']  if normalize_states else None
+        if normalize_states:
+            print(f'[data] state normalization: mean={np.round(state_mean, 4)}  '
+                  f'std={np.round(state_std, 4)}')
+        loaders = make_discrete_dataloaders(
+            args.data, batch_size=train_cfg['batch_size'],
+            horizon=horizon, frame_stack=frame_stack,
+            num_workers=num_workers,
+            state_mean=state_mean, state_std=state_std)
+        obs_eq, state_eq = None, np.zeros(4, dtype=np.float32)
+    else:
+        # Legacy flat HDF5 format
+        data = load_dataset(args.data)
+        obs_eq, state_eq = _find_near_eq_obs(data, split='train')
+        print(f'[data] near-eq anchor: ||state||={np.linalg.norm(state_eq):.4f}  '
+              f'state={np.round(state_eq, 4)}')
+        action_scale = float(data.get('action_scale', 1.0)) if normalize_actions else 1.0
+        state_mean   = data.get('state_mean') if normalize_states else None
+        state_std    = data.get('state_std')  if normalize_states else None
+        if normalize_actions:
+            print(f'[data] action normalization: scale={action_scale}')
+        if normalize_states and state_mean is not None:
+            print(f'[data] state normalization: mean={np.round(state_mean, 4)}  '
+                  f'std={np.round(state_std, 4)}')
+        loaders = make_dataloaders(data, batch_size=train_cfg['batch_size'],
+                                   horizon=horizon, frame_stack=frame_stack,
+                                   obs_eq=obs_eq,
+                                   n_eq_selfloop=int(cfg.get('data', {}).get('n_eq_selfloop', 0)),
+                                   action_scale=action_scale,
+                                   state_mean=state_mean, state_std=state_std,
+                                   num_workers=num_workers)
+
     print(f'[data] train={len(loaders["train"].dataset)}  '
           f'val={len(loaders["val"].dataset)}  horizon={horizon}  frame_stack={frame_stack}')
 

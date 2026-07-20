@@ -324,76 +324,183 @@ def load_dataset(path):
     return data
 
 
-def load_discrete_dataset(dataset_dir: str) -> dict:
-    """Load the per-episode HDF5 dataset produced by cartpole_discrete_dataset.py.
+def load_discrete_dataset_meta(dataset_dir: str) -> dict:
+    """Load lightweight metadata from a discrete CartPole dataset directory.
 
-    Converts the per-episode group format (train/val/test.hdf5) into the flat
-    transition array format expected by TrajectoryDataset / make_dataloaders:
-        obs          (N, H, W, C)  uint8
-        next_obs     (N, H, W, C)  uint8
-        states       (N, 4)        float32
-        next_states  (N, 4)        float32
-        actions      (N, 1)        float32
-        episode_ids  (N,)          int32   — unique per episode (boundary guard)
-        splits       {split: int64 index array into the flat arrays}
+    Reads only states/actions/episode_ids into RAM (fast).  Observations are
+    NOT loaded — use DiscreteHDF5TrajectoryDataset for lazy per-batch loading.
+
+    Returns a dict with:
+        state_mean / state_std  — computed from train split for normalisation
+        dataset_dir             — path string, passed to DiscreteHDF5TrajectoryDataset
+        splits                  — {split: n_transitions}  (counts, not index arrays)
     """
-    from pathlib import Path
     dataset_dir = Path(dataset_dir)
+    train_states = []
 
-    all_obs, all_next_obs   = [], []
-    all_states, all_nstates = [], []
-    all_actions, all_ep_ids = [], []
-    split_indices           = {}
-    global_ep_id            = 0
-    trans_offset            = 0
+    # Read only states from train split to compute normalisation stats
+    train_path = dataset_dir / 'train.hdf5'
+    if train_path.exists():
+        with h5py.File(train_path, 'r') as f:
+            for ep_key in sorted(f['episodes'].keys(), key=int):
+                s = f['episodes'][ep_key]['states'][:]   # (T+1, 4)
+                train_states.append(s[:-1].astype(np.float32))
 
+    if train_states:
+        all_s      = np.concatenate(train_states, axis=0)
+        state_mean = all_s.mean(axis=0)
+        state_std  = all_s.std(axis=0).clip(min=1e-6)
+    else:
+        state_mean = np.zeros(4, dtype=np.float32)
+        state_std  = np.ones(4, dtype=np.float32)
+
+    split_counts = {}
     for split in ('train', 'val', 'test'):
-        hdf5_path = dataset_dir / f'{split}.hdf5'
-        if not hdf5_path.exists():
-            continue
-        split_trans_start = trans_offset
-        with h5py.File(hdf5_path, 'r') as f:
+        p = dataset_dir / f'{split}.hdf5'
+        if p.exists():
+            with h5py.File(p, 'r') as f:
+                split_counts[split] = int(f.attrs.get('n_transitions', 0))
+
+    return {
+        'dataset_dir': str(dataset_dir),
+        'state_mean':  state_mean,
+        'state_std':   state_std,
+        'splits':      split_counts,
+        'action_scale': 1.0,
+    }
+
+
+class DiscreteHDF5TrajectoryDataset(Dataset):
+    """Lazy-loading trajectory dataset for the per-episode HDF5 format.
+
+    Init: loads states/actions/episode_ids into RAM; builds valid-start index.
+    __getitem__: reads exactly H+1 consecutive frames per sample via one HDF5
+                 slice — no full dataset pre-load required.
+
+    HDF5 file handles are opened per-worker process (DataLoader multiprocessing safe).
+    """
+
+    def __init__(self, dataset_dir: str, split: str = 'train',
+                 horizon: int = 20, frame_stack: int = 1,
+                 state_mean: np.ndarray = None, state_std: np.ndarray = None):
+        self.hdf5_path   = str(Path(dataset_dir) / f'{split}.hdf5')
+        self.horizon     = horizon
+        self.frame_stack = frame_stack
+        self.state_mean  = state_mean
+        self.state_std   = state_std
+        self._handles: dict = {}   # pid → h5py.File (opened lazily per worker)
+
+        all_states, all_nstates = [], []
+        all_actions, all_ep_ids = [], []
+        ep_keys_list, local_offsets_list = [], []
+        global_ep_id = 0
+
+        with h5py.File(self.hdf5_path, 'r') as f:
             ep_grp = f['episodes']
             for ep_key in sorted(ep_grp.keys(), key=int):
                 ep        = ep_grp[ep_key]
-                obs_ep    = ep['observations'][:]   # (T+1, H, W, C)
-                acts_ep   = ep['actions'][:]        # (T,)
-                states_ep = ep['states'][:]         # (T+1, 4)
+                acts_ep   = ep['actions'][:]    # (T,)   — small, load eagerly
+                states_ep = ep['states'][:]     # (T+1, 4)
                 T = len(acts_ep)
-                all_obs.append(obs_ep[:-1])                              # (T, H, W, C)
-                all_next_obs.append(obs_ep[1:])                          # (T, H, W, C)
-                all_states.append(states_ep[:-1])                        # (T, 4)
-                all_nstates.append(states_ep[1:])                        # (T, 4)
-                all_actions.append(acts_ep)                              # (T,)
+                all_states.append(states_ep[:-1].astype(np.float32))
+                all_nstates.append(states_ep[1:].astype(np.float32))
+                all_actions.append(acts_ep.astype(np.float32))
                 all_ep_ids.append(np.full(T, global_ep_id, dtype=np.int32))
+                ep_keys_list.extend([ep_key] * T)
+                local_offsets_list.extend(range(T))
                 global_ep_id += 1
-                trans_offset += T
-        split_indices[split] = np.arange(split_trans_start, trans_offset, dtype=np.int64)
 
-    obs         = np.concatenate(all_obs,      axis=0)
-    next_obs    = np.concatenate(all_next_obs, axis=0)
-    states      = np.concatenate(all_states,   axis=0).astype(np.float32)
-    next_states = np.concatenate(all_nstates,  axis=0).astype(np.float32)
-    actions     = np.concatenate(all_actions,  axis=0).astype(np.float32)[:, None]
-    episode_ids = np.concatenate(all_ep_ids,   axis=0)
+        if not all_states:
+            self.states = self.next_states = np.zeros((0, 4), dtype=np.float32)
+            self.actions  = np.zeros((0, 1), dtype=np.float32)
+            self.ep_ids   = np.zeros(0, dtype=np.int32)
+        else:
+            self.states      = np.concatenate(all_states,  axis=0)
+            self.next_states = np.concatenate(all_nstates, axis=0)
+            self.actions     = np.concatenate(all_actions, axis=0)[:, None]
+            self.ep_ids      = np.concatenate(all_ep_ids,  axis=0)
+        self.ep_keys     = np.array(ep_keys_list)
+        self.local_offs  = np.array(local_offsets_list, dtype=np.int32)
+        self.valid_starts = self._find_valid_starts()
 
-    train_idx  = split_indices.get('train', np.arange(len(states)))
-    state_mean = states[train_idx].mean(axis=0)
-    state_std  = states[train_idx].std(axis=0).clip(min=1e-6)
+    def _find_valid_starts(self):
+        H, ep = self.horizon, self.ep_ids
+        valid = [i for i in range(len(ep) - H) if np.all(ep[i:i + H] == ep[i])]
+        return np.array(valid, dtype=np.int64)
 
-    return {
-        'obs':          obs,
-        'next_obs':     next_obs,
-        'states':       states,
-        'next_states':  next_states,
-        'actions':      actions,
-        'episode_ids':  episode_ids,
-        'splits':       split_indices,
-        'state_mean':   state_mean,
-        'state_std':    state_std,
-        'action_scale': 1.0,
-        'action_cov_condition_number': 1.0,
-    }
+    def _file(self) -> 'h5py.File':
+        pid = os.getpid()
+        if pid not in self._handles:
+            self._handles[pid] = h5py.File(self.hdf5_path, 'r')
+        return self._handles[pid]
+
+    def __len__(self):
+        return len(self.valid_starts)
+
+    def __getitem__(self, idx):
+        start = int(self.valid_starts[idx])
+        H, FS = self.horizon, self.frame_stack
+
+        # All H transitions share the same episode (guaranteed by valid_starts)
+        ep_key      = self.ep_keys[start]
+        local_start = int(self.local_offs[start])
+
+        # One contiguous HDF5 read: H+1 frames
+        obs_np = self._file()['episodes'][ep_key]['observations'][
+            local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
+
+        def _t(arr):
+            return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0
+
+        frames = []
+        for k in range(H + 1):
+            curr = _t(obs_np[k])
+            prev = _t(obs_np[k - 1]) if k > 0 else curr
+            frames.append(torch.cat([prev, curr], dim=0) if FS > 1 else curr)
+        obs_seq = torch.stack(frames)   # (H+1, 3*FS, h, w)
+
+        actions = torch.from_numpy(self.actions[start: start + H])   # (H, 1)
+
+        states = torch.from_numpy(
+            np.concatenate([self.states[start: start + H],
+                            self.next_states[start + H - 1: start + H]], axis=0))  # (H+1, 4)
+        if self.state_mean is not None and self.state_std is not None:
+            states = ((states - torch.from_numpy(self.state_mean))
+                      / torch.from_numpy(self.state_std))
+
+        return {'obs_seq': obs_seq, 'actions': actions, 'states': states}
+
+    def __del__(self):
+        for fh in self._handles.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+
+def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
+                              num_workers: int = 0, horizon: int = 1,
+                              frame_stack: int = 1,
+                              state_mean: np.ndarray = None,
+                              state_std: np.ndarray = None) -> dict:
+    """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
+    loaders = {}
+    for split in ('train', 'val', 'test'):
+        path = Path(dataset_dir) / f'{split}.hdf5'
+        if not path.exists():
+            continue
+        ds = DiscreteHDF5TrajectoryDataset(
+            dataset_dir, split=split, horizon=horizon,
+            frame_stack=frame_stack, state_mean=state_mean, state_std=state_std)
+        if len(ds) == 0:
+            continue
+        loaders[split] = DataLoader(
+            ds, batch_size=batch_size, shuffle=(split == 'train'),
+            num_workers=num_workers, pin_memory=(num_workers > 0),
+            drop_last=(split == 'train'),
+            persistent_workers=(num_workers > 0),
+        )
+    return loaders
 
 
 # ── Single-step dataset (used for probes / backward compat) ──────────────────
