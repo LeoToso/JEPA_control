@@ -16,7 +16,7 @@ model:
   image_size: 224
   patch_size: 16
   frame_stack: 2
-  predictor_window: 3
+  predictor_window: 5
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
@@ -72,7 +72,7 @@ training:
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
-  predictor_window: 3
+  predictor_window: 5
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
