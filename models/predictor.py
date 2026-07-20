@@ -1,4 +1,4 @@
-"""MLP predictor f_theta: (z_t,a_t)->z_{t+1}_hat."""
+"""MLP and Transformer predictors f_theta: (z_win, a_win) -> z_{t+1}_hat."""
 from __future__ import annotations
 import torch
 import torch.nn as nn
@@ -33,3 +33,92 @@ class MLPPredictor(nn.Module):
         # z: (B, W*d) or (B, d) when window=1
         # a: (B, W*d_a) or (B, d_a) when window=1
         return self.net(torch.cat([z, a], dim=-1))
+
+
+# ── Transformer predictor ──────────────────────────────────────────────────────
+
+class _PredTransformerBlock(nn.Module):
+    """Pre-LN transformer block."""
+    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn  = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        mlp_hidden = int(embed_dim * mlp_ratio)
+        self.mlp   = nn.Sequential(
+            nn.Linear(embed_dim, mlp_hidden), nn.GELU(),
+            nn.Linear(mlp_hidden, embed_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.norm1(x)
+        h, _ = self.attn(h, h, h, need_weights=False)
+        x = x + h
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class TransformerPredictor(nn.Module):
+    """Transformer predictor: window of (z, a) tokens → next latent.
+
+    Drop-in replacement for MLPPredictor — identical call signature:
+        forward(z, a)
+            z : (B, W*latent_dim)   window of latents, flattened
+            a : (B, W*action_dim)   window of encoded actions, flattened
+        returns (B, latent_dim)
+
+    Internally reshapes to (B, W, *) token sequences, runs Pre-LN
+    transformer blocks, and reads the last token as the prediction.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int = 32,
+        action_dim: int = 1,
+        window: int = 1,
+        embed_dim: int = 128,
+        depth: int = 4,
+        num_heads: int = 4,
+        mlp_ratio: float = 4.0,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+        self.window     = window
+        self.embed_dim  = embed_dim
+
+        self.token_proj = nn.Linear(latent_dim + action_dim, embed_dim)
+        self.pos_emb    = nn.Parameter(torch.zeros(1, window, embed_dim))
+        nn.init.trunc_normal_(self.pos_emb, std=0.02)
+
+        self.blocks = nn.ModuleList([
+            _PredTransformerBlock(embed_dim, num_heads, mlp_ratio)
+            for _ in range(depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, latent_dim)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        B  = z.shape[0]
+        W  = self.window
+        z_seq = z.reshape(B, W, self.latent_dim)           # (B, W, d)
+        a_seq = a.reshape(B, W, self.action_dim)           # (B, W, d_a)
+        tokens = self.token_proj(
+            torch.cat([z_seq, a_seq], dim=-1)              # (B, W, d+d_a)
+        )                                                   # (B, W, embed_dim)
+        tokens = tokens + self.pos_emb
+        for blk in self.blocks:
+            tokens = blk(tokens)
+        tokens = self.norm(tokens)
+        return self.head(tokens[:, -1])                    # (B, latent_dim)

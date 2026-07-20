@@ -13,14 +13,18 @@ model:
   latent_dim: 8
   action_latent_dim: 1
   action_encoder: linear
-  patch_size: 8
+  image_size: 224
+  patch_size: 16
   frame_stack: 2
   predictor_window: 3
   vit_embed_dim: 128
   vit_depth: 4
   vit_num_heads: 4
-  predictor_hidden_dim: 64
-  predictor_n_layers: 3
+  predictor_type: transformer
+  predictor_embed_dim: 128
+  predictor_depth: 4
+  predictor_num_heads: 4
+  predictor_mlp_ratio: 4.0
 
 training:
   lr: 1.0e-4

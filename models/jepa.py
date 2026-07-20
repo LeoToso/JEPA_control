@@ -1,4 +1,4 @@
-"""JEPA world model: ViT encoder + MLP predictor + action encoder."""
+"""JEPA world model: ViT encoder + predictor + action encoder."""
 from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
@@ -6,7 +6,7 @@ from typing import Optional, Dict
 import torch
 import torch.nn as nn
 from models.vit_encoder import ViTEncoder
-from models.predictor import MLPPredictor
+from models.predictor import MLPPredictor, TransformerPredictor
 from models.action_encoder import make_action_encoder, IdentityActionEncoder
 
 
@@ -28,9 +28,16 @@ class JEPAConfig:
     vit_num_heads: int = 4
     vit_mlp_ratio: float = 2.0
     # Predictor
+    predictor_type: str = 'mlp'          # 'mlp' | 'transformer'
+    predictor_window: int = 1            # window size W (both predictor types)
+    # MLP predictor
     predictor_hidden_dim: int = 256
     predictor_n_layers: int = 2
-    predictor_window: int = 1      # window size W for windowed MLP predictor
+    # Transformer predictor
+    predictor_embed_dim: int = 128
+    predictor_depth: int = 4
+    predictor_num_heads: int = 4
+    predictor_mlp_ratio: float = 4.0
 
     @classmethod
     def from_dict(cls, d: dict) -> 'JEPAConfig':
@@ -72,13 +79,24 @@ class JEPAModel(nn.Module):
             action_dim=config.action_dim,
             latent_action_dim=config.action_latent_dim,
         )
-        self.predictor = MLPPredictor(
-            latent_dim=config.latent_dim,
-            action_dim=self.action_encoder.latent_action_dim,
-            hidden_dim=config.predictor_hidden_dim,
-            n_layers=config.predictor_n_layers,
-            window=config.predictor_window,
-        )
+        if config.predictor_type == 'transformer':
+            self.predictor = TransformerPredictor(
+                latent_dim=config.latent_dim,
+                action_dim=self.action_encoder.latent_action_dim,
+                window=config.predictor_window,
+                embed_dim=config.predictor_embed_dim,
+                depth=config.predictor_depth,
+                num_heads=config.predictor_num_heads,
+                mlp_ratio=config.predictor_mlp_ratio,
+            )
+        else:
+            self.predictor = MLPPredictor(
+                latent_dim=config.latent_dim,
+                action_dim=self.action_encoder.latent_action_dim,
+                hidden_dim=config.predictor_hidden_dim,
+                n_layers=config.predictor_n_layers,
+                window=config.predictor_window,
+            )
 
         # EMA target encoder: same architecture as online encoder, not in optimizer.
         # Provides slowly-moving prediction targets that stabilise pred_loss training.
@@ -157,9 +175,14 @@ class JEPAModel(nn.Module):
             'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,
             'vit_num_heads': c.vit_num_heads,
+            'predictor_type': c.predictor_type,
             'predictor_window': c.predictor_window,
             'predictor_hidden_dim': c.predictor_hidden_dim,
             'predictor_n_layers': c.predictor_n_layers,
+            'predictor_embed_dim': c.predictor_embed_dim,
+            'predictor_depth': c.predictor_depth,
+            'predictor_num_heads': c.predictor_num_heads,
+            'predictor_mlp_ratio': c.predictor_mlp_ratio,
         }
 
 
