@@ -1,0 +1,39 @@
+# Dataset generation config for discrete CartPole-v1
+# Used by: python experiments/generate_cartpole_dataset.py --config this_file
+
+# Target dataset size (transitions, not episodes)
+num_transitions: 200000   # alternatives: 25000 / 50000 / 100000 / 200000
+
+# Image
+image_size: 64    # stored as (image_size, image_size, 3) uint8, channels-last
+
+# Behavior-policy mixture (must sum to 1.0)
+frac_expert:    0.20   # clean LQR-thresholded expert, ε=0
+frac_noisy_005: 0.20   # expert + action-flip ε=0.05
+frac_noisy_010: 0.25   # expert + action-flip ε=0.10
+frac_noisy_020: 0.20   # expert + action-flip ε=0.20
+frac_burst:     0.10   # expert + burst noise
+frac_random:    0.05   # fully random policy
+
+# Burst-noise parameters
+burst_start_prob: 0.03   # probability of starting a burst at each step
+burst_min_len:    1
+burst_max_len:    4
+
+# Initial-state distribution (custom_reset: true)
+# States drawn from Uniform[-range, +range] for each dimension
+custom_reset:     true
+cart_pos_range:   0.50   # metres
+cart_vel_range:   0.50   # m/s
+pole_angle_range: 0.10   # radians  (~5.7°)
+pole_vel_range:   0.50   # rad/s
+
+# Train / val / test split (by episode, stratified by policy type)
+train_frac: 0.80
+val_frac:   0.10
+# test gets the remainder (0.10)
+
+# Output
+output_dir: data/cartpole_visual
+seed: 0
+resume: false   # set true to continue an interrupted run
