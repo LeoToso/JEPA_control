@@ -27,9 +27,9 @@ model:
   predictor_mlp_ratio: 4.0
 
 training:
-  lr: 1.0e-4
+  lr: 3.0e-4          # sqrt-scaled from 1e-4 for batch_size 256 (was 32)
   weight_decay: 1.0e-4
-  batch_size: 32
+  batch_size: 256
   epochs: 500
   horizon: 30
   # ── Active losses ─────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ training:
   predictor_lr_mult: 5.0
   predictor_window: 5
   num_workers: 8        # parallel dataloader workers (match SLURM --cpus-per-task)
-  checkpoint_every: 10
+  checkpoint_every: 25
   warmup_epochs: 0
   warmup_lambda_state: 0.0
   freeze_encoder_epochs: 0

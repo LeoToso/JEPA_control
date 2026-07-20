@@ -136,6 +136,9 @@ class Trainer:
         self.optimizer = torch.optim.Adam(
             param_groups, lr=lr, weight_decay=weight_decay)
 
+        self._amp_enabled = (self.device.type == 'cuda')
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+
         # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
             self.lambda_state > 0
@@ -881,9 +884,10 @@ class Trainer:
         metrics = {}
         for batch in tqdm(train_loader, desc=f'Epoch {self.epoch} [train]',
                           leave=False, dynamic_ncols=True):
-            self.optimizer.zero_grad()
-            loss, info = self._compute_loss(batch, is_train=True)
-            loss.backward()
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+                loss, info = self._compute_loss(batch, is_train=True)
+            self.scaler.scale(loss).backward()
             params = list(self.model.parameters())
             if self.state_head is not None:
                 params += list(self.state_head.parameters())
@@ -891,8 +895,10 @@ class Trainer:
                 params += list(self.endpoint_action_decoder.parameters())
             if self.phys_endpoint_decoder is not None:
                 params += list(self.phys_endpoint_decoder.parameters())
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             if self.use_target_encoder:
                 self.model.update_target_encoder(self.target_encoder_momentum)
             for k, v in info.items():
@@ -907,7 +913,8 @@ class Trainer:
         metrics = {}
         for batch in tqdm(val_loader, desc=f'Epoch {self.epoch} [val]',
                           leave=False, dynamic_ncols=True):
-            _, info = self._compute_loss(batch, is_train=False)
+            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+                _, info = self._compute_loss(batch, is_train=False)
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)
@@ -1099,6 +1106,7 @@ class Trainer:
                    'model_state': self.model.state_dict(),
                    'optimizer_state': self.optimizer.state_dict(),
                    'scheduler_state': self.scheduler.state_dict(),
+                   'scaler_state': self.scaler.state_dict(),
                    'best_val_loss': self.best_val_loss,
                    'config': self.model.get_config_dict()}
         if self.inv_head is not None:
@@ -1129,6 +1137,8 @@ class Trainer:
         self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
         self.epoch       = ckpt.get('epoch', 0)
         self.global_step = ckpt.get('global_step', 0)
+        if 'scaler_state' in ckpt:
+            self.scaler.load_state_dict(ckpt['scaler_state'])
         if 'inv_head_state' in ckpt and self.inv_head is not None:
             self.inv_head.load_state_dict(ckpt['inv_head_state'])
         if 'endpoint_action_decoder_state' in ckpt and self.endpoint_action_decoder is not None:
