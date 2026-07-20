@@ -31,7 +31,7 @@ training:
   weight_decay: 1.0e-4
   batch_size: 256
   epochs: 500
-  horizon: 30
+  horizon: 5
   # ── Active losses ─────────────────────────────────────────────────────────
   lambda_pred: 1.0
   # ── State reconstruction: Linear(z) -> (x, xdot, theta, thetadot) ────────

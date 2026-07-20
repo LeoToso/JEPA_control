@@ -371,37 +371,42 @@ def load_discrete_dataset_meta(dataset_dir: str) -> dict:
 
 
 class DiscreteHDF5TrajectoryDataset(Dataset):
-    """Lazy-loading trajectory dataset for the per-episode HDF5 format.
+    """Trajectory dataset for the per-episode HDF5 format.
 
-    Init: loads states/actions/episode_ids into RAM; builds valid-start index.
-    __getitem__: reads exactly H+1 consecutive frames per sample via one HDF5
-                 slice — no full dataset pre-load required.
+    With preload_obs=True (default): all observations are loaded into a single
+    contiguous RAM array at init — __getitem__ is a pure numpy slice with zero
+    I/O overhead.  Recommended for small/medium datasets (64x64: ~2.5 GB).
 
-    HDF5 file handles are opened per-worker process (DataLoader multiprocessing safe).
+    With preload_obs=False: observations are read lazily per batch via HDF5
+    handles opened per worker (multiprocessing safe), with optional on-the-fly
+    resize via target_image_size.
     """
 
     def __init__(self, dataset_dir: str, split: str = 'train',
                  horizon: int = 20, frame_stack: int = 1,
                  state_mean: np.ndarray = None, state_std: np.ndarray = None,
-                 target_image_size: int = None):
+                 target_image_size: int = None, preload_obs: bool = True):
         self.hdf5_path        = str(Path(dataset_dir) / f'{split}.hdf5')
         self.horizon          = horizon
         self.frame_stack      = frame_stack
         self.state_mean       = state_mean
         self.state_std        = state_std
-        self.target_image_size = target_image_size   # resize frames on-the-fly if set
-        self._handles: dict   = {}   # pid → h5py.File (opened lazily per worker)
+        self.target_image_size = target_image_size
+        self._handles: dict   = {}   # pid → h5py.File (lazy, only used when not preloaded)
 
         all_states, all_nstates = [], []
         all_actions, all_ep_ids = [], []
         ep_keys_list, local_offsets_list = [], []
-        global_ep_id = 0
+        obs_chunks       = [] if preload_obs else None
+        ep_obs_starts    = [] if preload_obs else None
+        _obs_cursor      = 0
+        global_ep_id     = 0
 
         with h5py.File(self.hdf5_path, 'r') as f:
             ep_grp = f['episodes']
             for ep_key in sorted(ep_grp.keys(), key=int):
                 ep        = ep_grp[ep_key]
-                acts_ep   = ep['actions'][:]    # (T,)   — small, load eagerly
+                acts_ep   = ep['actions'][:]    # (T,)
                 states_ep = ep['states'][:]     # (T+1, 4)
                 T = len(acts_ep)
                 all_states.append(states_ep[:-1].astype(np.float32))
@@ -410,6 +415,19 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
                 all_ep_ids.append(np.full(T, global_ep_id, dtype=np.int32))
                 ep_keys_list.extend([ep_key] * T)
                 local_offsets_list.extend(range(T))
+
+                if preload_obs:
+                    obs_ep = ep['observations'][:]          # (T+1, h, w, C) uint8
+                    if target_image_size is not None:
+                        s = target_image_size
+                        t = torch.from_numpy(obs_ep).permute(0, 3, 1, 2).float()
+                        t = torch.nn.functional.interpolate(
+                            t, size=(s, s), mode='bilinear', align_corners=False)
+                        obs_ep = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
+                    ep_obs_starts.append(_obs_cursor)
+                    _obs_cursor += len(obs_ep)              # T+1
+                    obs_chunks.append(obs_ep)
+
                 global_ep_id += 1
 
         if not all_states:
@@ -424,6 +442,15 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         self.ep_keys     = np.array(ep_keys_list)
         self.local_offs  = np.array(local_offsets_list, dtype=np.int32)
         self.valid_starts = self._find_valid_starts()
+
+        if preload_obs and obs_chunks:
+            self._obs_flat     = np.concatenate(obs_chunks, axis=0)  # (N_frames, h, w, C)
+            self._obs_ep_start = np.array(ep_obs_starts, dtype=np.int64)
+            mb = self._obs_flat.nbytes / 1e6
+            print(f'[dataset:{split}] preloaded {_obs_cursor} frames ({mb:.0f} MB)')
+        else:
+            self._obs_flat     = None
+            self._obs_ep_start = None
 
     def _find_valid_starts(self):
         H, ep = self.horizon, self.ep_ids
@@ -447,17 +474,21 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         ep_key      = self.ep_keys[start]
         local_start = int(self.local_offs[start])
 
-        # One contiguous HDF5 read: H+1 frames
-        obs_np = self._file()['episodes'][ep_key]['observations'][
-            local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
-
-        if self.target_image_size is not None:
-            s = self.target_image_size
-            # (H+1, h, w, C) → (H+1, C, h, w) → resize → (H+1, C, s, s) → (H+1, s, s, C)
-            t = torch.from_numpy(obs_np).permute(0, 3, 1, 2).float()
-            t = torch.nn.functional.interpolate(
-                t, size=(s, s), mode='bilinear', align_corners=False)
-            obs_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
+        if self._obs_flat is not None:
+            # Fast path: pure numpy slice from preloaded RAM array
+            ep_offset = int(self._obs_ep_start[int(self.ep_ids[start])])
+            obs_np = self._obs_flat[ep_offset + local_start:
+                                    ep_offset + local_start + H + 1]
+        else:
+            # Lazy path: one HDF5 read per sample (slower, used when preload_obs=False)
+            obs_np = self._file()['episodes'][ep_key]['observations'][
+                local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
+            if self.target_image_size is not None:
+                s = self.target_image_size
+                t = torch.from_numpy(obs_np).permute(0, 3, 1, 2).float()
+                t = torch.nn.functional.interpolate(
+                    t, size=(s, s), mode='bilinear', align_corners=False)
+                obs_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
 
         def _t(arr):
             return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0
@@ -493,7 +524,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               frame_stack: int = 1,
                               state_mean: np.ndarray = None,
                               state_std: np.ndarray = None,
-                              target_image_size: int = None) -> dict:
+                              target_image_size: int = None,
+                              preload_obs: bool = True) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
     loaders = {}
     for split in ('train', 'val', 'test'):
@@ -503,7 +535,7 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
         ds = DiscreteHDF5TrajectoryDataset(
             dataset_dir, split=split, horizon=horizon,
             frame_stack=frame_stack, state_mean=state_mean, state_std=state_std,
-            target_image_size=target_image_size)
+            target_image_size=target_image_size, preload_obs=preload_obs)
         if len(ds) == 0:
             continue
         loaders[split] = DataLoader(
