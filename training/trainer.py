@@ -882,29 +882,48 @@ class Trainer:
     def train_epoch(self, train_loader):
         self.model.train()
         metrics = {}
+        # Build param list once per epoch, not per step
+        _params = list(self.model.parameters())
+        if self.state_head is not None:
+            _params += list(self.state_head.parameters())
+        if self.endpoint_action_decoder is not None:
+            _params += list(self.endpoint_action_decoder.parameters())
+        if self.phys_endpoint_decoder is not None:
+            _params += list(self.phys_endpoint_decoder.parameters())
+
+        _t_data = _t_gpu = _n = 0.0
+        _t_batch = time.time()
         for batch in tqdm(train_loader, desc=f'Epoch {self.epoch} [train]',
                           leave=False, dynamic_ncols=True):
+            _t_data += time.time() - _t_batch
+            _t0 = time.time()
+
             self.optimizer.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=self._amp_enabled):
                 loss, info = self._compute_loss(batch, is_train=True)
             self.scaler.scale(loss).backward()
-            params = list(self.model.parameters())
-            if self.state_head is not None:
-                params += list(self.state_head.parameters())
-            if self.endpoint_action_decoder is not None:
-                params += list(self.endpoint_action_decoder.parameters())
-            if self.phys_endpoint_decoder is not None:
-                params += list(self.phys_endpoint_decoder.parameters())
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(_params, max_norm=1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             if self.use_target_encoder:
                 self.model.update_target_encoder(self.target_encoder_momentum)
+
+            if self.device.type == 'cuda':
+                torch.cuda.synchronize()
+            _t_gpu += time.time() - _t0
+            _n += 1
+
             for k, v in info.items():
                 if isinstance(v, (int, float)):
                     metrics.setdefault(k, []).append(v)
             self.global_step += 1
+            _t_batch = time.time()
+
+        if _n > 0:
+            print(f'  [timing] data={_t_data/_n*1e3:.1f}ms/batch  '
+                  f'gpu={_t_gpu/_n*1e3:.1f}ms/batch  '
+                  f'({_n} batches)')
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
     @torch.no_grad()
