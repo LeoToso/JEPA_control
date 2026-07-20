@@ -12,7 +12,7 @@ environment:
 model:
   latent_dim: 8
   action_latent_dim: 64
-  action_encoder: mlp
+  action_encoder: linear
   image_size: 224
   patch_size: 16
   frame_stack: 2
