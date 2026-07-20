@@ -103,7 +103,8 @@ def main():
             args.data, batch_size=train_cfg['batch_size'],
             horizon=horizon, frame_stack=frame_stack,
             num_workers=num_workers,
-            state_mean=state_mean, state_std=state_std)
+            state_mean=state_mean, state_std=state_std,
+            target_image_size=int(model_cfg.get('image_size', 224)))
         obs_eq, state_eq = None, np.zeros(4, dtype=np.float32)
     else:
         # Legacy flat HDF5 format

@@ -382,13 +382,15 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
     def __init__(self, dataset_dir: str, split: str = 'train',
                  horizon: int = 20, frame_stack: int = 1,
-                 state_mean: np.ndarray = None, state_std: np.ndarray = None):
-        self.hdf5_path   = str(Path(dataset_dir) / f'{split}.hdf5')
-        self.horizon     = horizon
-        self.frame_stack = frame_stack
-        self.state_mean  = state_mean
-        self.state_std   = state_std
-        self._handles: dict = {}   # pid → h5py.File (opened lazily per worker)
+                 state_mean: np.ndarray = None, state_std: np.ndarray = None,
+                 target_image_size: int = None):
+        self.hdf5_path        = str(Path(dataset_dir) / f'{split}.hdf5')
+        self.horizon          = horizon
+        self.frame_stack      = frame_stack
+        self.state_mean       = state_mean
+        self.state_std        = state_std
+        self.target_image_size = target_image_size   # resize frames on-the-fly if set
+        self._handles: dict   = {}   # pid → h5py.File (opened lazily per worker)
 
         all_states, all_nstates = [], []
         all_actions, all_ep_ids = [], []
@@ -449,6 +451,13 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         obs_np = self._file()['episodes'][ep_key]['observations'][
             local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
 
+        if self.target_image_size is not None:
+            import cv2
+            s = self.target_image_size
+            obs_np = np.stack([cv2.resize(obs_np[k], (s, s),
+                                          interpolation=cv2.INTER_AREA)
+                               for k in range(H + 1)])
+
         def _t(arr):
             return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0
 
@@ -482,7 +491,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               num_workers: int = 0, horizon: int = 1,
                               frame_stack: int = 1,
                               state_mean: np.ndarray = None,
-                              state_std: np.ndarray = None) -> dict:
+                              state_std: np.ndarray = None,
+                              target_image_size: int = None) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
     loaders = {}
     for split in ('train', 'val', 'test'):
@@ -491,7 +501,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
             continue
         ds = DiscreteHDF5TrajectoryDataset(
             dataset_dir, split=split, horizon=horizon,
-            frame_stack=frame_stack, state_mean=state_mean, state_std=state_std)
+            frame_stack=frame_stack, state_mean=state_mean, state_std=state_std,
+            target_image_size=target_image_size)
         if len(ds) == 0:
             continue
         loaders[split] = DataLoader(

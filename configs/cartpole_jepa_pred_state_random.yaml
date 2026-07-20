@@ -13,8 +13,8 @@ model:
   latent_dim: 8
   action_latent_dim: 64
   action_encoder: linear
-  image_size: 224
-  patch_size: 16
+  image_size: 64
+  patch_size: 8
   frame_stack: 2
   predictor_window: 5
   vit_embed_dim: 128
