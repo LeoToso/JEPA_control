@@ -138,6 +138,8 @@ class Trainer:
 
         self._amp_enabled = (self.device.type == 'cuda')
         self.scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        if self.device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
 
         # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
@@ -324,8 +326,8 @@ class Trainer:
     # ── Loss computation ──────────────────────────────────────────────────────
     def _compute_loss(self, batch, is_train=True):
         # batch keys: obs_seq (B,H+1,3,h,w), actions (B,H,1), states (B,H+1,4)
-        obs_seq = batch['obs_seq'].to(self.device)   # (B, H+1, 3, h, w)
-        actions = batch['actions'].to(self.device)   # (B, H, 1)
+        obs_seq = batch['obs_seq'].to(self.device, non_blocking=True)   # (B, H+1, 3, h, w)
+        actions = batch['actions'].to(self.device, non_blocking=True)   # (B, H, 1)
         B, H1, C, h, w = obs_seq.shape
         H = H1 - 1
 
@@ -366,7 +368,7 @@ class Trainer:
             self._z_star_ema = self._get_z_star_exact()
         elif is_train:
             if 'states' in batch:
-                states_b = batch['states'][:, 0].to(self.device).float()  # (B, 4)
+                states_b = batch['states'][:, 0].to(self.device, non_blocking=True).float()  # (B, 4)
                 eq_mask = states_b.abs().max(dim=1).values < 0.05
                 if eq_mask.sum() > 0:
                     z0_eq = z_all[:, 0][eq_mask].mean(dim=0).detach()
@@ -577,7 +579,7 @@ class Trainer:
             # Uses ground-truth states (not encoder outputs) → gradient never reaches encoder.
             # Trained jointly so val loss tracks a meaningful ceiling each epoch.
             if 'states' in batch and self.phys_endpoint_decoder is not None:
-                states_b = batch['states'].to(self.device).float()  # (B, H+1, 4)
+                states_b = batch['states'].to(self.device, non_blocking=True).float()  # (B, H+1, 4)
                 s_s = states_b[:, _start]   # (B, 4)
                 s_e = states_b[:, _end]     # (B, 4)
                 phys_hat = self.phys_endpoint_decoder(s_s, s_e)     # (B, H_act, 1)
@@ -601,7 +603,7 @@ class Trainer:
         # Encoder receives alpha fraction of state gradient; state_head gets full gradient.
         # All H+1 trajectory frames contribute state loss for denser supervision.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
-            states = batch['states'].to(self.device).float()  # (B, H+1, 4)
+            states = batch['states'].to(self.device, non_blocking=True).float()  # (B, H+1, 4)
             # Configurable per-dim weights [x, xdot, theta, thetadot].
             # Default: prioritise position & angle (visually prominent).
             # For IDM to learn, set high weights on xdot & thetadot
@@ -718,7 +720,7 @@ class Trainer:
                 and self._A_jac_cache is not None
                 and self._z_star_ema is not None
                 and 'states' in batch):
-            states_t = batch['states'][:, 0].to(self.device).float()
+            states_t = batch['states'][:, 0].to(self.device, non_blocking=True).float()
             sl_mask = states_t.abs().max(dim=1).values < self.local_state_threshold
             if sl_mask.sum() > 0:
                 z_sl  = z_all[sl_mask, 0]    # (N, d)

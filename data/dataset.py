@@ -543,6 +543,7 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
             num_workers=num_workers, pin_memory=(num_workers > 0),
             drop_last=(split == 'train'),
             persistent_workers=(num_workers > 0),
+            prefetch_factor=(4 if num_workers > 0 else None),
         )
     return loaders
 
