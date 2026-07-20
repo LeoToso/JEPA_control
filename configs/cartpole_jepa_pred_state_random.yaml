@@ -68,7 +68,7 @@ training:
   lambda_temp: 0.0
   # ── Training dynamics ─────────────────────────────────────────────────────
   use_target_encoder: false
-  detach_targets: false
+  detach_targets: true
   target_encoder_momentum: 0.99
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
