@@ -452,11 +452,12 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
             local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
 
         if self.target_image_size is not None:
-            import cv2
             s = self.target_image_size
-            obs_np = np.stack([cv2.resize(obs_np[k], (s, s),
-                                          interpolation=cv2.INTER_AREA)
-                               for k in range(H + 1)])
+            # (H+1, h, w, C) → (H+1, C, h, w) → resize → (H+1, C, s, s) → (H+1, s, s, C)
+            t = torch.from_numpy(obs_np).permute(0, 3, 1, 2).float()
+            t = torch.nn.functional.interpolate(
+                t, size=(s, s), mode='bilinear', align_corners=False)
+            obs_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
 
         def _t(arr):
             return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0
