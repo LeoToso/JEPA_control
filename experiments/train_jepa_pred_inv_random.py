@@ -177,7 +177,8 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     trainer = Trainer(model=model, config_dict=train_cfg, gt=None,
                       save_dir=str(save_dir / 'checkpoints'), device=device, seed=args.seed)
-    trainer.set_obs_eq(obs_eq)
+    if obs_eq is not None:
+        trainer.set_obs_eq(obs_eq)
 
     print(f'[train] training for {epochs} epochs ...')
     trainer.fit(loaders['train'], loaders['val'], epochs=epochs,
