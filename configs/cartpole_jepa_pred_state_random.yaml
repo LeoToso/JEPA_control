@@ -73,6 +73,7 @@ training:
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
   predictor_window: 5
+  num_workers: 8        # parallel dataloader workers (match SLURM --cpus-per-task)
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0

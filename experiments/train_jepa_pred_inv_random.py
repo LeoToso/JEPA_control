@@ -106,7 +106,8 @@ def main():
                                obs_eq=obs_eq,
                                n_eq_selfloop=int(cfg.get('data', {}).get('n_eq_selfloop', 0)),
                                action_scale=action_scale,
-                               state_mean=state_mean, state_std=state_std)
+                               state_mean=state_mean, state_std=state_std,
+                               num_workers=int(train_cfg.get('num_workers', 0)))
     print(f'[data] train={len(loaders["train"].dataset)}  '
           f'val={len(loaders["val"].dataset)}  horizon={horizon}  frame_stack={frame_stack}')
 
