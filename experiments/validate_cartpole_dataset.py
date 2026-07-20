@@ -171,6 +171,9 @@ def plot_state_distributions(episodes: List[Dict], out_dir: Path) -> None:
 # ── Check 5: action balance ───────────────────────────────────────────────────
 
 def report_action_balance(episodes: List[Dict], split: str) -> None:
+    if not episodes:
+        logger.info('[%s] Action balance: (no episodes)', split)
+        return
     actions = np.concatenate([ep['actions'] for ep in episodes])
     n_left  = int((actions == 0).sum())
     n_right = int((actions == 1).sum())
