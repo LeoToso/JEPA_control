@@ -324,6 +324,78 @@ def load_dataset(path):
     return data
 
 
+def load_discrete_dataset(dataset_dir: str) -> dict:
+    """Load the per-episode HDF5 dataset produced by cartpole_discrete_dataset.py.
+
+    Converts the per-episode group format (train/val/test.hdf5) into the flat
+    transition array format expected by TrajectoryDataset / make_dataloaders:
+        obs          (N, H, W, C)  uint8
+        next_obs     (N, H, W, C)  uint8
+        states       (N, 4)        float32
+        next_states  (N, 4)        float32
+        actions      (N, 1)        float32
+        episode_ids  (N,)          int32   — unique per episode (boundary guard)
+        splits       {split: int64 index array into the flat arrays}
+    """
+    from pathlib import Path
+    dataset_dir = Path(dataset_dir)
+
+    all_obs, all_next_obs   = [], []
+    all_states, all_nstates = [], []
+    all_actions, all_ep_ids = [], []
+    split_indices           = {}
+    global_ep_id            = 0
+    trans_offset            = 0
+
+    for split in ('train', 'val', 'test'):
+        hdf5_path = dataset_dir / f'{split}.hdf5'
+        if not hdf5_path.exists():
+            continue
+        split_trans_start = trans_offset
+        with h5py.File(hdf5_path, 'r') as f:
+            ep_grp = f['episodes']
+            for ep_key in sorted(ep_grp.keys(), key=int):
+                ep        = ep_grp[ep_key]
+                obs_ep    = ep['observations'][:]   # (T+1, H, W, C)
+                acts_ep   = ep['actions'][:]        # (T,)
+                states_ep = ep['states'][:]         # (T+1, 4)
+                T = len(acts_ep)
+                all_obs.append(obs_ep[:-1])                              # (T, H, W, C)
+                all_next_obs.append(obs_ep[1:])                          # (T, H, W, C)
+                all_states.append(states_ep[:-1])                        # (T, 4)
+                all_nstates.append(states_ep[1:])                        # (T, 4)
+                all_actions.append(acts_ep)                              # (T,)
+                all_ep_ids.append(np.full(T, global_ep_id, dtype=np.int32))
+                global_ep_id += 1
+                trans_offset += T
+        split_indices[split] = np.arange(split_trans_start, trans_offset, dtype=np.int64)
+
+    obs         = np.concatenate(all_obs,      axis=0)
+    next_obs    = np.concatenate(all_next_obs, axis=0)
+    states      = np.concatenate(all_states,   axis=0).astype(np.float32)
+    next_states = np.concatenate(all_nstates,  axis=0).astype(np.float32)
+    actions     = np.concatenate(all_actions,  axis=0).astype(np.float32)[:, None]
+    episode_ids = np.concatenate(all_ep_ids,   axis=0)
+
+    train_idx  = split_indices.get('train', np.arange(len(states)))
+    state_mean = states[train_idx].mean(axis=0)
+    state_std  = states[train_idx].std(axis=0).clip(min=1e-6)
+
+    return {
+        'obs':          obs,
+        'next_obs':     next_obs,
+        'states':       states,
+        'next_states':  next_states,
+        'actions':      actions,
+        'episode_ids':  episode_ids,
+        'splits':       split_indices,
+        'state_mean':   state_mean,
+        'state_std':    state_std,
+        'action_scale': 1.0,
+        'action_cov_condition_number': 1.0,
+    }
+
+
 # ── Single-step dataset (used for probes / backward compat) ──────────────────
 
 class TransitionDataset(Dataset):

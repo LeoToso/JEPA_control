@@ -32,7 +32,7 @@ def _find_near_eq_obs(data, split='train'):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--data',      default='data/cartpole_random_seed42.h5')
+    p.add_argument('--data',      default='data/cartpole_visual')
     p.add_argument('--config',    default='configs/cartpole_jepa_pred_inv_random.yaml')
     p.add_argument('--epochs',    type=int, default=None)
     p.add_argument('--seed',      type=int, default=42)
@@ -80,9 +80,12 @@ def main():
                     model_cfg[_k] = _ckpt_cfg[_k]
         del _ckpt_peek, _ckpt_cfg
 
-    from data.dataset import load_dataset, make_dataloaders
+    from data.dataset import load_dataset, load_discrete_dataset, make_dataloaders
     print(f'[data] loading {args.data}')
-    data = load_dataset(args.data)
+    if Path(args.data).is_dir():
+        data = load_discrete_dataset(args.data)
+    else:
+        data = load_dataset(args.data)
     horizon     = int(train_cfg.get('horizon', 30))
     frame_stack = int(model_cfg.get('frame_stack', 2))
 
