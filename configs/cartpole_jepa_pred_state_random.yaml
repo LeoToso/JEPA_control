@@ -18,11 +18,11 @@ model:
   frame_stack: 2
   predictor_window: 5
   vit_embed_dim: 128
-  vit_depth: 4
+  vit_depth: 2
   vit_num_heads: 4
   predictor_type: transformer
   predictor_embed_dim: 128
-  predictor_depth: 4
+  predictor_depth: 2
   predictor_num_heads: 4
   predictor_mlp_ratio: 4.0
 

@@ -61,8 +61,6 @@ class Trainer:
         self.seed    = seed
         set_all_seeds(seed)
         self.model.to(self.device)
-        if self.device.type == 'cuda' and hasattr(torch, 'compile'):
-            self.model = torch.compile(self.model)
 
         # Loss weights
         self.lambda_pred  = float(self.cfg.get('lambda_pred',  1.0))
