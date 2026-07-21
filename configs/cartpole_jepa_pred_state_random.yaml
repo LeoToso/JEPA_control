@@ -69,7 +69,7 @@ training:
   # ── Training dynamics ─────────────────────────────────────────────────────
   use_target_encoder: true
   detach_targets: true
-  target_encoder_momentum: 0.99
+  target_encoder_momentum: 0.996
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
   predictor_window: 5
