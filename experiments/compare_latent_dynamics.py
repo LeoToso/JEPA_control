@@ -261,7 +261,9 @@ def compute_gramian_eigenvalues(model, z_star: np.ndarray, device,
     return np.sort(np.abs(eigvals))[::-1], A_aug, B_eff
 
 
-def plot_gramian(ax, eigvals: np.ndarray, title: str):
+def plot_gramian(ax, eigvals: np.ndarray, title: str,
+                 rho: float = None, rho_gt: float = None,
+                 b_eff_norm: float = None):
     """Log-scale bar chart of Gramian eigenvalue spectrum."""
     d = len(eigvals)
     # Clip for log scale
@@ -279,6 +281,22 @@ def plot_gramian(ax, eigvals: np.ndarray, title: str):
             transform=ax.transAxes, ha='right', va='top', fontsize=8,
             color='darkred')
     ax.legend(fontsize=7)
+    # Spectral radius annotation (learned + GT reference)
+    lines = []
+    if rho is not None:
+        color = 'green' if rho > 1.0 else 'darkorange'
+        lines.append((f'ρ(A)={rho:.4f}', color))
+    if rho_gt is not None:
+        lines.append((f'ρ_GT={rho_gt:.4f}', 'steelblue'))
+    if b_eff_norm is not None:
+        lines.append((f'‖B‖={b_eff_norm:.4f}', 'gray'))
+    if lines:
+        y0 = 0.04
+        for text, col in reversed(lines):
+            ax.text(0.02, y0, text, transform=ax.transAxes,
+                    ha='left', va='bottom', fontsize=8, color=col,
+                    bbox=dict(facecolor='white', alpha=0.6, edgecolor='none', pad=1))
+            y0 += 0.11
 
 
 # ── (collect_near_eq_encodings removed — phase portrait now uses physical coords)
@@ -395,6 +413,16 @@ def main():
         models.append((model, frame_stack, cfg_p))
         print(f'       frame_stack={frame_stack}  params={sum(p.numel() for p in model.parameters()):,}')
 
+    # ── Ground-truth spectral radius ──────────────────────────────────────
+    try:
+        from ground_truth.cartpole_gt import CartpoleGroundTruth
+        _gt = CartpoleGroundTruth()
+        rho_gt = float(np.max(np.abs(np.linalg.eigvals(_gt.A_star))))
+        print(f'[GT] rho(A_star)={rho_gt:.4f}  (target: >1.0 for instability)')
+    except Exception as _e:
+        print(f'[GT] could not compute ground-truth rho: {_e}')
+        rho_gt = None
+
     # ── Build shared environment ──────────────────────────────────────────
     from envs.cartpole_visual import ContinuousCartpoleVisual
     env = ContinuousCartpoleVisual(image_size=64, action_range=(-10, 10))
@@ -424,11 +452,15 @@ def main():
             z_star = model.encoder(obs_eq_t).cpu().numpy()[0]
 
         print(f'    computing Gramian (T={args.gramian_T}) ...')
+        rho = None
+        b_eff_norm = None
         try:
             gramian_eigvals, A_aug, B_eff = compute_gramian_eigenvalues(
                 model, z_star, device, T=args.gramian_T)
             rho = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
-            print(f'    rho(A_aug)={rho:.4f}  ||B_eff||={np.linalg.norm(B_eff[:len(z_star)]):.4f}')
+            b_eff_norm = float(np.linalg.norm(B_eff[:len(z_star)]))
+            print(f'    rho(A_aug)={rho:.4f}  ||B_eff||={b_eff_norm:.4f}'
+                  + (f'  [GT rho={rho_gt:.4f}]' if rho_gt is not None else ''))
         except Exception as exc:
             print(f'    Gramian failed: {exc}')
             gramian_eigvals = None
@@ -436,6 +468,7 @@ def main():
         all_data.append({
             'label': label, 'zs': zs, 'states': states,
             'R': R, 'gramian_eigvals': gramian_eigvals,
+            'rho': rho, 'b_eff_norm': b_eff_norm,
             'model': model, 'frame_stack': frame_stack, 'z_star': z_star,
         })
 
@@ -453,7 +486,9 @@ def main():
 
         if d['gramian_eigvals'] is not None:
             plot_gramian(axes[row, 1], d['gramian_eigvals'],
-                         title='Controllability Gramian')
+                         title='Controllability Gramian',
+                         rho=d.get('rho'), rho_gt=rho_gt,
+                         b_eff_norm=d.get('b_eff_norm'))
         else:
             axes[row, 1].text(0.5, 0.5, 'Gramian N/A', ha='center', va='center',
                               transform=axes[row, 1].transAxes)
