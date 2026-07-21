@@ -44,6 +44,8 @@ def main():
                    help='Load encoder+predictor weights from this .pt file before training')
     p.add_argument('--resume', default=None,
                    help='Resume full training state (model+optimizer+scheduler) from this .pt checkpoint')
+    p.add_argument('--data-fraction', type=float, default=1.0,
+                   help='Fraction of episodes to use (e.g. 0.5 for half the data)')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -105,7 +107,8 @@ def main():
             num_workers=num_workers,
             state_mean=state_mean, state_std=state_std,
             target_image_size=int(model_cfg.get('image_size', 224)),
-            preload_obs=True)
+            preload_obs=True,
+            data_fraction=args.data_fraction)
         obs_eq, state_eq = None, np.zeros(4, dtype=np.float32)
     else:
         # Legacy flat HDF5 format

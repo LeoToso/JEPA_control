@@ -385,7 +385,8 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
     def __init__(self, dataset_dir: str, split: str = 'train',
                  horizon: int = 20, frame_stack: int = 1,
                  state_mean: np.ndarray = None, state_std: np.ndarray = None,
-                 target_image_size: int = None, preload_obs: bool = True):
+                 target_image_size: int = None, preload_obs: bool = True,
+                 data_fraction: float = 1.0):
         self.hdf5_path        = str(Path(dataset_dir) / f'{split}.hdf5')
         self.horizon          = horizon
         self.frame_stack      = frame_stack
@@ -404,7 +405,9 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
         with h5py.File(self.hdf5_path, 'r') as f:
             ep_grp = f['episodes']
-            for ep_key in sorted(ep_grp.keys(), key=int):
+            all_ep_keys = sorted(ep_grp.keys(), key=int)
+            n_keep = max(1, int(len(all_ep_keys) * data_fraction))
+            for ep_key in all_ep_keys[:n_keep]:
                 ep        = ep_grp[ep_key]
                 acts_ep   = ep['actions'][:]    # (T,)
                 states_ep = ep['states'][:]     # (T+1, 4)
@@ -525,7 +528,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               state_mean: np.ndarray = None,
                               state_std: np.ndarray = None,
                               target_image_size: int = None,
-                              preload_obs: bool = True) -> dict:
+                              preload_obs: bool = True,
+                              data_fraction: float = 1.0) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
     loaders = {}
     for split in ('train', 'val', 'test'):
@@ -535,7 +539,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
         ds = DiscreteHDF5TrajectoryDataset(
             dataset_dir, split=split, horizon=horizon,
             frame_stack=frame_stack, state_mean=state_mean, state_std=state_std,
-            target_image_size=target_image_size, preload_obs=preload_obs)
+            target_image_size=target_image_size, preload_obs=preload_obs,
+            data_fraction=data_fraction)
         if len(ds) == 0:
             continue
         loaders[split] = DataLoader(
