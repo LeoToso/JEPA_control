@@ -46,6 +46,9 @@ def main():
                    help='Resume full training state (model+optimizer+scheduler) from this .pt checkpoint')
     p.add_argument('--data-fraction', type=float, default=1.0,
                    help='Fraction of episodes to use (e.g. 0.5 for half the data)')
+    p.add_argument('--extra-data', nargs='+', default=None,
+                   help='Additional dataset dirs to concatenate with the primary dataset '
+                        '(normalization stats from primary are applied to all)')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -111,6 +114,36 @@ def main():
             preload_obs=True,
             data_fraction=args.data_fraction)
         obs_eq, state_eq = None, np.zeros(4, dtype=np.float32)
+
+        if args.extra_data:
+            from data.dataset import DiscreteHDF5TrajectoryDataset
+            from torch.utils.data import ConcatDataset, DataLoader as TorchDataLoader
+            _img_size = int(model_cfg.get('image_size', 224))
+            extra_train_ds = []
+            for _extra_dir in args.extra_data:
+                print(f'[data] loading extra dataset: {_extra_dir}')
+                _ds = DiscreteHDF5TrajectoryDataset(
+                    _extra_dir, split='train',
+                    horizon=horizon, frame_stack=frame_stack,
+                    state_mean=state_mean, state_std=state_std,
+                    action_scale=action_scale,
+                    target_image_size=_img_size, preload_obs=True)
+                extra_train_ds.append(_ds)
+                print(f'[data]   -> {len(_ds)} windows from {_extra_dir}')
+            combined_train = ConcatDataset(
+                [loaders['train'].dataset] + extra_train_ds)
+            print(f'[data] combined train: {len(loaders["train"].dataset)} + '
+                  f'{sum(len(d) for d in extra_train_ds)} = {len(combined_train)} windows')
+            loaders['train'] = TorchDataLoader(
+                combined_train,
+                batch_size=train_cfg['batch_size'],
+                shuffle=True,
+                num_workers=num_workers,
+                pin_memory=(num_workers > 0),
+                drop_last=True,
+                persistent_workers=(num_workers > 0),
+                prefetch_factor=(4 if num_workers > 0 else None),
+            )
     else:
         # Legacy flat HDF5 format
         data = load_dataset(args.data)
@@ -133,8 +166,9 @@ def main():
                                    state_mean=state_mean, state_std=state_std,
                                    num_workers=num_workers)
 
+    _val_size = len(loaders['val'].dataset) if 'val' in loaders else 0
     print(f'[data] train={len(loaders["train"].dataset)}  '
-          f'val={len(loaders["val"].dataset)}  horizon={horizon}  frame_stack={frame_stack}')
+          f'val={_val_size}  horizon={horizon}  frame_stack={frame_stack}')
 
     from models.jepa import make_jepa
     model = make_jepa(
