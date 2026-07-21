@@ -494,14 +494,14 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
                 obs_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
 
         def _t(arr):
-            return torch.from_numpy(arr).float().permute(2, 0, 1) / 255.0
+            return torch.from_numpy(arr).permute(2, 0, 1)  # uint8 (C, h, w)
 
         frames = []
         for k in range(H + 1):
             curr = _t(obs_np[k])
             prev = _t(obs_np[k - 1]) if k > 0 else curr
             frames.append(torch.cat([prev, curr], dim=0) if FS > 1 else curr)
-        obs_seq = torch.stack(frames)   # (H+1, 3*FS, h, w)
+        obs_seq = torch.stack(frames)   # (H+1, 3*FS, h, w) uint8
 
         actions = torch.from_numpy(self.actions[start: start + H])   # (H, 1)
 

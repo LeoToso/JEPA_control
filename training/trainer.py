@@ -326,7 +326,7 @@ class Trainer:
     # ── Loss computation ──────────────────────────────────────────────────────
     def _compute_loss(self, batch, is_train=True):
         # batch keys: obs_seq (B,H+1,3,h,w), actions (B,H,1), states (B,H+1,4)
-        obs_seq = batch['obs_seq'].to(self.device, non_blocking=True)   # (B, H+1, 3, h, w)
+        obs_seq = batch['obs_seq'].to(self.device, non_blocking=True).float().div_(255.0)  # (B, H+1, 3, h, w)
         actions = batch['actions'].to(self.device, non_blocking=True)   # (B, H, 1)
         B, H1, C, h, w = obs_seq.shape
         H = H1 - 1
