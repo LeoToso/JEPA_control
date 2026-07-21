@@ -334,17 +334,22 @@ def load_discrete_dataset_meta(dataset_dir: str) -> dict:
         state_mean / state_std  — computed from train split for normalisation
         dataset_dir             — path string, passed to DiscreteHDF5TrajectoryDataset
         splits                  — {split: n_transitions}  (counts, not index arrays)
+        action_scale            — max |action| inferred from dataset metadata
     """
+    import json
     dataset_dir = Path(dataset_dir)
     train_states = []
+    train_actions = []
 
-    # Read only states from train split to compute normalisation stats
+    # Read only states and actions from train split to compute normalisation stats
     train_path = dataset_dir / 'train.hdf5'
     if train_path.exists():
         with h5py.File(train_path, 'r') as f:
             for ep_key in sorted(f['episodes'].keys(), key=int):
                 s = f['episodes'][ep_key]['states'][:]   # (T+1, 4)
+                a = f['episodes'][ep_key]['actions'][:]  # (T,)
                 train_states.append(s[:-1].astype(np.float32))
+                train_actions.append(a.astype(np.float32))
 
     if train_states:
         all_s      = np.concatenate(train_states, axis=0)
@@ -353,6 +358,20 @@ def load_discrete_dataset_meta(dataset_dir: str) -> dict:
     else:
         state_mean = np.zeros(4, dtype=np.float32)
         state_std  = np.ones(4, dtype=np.float32)
+
+    # Infer action_scale: prefer metadata.json, fall back to max |action| in data
+    action_scale = 1.0
+    meta_path = dataset_dir / 'metadata.json'
+    if meta_path.exists():
+        with open(meta_path) as _f:
+            _meta = json.load(_f)
+        # force_mag is the environment's max force (= action range limit)
+        action_scale = float(_meta.get('environment', {}).get('force_mag', 1.0))
+    if action_scale == 1.0 and train_actions:
+        all_a = np.concatenate(train_actions)
+        inferred = float(np.abs(all_a).max())
+        if inferred > 1.5:   # binary {0,1} datasets → keep scale=1
+            action_scale = inferred
 
     split_counts = {}
     for split in ('train', 'val', 'test'):
@@ -366,7 +385,7 @@ def load_discrete_dataset_meta(dataset_dir: str) -> dict:
         'state_mean':  state_mean,
         'state_std':   state_std,
         'splits':      split_counts,
-        'action_scale': 1.0,
+        'action_scale': action_scale,
     }
 
 
@@ -385,6 +404,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
     def __init__(self, dataset_dir: str, split: str = 'train',
                  horizon: int = 20, frame_stack: int = 1,
                  state_mean: np.ndarray = None, state_std: np.ndarray = None,
+                 action_scale: float = 1.0,
                  target_image_size: int = None, preload_obs: bool = True,
                  data_fraction: float = 1.0):
         self.hdf5_path        = str(Path(dataset_dir) / f'{split}.hdf5')
@@ -392,6 +412,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         self.frame_stack      = frame_stack
         self.state_mean       = state_mean
         self.state_std        = state_std
+        self.action_scale     = float(action_scale)
         self.target_image_size = target_image_size
         self._handles: dict   = {}   # pid → h5py.File (lazy, only used when not preloaded)
 
@@ -504,6 +525,8 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         obs_seq = torch.stack(frames)   # (H+1, 3*FS, h, w) uint8
 
         actions = torch.from_numpy(self.actions[start: start + H])   # (H, 1)
+        if self.action_scale != 1.0:
+            actions = actions / self.action_scale
 
         states = torch.from_numpy(
             np.concatenate([self.states[start: start + H],
@@ -527,6 +550,7 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               frame_stack: int = 1,
                               state_mean: np.ndarray = None,
                               state_std: np.ndarray = None,
+                              action_scale: float = 1.0,
                               target_image_size: int = None,
                               preload_obs: bool = True,
                               data_fraction: float = 1.0) -> dict:
@@ -539,6 +563,7 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
         ds = DiscreteHDF5TrajectoryDataset(
             dataset_dir, split=split, horizon=horizon,
             frame_stack=frame_stack, state_mean=state_mean, state_std=state_std,
+            action_scale=action_scale,
             target_image_size=target_image_size, preload_obs=preload_obs,
             data_fraction=data_fraction)
         if len(ds) == 0:

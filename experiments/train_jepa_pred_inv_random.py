@@ -106,6 +106,7 @@ def main():
             horizon=horizon, frame_stack=frame_stack,
             num_workers=num_workers,
             state_mean=state_mean, state_std=state_std,
+            action_scale=action_scale,
             target_image_size=int(model_cfg.get('image_size', 224)),
             preload_obs=True,
             data_fraction=args.data_fraction)
