@@ -49,8 +49,10 @@ def _build_jepa_config(d: dict):
     cfg = JEPAConfig()
     for k in ('latent_dim', 'action_latent_dim', 'action_encoder', 'image_size',
               'patch_size', 'frame_stack', 'vit_embed_dim', 'vit_depth',
-              'vit_num_heads', 'predictor_window', 'predictor_hidden_dim',
-              'predictor_n_layers', 'variant'):
+              'vit_num_heads', 'predictor_type', 'predictor_window',
+              'predictor_hidden_dim', 'predictor_n_layers',
+              'predictor_embed_dim', 'predictor_depth', 'predictor_num_heads',
+              'predictor_mlp_ratio', 'variant'):
         if k in d:
             setattr(cfg, k, d[k])
     return cfg
@@ -97,19 +99,24 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
         else:
             actual_fs = yaml_fs
         arch = {
-            'latent_dim':           int(model_cfg_yaml.get('latent_dim', 32)),
-            'action_latent_dim':    int(model_cfg_yaml.get('action_latent_dim', 4)),
-            'action_encoder':       model_cfg_yaml.get('action_encoder', 'linear'),
-            'encoder_type':         model_cfg_yaml.get('encoder_type', 'vit'),
-            'image_size':           int(full_yaml_cfg.get('environment', {}).get('image_size', 64)),
-            'patch_size':           int(model_cfg_yaml.get('patch_size', 8)),
-            'frame_stack':          actual_fs,
-            'vit_embed_dim':        int(model_cfg_yaml.get('vit_embed_dim', 128)),
-            'vit_depth':            int(model_cfg_yaml.get('vit_depth', 4)),
-            'vit_num_heads':        int(model_cfg_yaml.get('vit_num_heads', 4)),
-            'predictor_window':     int(model_cfg_yaml.get('predictor_window', 3)),
-            'predictor_hidden_dim': int(model_cfg_yaml.get('predictor_hidden_dim', 256)),
-            'predictor_n_layers':   int(model_cfg_yaml.get('predictor_n_layers', 2)),
+            'latent_dim':            int(model_cfg_yaml.get('latent_dim', 32)),
+            'action_latent_dim':     int(model_cfg_yaml.get('action_latent_dim', 4)),
+            'action_encoder':        model_cfg_yaml.get('action_encoder', 'linear'),
+            'encoder_type':          model_cfg_yaml.get('encoder_type', 'vit'),
+            'image_size':            int(full_yaml_cfg.get('environment', {}).get('image_size', 64)),
+            'patch_size':            int(model_cfg_yaml.get('patch_size', 8)),
+            'frame_stack':           actual_fs,
+            'vit_embed_dim':         int(model_cfg_yaml.get('vit_embed_dim', 128)),
+            'vit_depth':             int(model_cfg_yaml.get('vit_depth', 4)),
+            'vit_num_heads':         int(model_cfg_yaml.get('vit_num_heads', 4)),
+            'predictor_type':        model_cfg_yaml.get('predictor_type', 'mlp'),
+            'predictor_window':      int(model_cfg_yaml.get('predictor_window', 3)),
+            'predictor_hidden_dim':  int(model_cfg_yaml.get('predictor_hidden_dim', 256)),
+            'predictor_n_layers':    int(model_cfg_yaml.get('predictor_n_layers', 2)),
+            'predictor_embed_dim':   int(model_cfg_yaml.get('predictor_embed_dim', 128)),
+            'predictor_depth':       int(model_cfg_yaml.get('predictor_depth', 4)),
+            'predictor_num_heads':   int(model_cfg_yaml.get('predictor_num_heads', 4)),
+            'predictor_mlp_ratio':   float(model_cfg_yaml.get('predictor_mlp_ratio', 4.0)),
         }
 
     jcfg = _build_jepa_config(arch)
