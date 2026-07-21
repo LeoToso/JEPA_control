@@ -66,8 +66,10 @@ def _parse() -> argparse.Namespace:
     mix.add_argument('--frac-random',       type=float, default=None)
     mix.add_argument('--frac-lqr-near-eq',  type=float, default=None,
                      help='Fraction of near-equilibrium LQR+noise episodes')
+    mix.add_argument('--frac-passive',       type=float, default=None,
+                     help='Fraction of passive (u=0) free-fall episodes from near-eq start')
     mix.add_argument('--lqr-near-eq-angle-range', type=float, default=None,
-                     help='Initial pole angle range for near-eq episodes (rad)')
+                     help='Initial pole angle range for near-eq and passive episodes (rad)')
 
     # Continuous environment / friction overrides
     cont = p.add_argument_group('continuous environment and friction')
@@ -106,10 +108,11 @@ def main() -> None:
     # only the stated ones are active (avoids the "hidden defaults sum over 1"
     # pitfall when specifying a partial mixture).
     _mix_attrs = ['frac_expert', 'frac_noisy_005', 'frac_noisy_010',
-                  'frac_noisy_020', 'frac_burst', 'frac_random', 'frac_lqr_near_eq']
+                  'frac_noisy_020', 'frac_burst', 'frac_random',
+                  'frac_lqr_near_eq', 'frac_passive']
     _mix_vals  = [args.frac_expert, args.frac_noisy_005, args.frac_noisy_010,
                   args.frac_noisy_020, args.frac_burst, args.frac_random,
-                  args.frac_lqr_near_eq]
+                  args.frac_lqr_near_eq, args.frac_passive]
     if any(v is not None for v in _mix_vals):
         for attr in _mix_attrs:
             setattr(cfg, attr, 0.0)
@@ -151,11 +154,11 @@ def main() -> None:
         logger.info('  friction_cart      = %.4f', cfg.friction_cart)
         logger.info('  friction_pole      = %.4f', cfg.friction_pole)
     logger.info('  policy mixture: expert=%.0f%% noisy5=%.0f%% noisy10=%.0f%%'
-                ' noisy20=%.0f%% burst=%.0f%% random=%.0f%% lqr_near_eq=%.0f%%',
+                ' noisy20=%.0f%% burst=%.0f%% random=%.0f%% lqr_near_eq=%.0f%% passive=%.0f%%',
                 cfg.frac_expert * 100, cfg.frac_noisy_005 * 100,
                 cfg.frac_noisy_010 * 100, cfg.frac_noisy_020 * 100,
                 cfg.frac_burst * 100, cfg.frac_random * 100,
-                cfg.frac_lqr_near_eq * 100)
+                cfg.frac_lqr_near_eq * 100, cfg.frac_passive * 100)
 
     generate_dataset(cfg)
 

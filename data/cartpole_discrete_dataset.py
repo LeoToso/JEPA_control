@@ -46,8 +46,9 @@ SRC_EXPERT  = np.uint8(0)   # expert action, no noise
 SRC_FLIPPED = np.uint8(1)   # action-flip noise
 SRC_BURST   = np.uint8(2)   # burst-noise action
 SRC_RANDOM  = np.uint8(3)   # fully random
+SRC_PASSIVE = np.uint8(4)   # zero action (free fall from near-eq)
 
-SRC_NAMES = {0: 'expert', 1: 'flipped', 2: 'burst', 3: 'random'}
+SRC_NAMES = {0: 'expert', 1: 'flipped', 2: 'burst', 3: 'random', 4: 'passive'}
 
 # ── Policy schedule (policy_type, epsilon, config_frac_attr) ─────────────────
 _SCHEDULE = [
@@ -60,6 +61,9 @@ _SCHEDULE = [
     # Near-equilibrium episodes: tiny initial pole angle + 20% action noise.
     # Exposes the unstable mode so the learned Jacobian has rho(A) > 1.
     ('lqr_near_eq', 0.20, 'frac_lqr_near_eq'),
+    # Passive (u=0) episodes from near-equilibrium: pole falls freely, directly
+    # showing open-loop instability so the model can learn rho(A_aug) > 1.
+    ('passive',     0.00, 'frac_passive'),
 ]
 
 
@@ -84,6 +88,8 @@ class DatasetConfig:
     # Near-equilibrium LQR episodes (frac_lqr_near_eq > 0 requires reducing other fracs)
     frac_lqr_near_eq:        float = 0.0
     lqr_near_eq_angle_range: float = 0.02  # ±0.02 rad ≈ ±1.1° initial pole angle
+    # Passive (u=0) free-fall episodes from near-equilibrium: teaches rho(A) > 1
+    frac_passive:             float = 0.0
 
     # Physics: continuous env with viscous friction (replaces CartPole-v1 when enabled)
     use_continuous_env: bool  = False
@@ -128,7 +134,7 @@ class DatasetConfig:
     def validate(self) -> None:
         total = (self.frac_expert + self.frac_noisy_005 + self.frac_noisy_010
                  + self.frac_noisy_020 + self.frac_burst + self.frac_random
-                 + self.frac_lqr_near_eq)
+                 + self.frac_lqr_near_eq + self.frac_passive)
         if abs(total - 1.0) > 1e-5:
             raise ValueError(f'Policy fractions must sum to 1.0, got {total:.5f}')
         if not (16 <= self.image_size <= 1024):
@@ -282,7 +288,7 @@ def _collect_episode(
     Runs until termination or truncation (max 500 steps for CartPole-v1).
     Returns a dict with arrays and scalar metadata.
     """
-    near_eq = (policy_type == 'lqr_near_eq')
+    near_eq = policy_type in ('lqr_near_eq', 'passive')
     obs, state = _reset_env(env, cfg, rng, ep_seed,
                              angle_range=cfg.lqr_near_eq_angle_range if near_eq else None)
 
@@ -310,6 +316,8 @@ def _collect_episode(
             action, src = _noisy_action(state, gain, epsilon, rng)
         elif policy_type == 'burst':
             action, src = burst_pol.act(state)
+        elif policy_type == 'passive':
+            action, src = 0, SRC_PASSIVE  # u≈0: no active push; pole falls freely
         else:
             action, src = int(rng.integers(0, 2)), SRC_RANDOM
 
@@ -395,7 +403,7 @@ def _collect_episode_continuous(
     of binary {0,1}.  Friction physics are handled inside the env.
     """
     rng_init = np.random.default_rng(ep_seed)
-    ar = cfg.lqr_near_eq_angle_range if policy_type == 'lqr_near_eq' else cfg.pole_angle_range
+    ar = cfg.lqr_near_eq_angle_range if policy_type in ('lqr_near_eq', 'passive') else cfg.pole_angle_range
     state0 = np.array([
         float(rng_init.uniform(-cfg.cart_pos_range, cfg.cart_pos_range)),
         float(rng_init.uniform(-cfg.cart_vel_range, cfg.cart_vel_range)),
@@ -443,6 +451,8 @@ def _collect_episode_continuous(
                 action, src = burst_action, SRC_BURST
             else:
                 action, src = u_lqr, SRC_EXPERT
+        elif policy_type == 'passive':
+            action, src = 0.0, SRC_PASSIVE  # zero force: pole falls freely
         else:  # random
             action = float(rng.uniform(env.action_low, env.action_high))
             src    = SRC_RANDOM
