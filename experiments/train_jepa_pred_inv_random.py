@@ -127,7 +127,8 @@ def main():
                     horizon=horizon, frame_stack=frame_stack,
                     state_mean=state_mean, state_std=state_std,
                     action_scale=action_scale,
-                    target_image_size=_img_size, preload_obs=True)
+                    target_image_size=_img_size, preload_obs=True,
+                    data_fraction=args.data_fraction)
                 extra_train_ds.append(_ds)
                 print(f'[data]   -> {len(_ds)} windows from {_extra_dir}')
             combined_train = ConcatDataset(
