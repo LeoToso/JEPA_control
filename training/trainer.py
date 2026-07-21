@@ -614,15 +614,16 @@ class Trainer:
             state_loss = torch.zeros(1, device=self.device)
             for k in range(H + 1):
                 z_mix = alpha * z_all[:, k] + (1 - alpha) * z_all[:, k].detach()
+                z_mix_n = F.normalize(z_mix, dim=-1)  # unit sphere — fixes scale mismatch
                 state_loss = state_loss + (
-                    w * (self.state_head(z_mix) - states[:, k]).pow(2)
+                    w * (self.state_head(z_mix_n) - states[:, k]).pow(2)
                 ).mean()
             state_loss = state_loss / (H + 1)
             # Anchor: state_head(z*) must decode to zero — equilibrium latent = zero state.
             # Prevents the drifted fixed-point issue where state_head(z*) shows theta != 0.
             if self._z_star_ema is not None:
                 z_eq_mix = alpha * self._z_star_ema + (1 - alpha) * self._z_star_ema.detach()
-                sh_eq = self.state_head(z_eq_mix.unsqueeze(0))  # (1, 4)
+                sh_eq = self.state_head(F.normalize(z_eq_mix.unsqueeze(0), dim=-1))  # (1, 4)
                 state_loss = state_loss + (w * sh_eq.pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
