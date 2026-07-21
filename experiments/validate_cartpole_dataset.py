@@ -47,12 +47,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 POLICY_COLORS = {
-    'expert_eps0.00':  '#2ecc71',
-    'noisy_eps0.05':   '#3498db',
-    'noisy_eps0.10':   '#9b59b6',
-    'noisy_eps0.20':   '#e67e22',
-    'burst_eps0.00':   '#e74c3c',
-    'random_eps0.00':  '#95a5a6',
+    'expert_eps0.00':      '#2ecc71',
+    'noisy_eps0.05':       '#3498db',
+    'noisy_eps0.10':       '#9b59b6',
+    'noisy_eps0.20':       '#e67e22',
+    'burst_eps0.00':       '#e74c3c',
+    'random_eps0.00':      '#95a5a6',
+    'lqr_near_eq_eps0.20': '#f39c12',  # amber — near-equilibrium
 }
 
 
@@ -77,40 +78,70 @@ def check_shape_alignment(episodes: List[Dict], split: str) -> bool:
 
 def check_transition_alignment(episodes: List[Dict], split: str,
                                n_episodes: int = 5,
-                               n_steps_per_ep: int = 10) -> bool:
-    """Re-simulate stored (state_t, action_t) and compare to stored state_{t+1}.
-
-    Uses gymnasium CartPole-v1 directly. Checks absolute error < 1e-4.
-    """
-    env = gym.make('CartPole-v1', render_mode='rgb_array')
+                               n_steps_per_ep: int = 10,
+                               continuous_env: bool = False,
+                               meta: Optional[Dict] = None) -> bool:
+    """Re-simulate stored (state_t, action_t) and compare to stored state_{t+1}."""
     failures = 0
     idxs = np.random.choice(len(episodes), size=min(n_episodes, len(episodes)),
                             replace=False)
-    for ep_idx in idxs:
-        ep       = episodes[ep_idx]
-        T        = ep['length'] if 'length' in ep else len(ep['actions'])
-        step_sel = np.random.choice(T, size=min(n_steps_per_ep, T), replace=False)
 
-        for t in sorted(step_sel):
-            s_t     = ep['states'][t].astype(np.float64)
-            action  = int(ep['actions'][t])
-            s_next  = ep['states'][t + 1].astype(np.float64)
+    if continuous_env:
+        from envs.cartpole_visual import ContinuousCartpoleVisual
+        env_meta = (meta or {}).get('environment', {})
+        sim_env = ContinuousCartpoleVisual(
+            friction_cart=env_meta.get('friction_cart', 0.0),
+            friction_pole=env_meta.get('friction_pole', 0.0),
+        )
 
-            # Force env into state_t
-            env.reset(seed=0)
-            env.unwrapped.state = s_t.copy()
-            _, _, _, _, _ = env.step(action)
-            s_sim = env.unwrapped.state.copy()
+        for ep_idx in idxs:
+            ep       = episodes[ep_idx]
+            T        = ep['length'] if 'length' in ep else len(ep['actions'])
+            step_sel = np.random.choice(T, size=min(n_steps_per_ep, T), replace=False)
 
-            err = np.abs(s_sim - s_next).max()
-            if err > 1e-4:
-                logger.error('[%s] ep=%d t=%d  max_err=%.6f  '
-                             'sim=%s  stored=%s',
-                             split, ep_idx, t, err,
-                             np.round(s_sim, 5), np.round(s_next, 5))
-                failures += 1
+            for t in sorted(step_sel):
+                s_t    = ep['states'][t].astype(np.float64)
+                action = float(ep['actions'][t])
+                s_next = ep['states'][t + 1].astype(np.float64)
 
-    env.close()
+                sim_env.reset_to_state(s_t)
+                sim_env.step(action)
+                s_sim = sim_env.get_state().astype(np.float64)
+
+                err = np.abs(s_sim - s_next).max()
+                if err > 1e-4:
+                    logger.error('[%s] ep=%d t=%d  max_err=%.6f  sim=%s  stored=%s',
+                                 split, ep_idx, t, err,
+                                 np.round(s_sim, 5), np.round(s_next, 5))
+                    failures += 1
+
+        sim_env.close()
+    else:
+        env = gym.make('CartPole-v1', render_mode='rgb_array')
+        for ep_idx in idxs:
+            ep       = episodes[ep_idx]
+            T        = ep['length'] if 'length' in ep else len(ep['actions'])
+            step_sel = np.random.choice(T, size=min(n_steps_per_ep, T), replace=False)
+
+            for t in sorted(step_sel):
+                s_t    = ep['states'][t].astype(np.float64)
+                action = int(ep['actions'][t])
+                s_next = ep['states'][t + 1].astype(np.float64)
+
+                env.reset(seed=0)
+                env.unwrapped.state = s_t.copy()
+                env.step(action)
+                s_sim = env.unwrapped.state.copy()
+
+                err = np.abs(s_sim - s_next).max()
+                if err > 1e-4:
+                    logger.error('[%s] ep=%d t=%d  max_err=%.6f  sim=%s  stored=%s',
+                                 split, ep_idx, t, err,
+                                 np.round(s_sim, 5), np.round(s_next, 5))
+                    failures += 1
+
+        env.close()
+
     if failures == 0:
         logger.info('[%s] Transition alignment OK '
                     '(%d eps × %d steps sampled)', split, n_episodes, n_steps_per_ep)
@@ -170,23 +201,58 @@ def plot_state_distributions(episodes: List[Dict], out_dir: Path) -> None:
 
 # ── Check 5: action balance ───────────────────────────────────────────────────
 
-def report_action_balance(episodes: List[Dict], split: str) -> None:
+def report_action_balance(episodes: List[Dict], split: str,
+                          continuous_env: bool = False) -> None:
     if not episodes:
         logger.info('[%s] Action balance: (no episodes)', split)
         return
     actions = np.concatenate([ep['actions'] for ep in episodes])
-    n_left  = int((actions == 0).sum())
-    n_right = int((actions == 1).sum())
-    total   = n_left + n_right
-    logger.info('[%s] Action balance: left=%d (%.1f%%)  right=%d (%.1f%%)',
-                split, n_left, 100 * n_left / total,
-                n_right, 100 * n_right / total)
+    total   = len(actions)
+
+    if continuous_env:
+        logger.info('[%s] Action (force) stats: min=%.3f  max=%.3f  '
+                    'mean=%.3f  std=%.3f  n=%d',
+                    split, float(actions.min()), float(actions.max()),
+                    float(actions.mean()), float(actions.std()), total)
+    else:
+        n_left  = int((actions == 0).sum())
+        n_right = int((actions == 1).sum())
+        logger.info('[%s] Action balance: left=%d (%.1f%%)  right=%d (%.1f%%)',
+                    split, n_left, 100 * n_left / total,
+                    n_right, 100 * n_right / total)
 
     if 'action_source' in episodes[0]:
         sources = np.concatenate([ep['action_source'] for ep in episodes])
         for k, name in SRC_NAMES.items():
             n = int((sources == k).sum())
             logger.info('  src=%s: %d (%.1f%%)', name, n, 100 * n / total)
+
+
+# ── Continuous-action histogram ───────────────────────────────────────────────
+
+def plot_action_distribution(episodes: List[Dict], out_dir: Path) -> None:
+    """Histogram of continuous force values; one series per policy type."""
+    by_policy: Dict[str, np.ndarray] = {}
+    for ep in episodes:
+        key = f"{ep['policy_type']}_eps{ep['epsilon']:.2f}"
+        arr = ep['actions'].astype(np.float32)
+        by_policy.setdefault(key, [])
+        by_policy[key].append(arr)
+    by_policy = {k: np.concatenate(v) for k, v in by_policy.items()}
+
+    fig, ax = plt.subplots(figsize=(9, 3))
+    bins = np.linspace(-11, 11, 80)
+    for key, vals in sorted(by_policy.items()):
+        color = POLICY_COLORS.get(key, '#888888')
+        ax.hist(vals, bins=bins, alpha=0.45, label=key, color=color, edgecolor='none')
+    ax.set_xlabel('Force (N)')
+    ax.set_ylabel('Count')
+    ax.set_title('Continuous action (force) distribution by policy type')
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+    fig.savefig(out_dir / 'action_distribution.png', dpi=130)
+    plt.close(fig)
+    logger.info('Saved action_distribution.png')
 
 
 # ── Check 6: GIF export ───────────────────────────────────────────────────────
@@ -332,6 +398,8 @@ def main() -> None:
                    help='Episodes to re-simulate for transition alignment check')
     p.add_argument('--n-align-steps', type=int, default=10,
                    help='Steps per episode in transition alignment check')
+    p.add_argument('--continuous-env', action='store_true', default=False,
+                   help='Force continuous-env mode (auto-detected from metadata otherwise)')
     p.add_argument('--seed',        type=int, default=0)
     args = p.parse_args()
 
@@ -352,6 +420,13 @@ def main() -> None:
             meta = json.load(f)
     else:
         logger.warning('metadata.json not found — skipping summary table.')
+
+    # Auto-detect continuous env from metadata; CLI flag overrides
+    continuous_env = args.continuous_env or (
+        meta.get('environment', {}).get('id') == 'ContinuousCartpoleVisual'
+    )
+    if continuous_env:
+        logger.info('Continuous-env dataset detected — using ContinuousCartpoleVisual for alignment checks')
 
     # Load splits
     all_splits: Dict[str, List[Dict]] = {}
@@ -388,11 +463,13 @@ def main() -> None:
             episodes, split,
             n_episodes=args.n_align_eps,
             n_steps_per_ep=args.n_align_steps,
+            continuous_env=continuous_env,
+            meta=meta,
         )
         all_ok = all_ok and ok
 
         # Check 5: action balance
-        report_action_balance(episodes, split)
+        report_action_balance(episodes, split, continuous_env=continuous_env)
 
         # Check 7: duplicate frames
         check_duplicate_frames(episodes, split)
@@ -409,6 +486,10 @@ def main() -> None:
 
     # Check 4: state distributions
     plot_state_distributions(all_episodes, out_dir)
+
+    # Continuous-action histogram
+    if continuous_env:
+        plot_action_distribution(all_splits[primary_split], out_dir)
 
     # Check 6: GIFs
     save_episode_gifs(all_splits[primary_split], out_dir)

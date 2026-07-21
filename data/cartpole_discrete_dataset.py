@@ -597,8 +597,20 @@ def _build_metadata(
     sources  = np.concatenate([ep['action_source'] for ep in all_eps])
     policies = [f"{ep['policy_type']}_eps{ep['epsilon']:.2f}" for ep in all_eps]
 
-    n_left  = int((actions == 0).sum())
-    n_right = int((actions == 1).sum())
+    if actions.dtype.kind == 'f':
+        # Continuous env: float forces — store descriptive stats, not L/R counts
+        n_left  = 0
+        n_right = 0
+        action_balance_extra = {
+            'force_min':  float(actions.min()),
+            'force_max':  float(actions.max()),
+            'force_mean': float(actions.mean()),
+            'force_std':  float(actions.std()),
+        }
+    else:
+        n_left  = int((actions == 0).sum())
+        n_right = int((actions == 1).sum())
+        action_balance_extra = {}
 
     source_counts = {SRC_NAMES[k]: int(v)
                      for k, v in Counter(sources.tolist()).items()}
@@ -628,6 +640,7 @@ def _build_metadata(
             'n_left':     n_left,
             'n_right':    n_right,
             'frac_right': float(n_right / max(n_left + n_right, 1)),
+            **action_balance_extra,
         },
         'action_source_counts': source_counts,
         'policy_mixture_counts': dict(Counter(policies)),
