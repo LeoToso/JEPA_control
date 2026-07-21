@@ -37,7 +37,7 @@ training:
   # ── State reconstruction: Linear(z) -> (x, xdot, theta, thetadot) ────────
   # Weighted MSE: theta (index 2) gets highest weight — it's the key visual cue.
   # state_encoder_grad_scale controls how much gradient flows back into encoder.
-  lambda_state: 1.0
+  lambda_state: 5.0
   state_loss_weights: [1., 1., 1., 1.]       # uniform — states already normalized
   state_encoder_grad_scale: 1.0
   # ── All other losses off ─────────────────────────────────────────────────
@@ -50,7 +50,7 @@ training:
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
   use_vicreg: true
-  vicreg_lambda: 25.0
+  vicreg_lambda: 5.0
   vicreg_nu: 1.0
   lambda_sigreg: 0.0
   sigreg_num_slices: 32
