@@ -101,19 +101,24 @@ def main() -> None:
     cfg.custom_reset    = args.custom_reset
     cfg.resume          = args.resume
 
-    # Optional mixture overrides
-    for attr, val in [
-        ('frac_expert',           args.frac_expert),
-        ('frac_noisy_005',        args.frac_noisy_005),
-        ('frac_noisy_010',        args.frac_noisy_010),
-        ('frac_noisy_020',        args.frac_noisy_020),
-        ('frac_burst',            args.frac_burst),
-        ('frac_random',           args.frac_random),
-        ('frac_lqr_near_eq',      args.frac_lqr_near_eq),
-        ('lqr_near_eq_angle_range', args.lqr_near_eq_angle_range),
-    ]:
+    # Optional mixture overrides.
+    # If the user supplies ANY fraction explicitly, zero all fractions first so
+    # only the stated ones are active (avoids the "hidden defaults sum over 1"
+    # pitfall when specifying a partial mixture).
+    _mix_attrs = ['frac_expert', 'frac_noisy_005', 'frac_noisy_010',
+                  'frac_noisy_020', 'frac_burst', 'frac_random', 'frac_lqr_near_eq']
+    _mix_vals  = [args.frac_expert, args.frac_noisy_005, args.frac_noisy_010,
+                  args.frac_noisy_020, args.frac_burst, args.frac_random,
+                  args.frac_lqr_near_eq]
+    if any(v is not None for v in _mix_vals):
+        for attr in _mix_attrs:
+            setattr(cfg, attr, 0.0)
+
+    for attr, val in zip(_mix_attrs, _mix_vals):
         if val is not None:
             setattr(cfg, attr, val)
+    if args.lqr_near_eq_angle_range is not None:
+        cfg.lqr_near_eq_angle_range = args.lqr_near_eq_angle_range
 
     # Optional continuous env / friction overrides
     if args.use_continuous_env:
