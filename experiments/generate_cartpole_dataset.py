@@ -58,12 +58,25 @@ def _parse() -> argparse.Namespace:
 
     # Policy mixture overrides
     mix = p.add_argument_group('policy mixture fractions (must sum to 1.0)')
-    mix.add_argument('--frac-expert',    type=float, default=None)
-    mix.add_argument('--frac-noisy-005', type=float, default=None)
-    mix.add_argument('--frac-noisy-010', type=float, default=None)
-    mix.add_argument('--frac-noisy-020', type=float, default=None)
-    mix.add_argument('--frac-burst',     type=float, default=None)
-    mix.add_argument('--frac-random',    type=float, default=None)
+    mix.add_argument('--frac-expert',       type=float, default=None)
+    mix.add_argument('--frac-noisy-005',    type=float, default=None)
+    mix.add_argument('--frac-noisy-010',    type=float, default=None)
+    mix.add_argument('--frac-noisy-020',    type=float, default=None)
+    mix.add_argument('--frac-burst',        type=float, default=None)
+    mix.add_argument('--frac-random',       type=float, default=None)
+    mix.add_argument('--frac-lqr-near-eq',  type=float, default=None,
+                     help='Fraction of near-equilibrium LQR+noise episodes')
+    mix.add_argument('--lqr-near-eq-angle-range', type=float, default=None,
+                     help='Initial pole angle range for near-eq episodes (rad)')
+
+    # Continuous environment / friction overrides
+    cont = p.add_argument_group('continuous environment and friction')
+    cont.add_argument('--use-continuous-env', action='store_true', default=False,
+                      help='Use ContinuousCartpoleVisual instead of discrete CartPole-v1')
+    cont.add_argument('--friction-cart', type=float, default=None,
+                      help='Viscous cart friction coefficient [N·s/m]')
+    cont.add_argument('--friction-pole', type=float, default=None,
+                      help='Viscous pole friction coefficient [N·m·s/rad]')
 
     # Reset range overrides
     rst = p.add_argument_group('custom reset ranges')
@@ -90,12 +103,24 @@ def main() -> None:
 
     # Optional mixture overrides
     for attr, val in [
-        ('frac_expert',    args.frac_expert),
-        ('frac_noisy_005', args.frac_noisy_005),
-        ('frac_noisy_010', args.frac_noisy_010),
-        ('frac_noisy_020', args.frac_noisy_020),
-        ('frac_burst',     args.frac_burst),
-        ('frac_random',    args.frac_random),
+        ('frac_expert',           args.frac_expert),
+        ('frac_noisy_005',        args.frac_noisy_005),
+        ('frac_noisy_010',        args.frac_noisy_010),
+        ('frac_noisy_020',        args.frac_noisy_020),
+        ('frac_burst',            args.frac_burst),
+        ('frac_random',           args.frac_random),
+        ('frac_lqr_near_eq',      args.frac_lqr_near_eq),
+        ('lqr_near_eq_angle_range', args.lqr_near_eq_angle_range),
+    ]:
+        if val is not None:
+            setattr(cfg, attr, val)
+
+    # Optional continuous env / friction overrides
+    if args.use_continuous_env:
+        cfg.use_continuous_env = True
+    for attr, val in [
+        ('friction_cart', args.friction_cart),
+        ('friction_pole', args.friction_pole),
     ]:
         if val is not None:
             setattr(cfg, attr, val)
@@ -111,16 +136,21 @@ def main() -> None:
             setattr(cfg, attr, val)
 
     logger.info('Configuration:')
-    logger.info('  output_dir      = %s', cfg.output_dir)
-    logger.info('  num_transitions = %d', cfg.num_transitions)
-    logger.info('  image_size      = %d', cfg.image_size)
-    logger.info('  custom_reset    = %s', cfg.custom_reset)
-    logger.info('  seed            = %d', cfg.seed)
+    logger.info('  output_dir         = %s', cfg.output_dir)
+    logger.info('  num_transitions    = %d', cfg.num_transitions)
+    logger.info('  image_size         = %d', cfg.image_size)
+    logger.info('  custom_reset       = %s', cfg.custom_reset)
+    logger.info('  seed               = %d', cfg.seed)
+    logger.info('  use_continuous_env = %s', cfg.use_continuous_env)
+    if cfg.use_continuous_env:
+        logger.info('  friction_cart      = %.4f', cfg.friction_cart)
+        logger.info('  friction_pole      = %.4f', cfg.friction_pole)
     logger.info('  policy mixture: expert=%.0f%% noisy5=%.0f%% noisy10=%.0f%%'
-                ' noisy20=%.0f%% burst=%.0f%% random=%.0f%%',
+                ' noisy20=%.0f%% burst=%.0f%% random=%.0f%% lqr_near_eq=%.0f%%',
                 cfg.frac_expert * 100, cfg.frac_noisy_005 * 100,
                 cfg.frac_noisy_010 * 100, cfg.frac_noisy_020 * 100,
-                cfg.frac_burst * 100, cfg.frac_random * 100)
+                cfg.frac_burst * 100, cfg.frac_random * 100,
+                cfg.frac_lqr_near_eq * 100)
 
     generate_dataset(cfg)
 

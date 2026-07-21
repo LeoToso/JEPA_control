@@ -10,11 +10,14 @@ import gymnasium as gym
 class ContinuousCartpoleVisual:
     def __init__(self, frame_skip=1, image_size=64, action_range=(-10.0,10.0),
                  mass_cart=1.0, mass_pole=0.1, pole_length=0.5,
-                 gravity=9.8, dt=0.02, seed=None):
+                 gravity=9.8, dt=0.02,
+                 friction_cart=0.0, friction_pole=0.0,
+                 seed=None):
         self.frame_skip=frame_skip; self.image_size=image_size
         self.action_low,self.action_high=action_range
         self.mass_cart=mass_cart; self.mass_pole=mass_pole
         self.pole_length=pole_length; self.gravity=gravity; self.dt=dt
+        self.friction_cart=friction_cart; self.friction_pole=friction_pole
         self._env=gym.make('CartPole-v1',render_mode='rgb_array')
         self._env.unwrapped.masscart=mass_cart
         self._env.unwrapped.masspole=mass_pole
@@ -59,8 +62,10 @@ class ContinuousCartpoleVisual:
         M=self.mass_cart; m=self.mass_pole; g=self.gravity; l=self.pole_length; dt=self.dt
         sin_t=math.sin(theta); cos_t=math.cos(theta)
         total_mass=M+m; ml=m*l
-        temp=(force+ml*theta_dot**2*sin_t)/total_mass
-        theta_acc=(g*sin_t-cos_t*temp)/(l*(4.0/3.0-m*cos_t**2/total_mass))
+        # Viscous cart friction reduces effective force; viscous pole friction damps θ̈.
+        # Derived from the Lagrangian: b_c acts on ẋ, b_p acts on θ̇ at the pivot.
+        temp=(force - self.friction_cart*x_dot + ml*theta_dot**2*sin_t)/total_mass
+        theta_acc=(g*sin_t - cos_t*temp - self.friction_pole*theta_dot/ml)/(l*(4.0/3.0-m*cos_t**2/total_mass))
         x_acc=temp-ml*theta_acc*cos_t/total_mass
         new_x=x+dt*x_dot; new_x_dot=x_dot+dt*x_acc
         new_theta=theta+dt*theta_dot; new_theta_dot=theta_dot+dt*theta_acc

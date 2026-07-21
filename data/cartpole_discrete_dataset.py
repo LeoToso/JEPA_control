@@ -51,12 +51,15 @@ SRC_NAMES = {0: 'expert', 1: 'flipped', 2: 'burst', 3: 'random'}
 
 # ── Policy schedule (policy_type, epsilon, config_frac_attr) ─────────────────
 _SCHEDULE = [
-    ('expert',  0.00, 'frac_expert'),
-    ('noisy',   0.05, 'frac_noisy_005'),
-    ('noisy',   0.10, 'frac_noisy_010'),
-    ('noisy',   0.20, 'frac_noisy_020'),
-    ('burst',   0.00, 'frac_burst'),
-    ('random',  0.00, 'frac_random'),
+    ('expert',      0.00, 'frac_expert'),
+    ('noisy',       0.05, 'frac_noisy_005'),
+    ('noisy',       0.10, 'frac_noisy_010'),
+    ('noisy',       0.20, 'frac_noisy_020'),
+    ('burst',       0.00, 'frac_burst'),
+    ('random',      0.00, 'frac_random'),
+    # Near-equilibrium episodes: tiny initial pole angle + 20% action noise.
+    # Exposes the unstable mode so the learned Jacobian has rho(A) > 1.
+    ('lqr_near_eq', 0.20, 'frac_lqr_near_eq'),
 ]
 
 
@@ -72,12 +75,20 @@ class DatasetConfig:
     image_crop: bool = False
 
     # Behavior-policy mixture (fractions; must sum to 1.0)
-    frac_expert:    float = 0.20
-    frac_noisy_005: float = 0.20
-    frac_noisy_010: float = 0.25
-    frac_noisy_020: float = 0.20
-    frac_burst:     float = 0.10
-    frac_random:    float = 0.05
+    frac_expert:       float = 0.20
+    frac_noisy_005:    float = 0.20
+    frac_noisy_010:    float = 0.25
+    frac_noisy_020:    float = 0.20
+    frac_burst:        float = 0.10
+    frac_random:       float = 0.05
+    # Near-equilibrium LQR episodes (frac_lqr_near_eq > 0 requires reducing other fracs)
+    frac_lqr_near_eq:        float = 0.0
+    lqr_near_eq_angle_range: float = 0.02  # ±0.02 rad ≈ ±1.1° initial pole angle
+
+    # Physics: continuous env with viscous friction (replaces CartPole-v1 when enabled)
+    use_continuous_env: bool  = False
+    friction_cart:      float = 0.0   # viscous cart friction  [N·s/m]
+    friction_pole:      float = 0.0   # viscous pole friction  [N·m·s/rad]
 
     # Burst-noise parameters
     burst_start_prob: float = 0.03
@@ -116,7 +127,8 @@ class DatasetConfig:
 
     def validate(self) -> None:
         total = (self.frac_expert + self.frac_noisy_005 + self.frac_noisy_010
-                 + self.frac_noisy_020 + self.frac_burst + self.frac_random)
+                 + self.frac_noisy_020 + self.frac_burst + self.frac_random
+                 + self.frac_lqr_near_eq)
         if abs(total - 1.0) > 1e-5:
             raise ValueError(f'Policy fractions must sum to 1.0, got {total:.5f}')
         if not (16 <= self.image_size <= 1024):
@@ -230,16 +242,22 @@ def _preprocess_obs(frame: np.ndarray, cfg: DatasetConfig) -> np.ndarray:
 
 
 def _reset_env(env: gym.Env, cfg: DatasetConfig,
-               rng: np.random.Generator, ep_seed: int
+               rng: np.random.Generator, ep_seed: int,
+               angle_range: Optional[float] = None,
                ) -> Tuple[np.ndarray, np.ndarray]:
-    """Reset env, optionally apply custom state, return (obs_img, state)."""
+    """Reset env, optionally apply custom state, return (obs_img, state).
+
+    angle_range overrides cfg.pole_angle_range when provided (used for
+    lqr_near_eq episodes that start with a much smaller initial pole angle).
+    """
     env.reset(seed=ep_seed)
     if cfg.custom_reset:
+        ar = angle_range if angle_range is not None else cfg.pole_angle_range
         state = np.array([
-            rng.uniform(-cfg.cart_pos_range,   cfg.cart_pos_range),
-            rng.uniform(-cfg.cart_vel_range,    cfg.cart_vel_range),
-            rng.uniform(-cfg.pole_angle_range,  cfg.pole_angle_range),
-            rng.uniform(-cfg.pole_vel_range,    cfg.pole_vel_range),
+            rng.uniform(-cfg.cart_pos_range, cfg.cart_pos_range),
+            rng.uniform(-cfg.cart_vel_range, cfg.cart_vel_range),
+            rng.uniform(-ar,                 ar),
+            rng.uniform(-cfg.pole_vel_range, cfg.pole_vel_range),
         ], dtype=np.float64)
         env.unwrapped.state = state.copy()
     else:
@@ -264,7 +282,9 @@ def _collect_episode(
     Runs until termination or truncation (max 500 steps for CartPole-v1).
     Returns a dict with arrays and scalar metadata.
     """
-    obs, state = _reset_env(env, cfg, rng, ep_seed)
+    near_eq = (policy_type == 'lqr_near_eq')
+    obs, state = _reset_env(env, cfg, rng, ep_seed,
+                             angle_range=cfg.lqr_near_eq_angle_range if near_eq else None)
 
     obs_list:    List[np.ndarray] = [obs]
     state_list:  List[np.ndarray] = [state]
@@ -286,7 +306,7 @@ def _collect_episode(
     while not done:
         if policy_type == 'expert':
             action, src = _expert_action(state, gain), SRC_EXPERT
-        elif policy_type == 'noisy':
+        elif policy_type in ('noisy', 'lqr_near_eq'):
             action, src = _noisy_action(state, gain, epsilon, rng)
         elif policy_type == 'burst':
             action, src = burst_pol.act(state)
@@ -333,18 +353,132 @@ def _collect_episode(
 def _assign_policies(n: int, cfg: DatasetConfig,
                      rng: np.random.Generator) -> List[Tuple[str, float]]:
     """Return a shuffled list of (policy_type, epsilon) for n episodes."""
+    active = [(pt, eps, attr) for pt, eps, attr in _SCHEDULE
+              if getattr(cfg, attr) > 0.0]
     assignments: List[Tuple[str, float]] = []
-    for pt, eps, attr in _SCHEDULE:
+    for pt, eps, attr in active:
         count = max(1, round(getattr(cfg, attr) * n))
         assignments.extend([(pt, eps)] * count)
 
-    # Trim/pad to exactly n
+    # Trim/pad to exactly n using the dominant active policy
+    dominant = max(active, key=lambda s: getattr(cfg, s[2]))
     while len(assignments) < n:
-        dominant = max(_SCHEDULE, key=lambda s: getattr(cfg, s[2]))
         assignments.append((dominant[0], dominant[1]))
     assignments = assignments[:n]
     rng.shuffle(assignments)
     return assignments
+
+
+# ── Continuous-env helpers (friction-aware, continuous-action) ─────────────────
+
+def _make_continuous_env(cfg: DatasetConfig):
+    """Build ContinuousCartpoleVisual with optional viscous friction."""
+    from envs.cartpole_visual import ContinuousCartpoleVisual
+    return ContinuousCartpoleVisual(
+        friction_cart=cfg.friction_cart,
+        friction_pole=cfg.friction_pole,
+    )
+
+
+def _collect_episode_continuous(
+    env,
+    policy_type: str,
+    epsilon: float,
+    cfg: DatasetConfig,
+    rng: np.random.Generator,
+    ep_seed: int,
+    gain: np.ndarray,
+) -> Dict:
+    """Collect one episode using ContinuousCartpoleVisual.
+
+    Actions are raw LQR forces (float32, clipped to env.action_range) instead
+    of binary {0,1}.  Friction physics are handled inside the env.
+    """
+    rng_init = np.random.default_rng(ep_seed)
+    ar = cfg.lqr_near_eq_angle_range if policy_type == 'lqr_near_eq' else cfg.pole_angle_range
+    state0 = np.array([
+        float(rng_init.uniform(-cfg.cart_pos_range, cfg.cart_pos_range)),
+        float(rng_init.uniform(-cfg.cart_vel_range, cfg.cart_vel_range)),
+        float(rng_init.uniform(-ar, ar)),
+        float(rng_init.uniform(-cfg.pole_vel_range, cfg.pole_vel_range)),
+    ], dtype=np.float32)
+    obs, state, _ = env.reset_to_state(state0)
+
+    obs_list:    List[np.ndarray] = [obs]
+    state_list:  List[np.ndarray] = [state]
+    action_list: List[float]      = []
+    reward_list: List[float]      = []
+    term_list:   List[bool]       = []
+    trunc_list:  List[bool]       = []
+    source_list: List[np.uint8]   = []
+    step_list:   List[int]        = []
+
+    burst_remaining = 0
+    burst_action    = 0.0
+
+    t    = 0
+    done = False
+    MAX_STEPS = 500
+
+    while not done and t < MAX_STEPS:
+        u_lqr = float(np.clip(np.dot(gain, state), env.action_low, env.action_high))
+
+        if policy_type == 'expert':
+            action, src = u_lqr, SRC_EXPERT
+        elif policy_type in ('noisy', 'lqr_near_eq'):
+            if rng.random() < epsilon:
+                action = float(rng.uniform(env.action_low, env.action_high))
+                src    = SRC_FLIPPED
+            else:
+                action, src = u_lqr, SRC_EXPERT
+        elif policy_type == 'burst':
+            if burst_remaining > 0:
+                burst_remaining -= 1
+                action, src = burst_action, SRC_BURST
+            elif rng.random() < cfg.burst_start_prob:
+                length = int(rng.integers(cfg.burst_min_len, cfg.burst_max_len + 1))
+                burst_remaining = length - 1
+                burst_action = (-u_lqr if rng.random() < 0.5
+                                else float(rng.uniform(env.action_low, env.action_high)))
+                action, src = burst_action, SRC_BURST
+            else:
+                action, src = u_lqr, SRC_EXPERT
+        else:  # random
+            action = float(rng.uniform(env.action_low, env.action_high))
+            src    = SRC_RANDOM
+
+        next_obs, next_state, reward, terminated, _ = env.step(action)
+        truncated = (t + 1 >= MAX_STEPS) and not terminated
+
+        action_list.append(float(action))
+        reward_list.append(float(reward))
+        term_list.append(bool(terminated))
+        trunc_list.append(bool(truncated))
+        source_list.append(src)
+        step_list.append(t)
+        obs_list.append(next_obs)
+        state_list.append(next_state)
+
+        state = next_state
+        t    += 1
+        done  = terminated or truncated
+
+    T = len(action_list)
+    return {
+        'observations':  np.stack(obs_list).astype(np.uint8),
+        'actions':       np.array(action_list, dtype=np.float32),   # float32, not uint8
+        'states':        np.stack(state_list).astype(np.float32),
+        'rewards':       np.array(reward_list, dtype=np.float32),
+        'terminated':    np.array(term_list,   dtype=np.bool_),
+        'truncated':     np.array(trunc_list,  dtype=np.bool_),
+        'action_source': np.array(source_list, dtype=np.uint8),
+        'timesteps':     np.array(step_list,   dtype=np.int32),
+        'policy_type':   policy_type,
+        'epsilon':       float(epsilon),
+        'ep_seed':       int(ep_seed),
+        'length':        T,
+        'success':       bool(trunc_list[-1]) if trunc_list else False,
+    }
 
 
 # ── Expert verification ───────────────────────────────────────────────────────
@@ -353,11 +487,16 @@ def _verify_expert(gain: np.ndarray, cfg: DatasetConfig,
                    rng: np.random.Generator, n_trials: int = 10) -> None:
     """Run n_trials expert episodes and report success rate."""
     logger.info('Verifying expert policy (%d trials)...', n_trials)
-    env = _make_env(cfg.seed + 99999)
+    if cfg.use_continuous_env:
+        env = _make_continuous_env(cfg)
+        _collect = _collect_episode_continuous
+    else:
+        env = _make_env(cfg.seed + 99999)
+        _collect = _collect_episode
     successes, lengths = 0, []
     for i in range(n_trials):
-        ep = _collect_episode(env, 'expert', 0.0, cfg, rng,
-                              ep_seed=cfg.seed + 99999 + i, gain=gain)
+        ep = _collect(env, 'expert', 0.0, cfg, rng,
+                      ep_seed=cfg.seed + 99999 + i, gain=gain)
         if ep['success']:
             successes += 1
         lengths.append(ep['length'])
@@ -508,7 +647,7 @@ def _build_metadata(
             'num_transitions':    cfg.num_transitions,
         },
         'environment': {
-            'id':                'CartPole-v1',
+            'id':                'ContinuousCartpoleVisual' if cfg.use_continuous_env else 'CartPole-v1',
             'gymnasium_version': cfg.gymnasium_version,
             'force_mag':         10.0,
             'gravity':           9.8,
@@ -517,6 +656,10 @@ def _build_metadata(
             'length':            0.5,
             'tau':               0.02,
             'max_episode_steps': 500,
+            'friction_cart':     cfg.friction_cart,
+            'friction_pole':     cfg.friction_pole,
+            'frac_lqr_near_eq':        cfg.frac_lqr_near_eq,
+            'lqr_near_eq_angle_range': cfg.lqr_near_eq_angle_range,
         },
         'generation_timestamp': cfg.generation_timestamp,
     }
@@ -550,6 +693,14 @@ def generate_dataset(cfg: DatasetConfig) -> None:
     gain = _compute_expert_gain()
     _verify_expert(gain, cfg, rng)
 
+    if cfg.use_continuous_env:
+        logger.info('Using ContinuousCartpoleVisual  '
+                    'friction_cart=%.3f  friction_pole=%.4f',
+                    cfg.friction_cart, cfg.friction_pole)
+        _collect = _collect_episode_continuous
+    else:
+        _collect = _collect_episode
+
     # Pre-generate a large pool of (policy_type, epsilon) assignments and seeds
     pool_size   = max(500, cfg.num_transitions // 50)
     assignments = _assign_policies(pool_size, cfg, rng)
@@ -573,7 +724,7 @@ def generate_dataset(cfg: DatasetConfig) -> None:
             logger.warning('Could not read resume state: %s', exc)
             start_ep = 0
 
-    env = _make_env(cfg.seed)
+    env = _make_continuous_env(cfg) if cfg.use_continuous_env else _make_env(cfg.seed)
 
     pbar = tqdm(
         total=cfg.num_transitions,
@@ -589,7 +740,7 @@ def generate_dataset(cfg: DatasetConfig) -> None:
 
         pt, eps   = assignments[ep_idx]
         ep_seed   = int(ep_seeds[ep_idx])
-        ep        = _collect_episode(env, pt, eps, cfg, rng, ep_seed, gain)
+        ep        = _collect(env, pt, eps, cfg, rng, ep_seed, gain)
         ep['global_ep_id'] = ep_idx
         episodes.append(ep)
 
