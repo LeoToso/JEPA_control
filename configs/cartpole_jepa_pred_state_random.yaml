@@ -18,11 +18,11 @@ model:
   frame_stack: 2
   predictor_window: 5
   vit_embed_dim: 128
-  vit_depth: 2
+  vit_depth: 4
   vit_num_heads: 4
   predictor_type: transformer
   predictor_embed_dim: 128
-  predictor_depth: 2
+  predictor_depth: 3
   predictor_num_heads: 4
   predictor_mlp_ratio: 4.0
 
@@ -53,7 +53,7 @@ training:
   vicreg_lambda: 5.0
   vicreg_nu: 1.0
   lambda_pred_vicreg: 0.0
-  lambda_sigreg: 25.0
+  lambda_sigreg: 10.0
   sigreg_num_slices: 64
   sigreg_num_points: 9
   sigreg_all_steps: true
