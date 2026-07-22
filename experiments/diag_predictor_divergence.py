@@ -147,10 +147,15 @@ def main():
         obs_next, state_next, _, done, _ = env.step(0.0)
         z_real = encode(obs_next, obs)
 
-        # Predictor: use the PREVIOUS W real latents (oracle window, best case)
+        # Predictor: use the PREVIOUS W real latents (oracle window, best case).
+        # Pad with z0 copies if fewer than W real latents are available.
+        past = real_z[:]  # all latents recorded so far (not including current z_real)
+        while len(past) < W:
+            past = [past[0]] + past  # prepend oldest
+        win_entries = past[-W:]  # W most recent past latents
         z_win_real = torch.stack(
             [torch.tensor(zz, device=device).float().unsqueeze(0)
-             for zz in (real_z[-(W-1):] + [z_prev_real])[-W:]], dim=1)  # (1, W, d)
+             for zz in win_entries], dim=1)  # (1, W, d)
         u_win_zero = torch.zeros(1, W, 1, device=device)
         with torch.no_grad():
             z_pred_next = model.predict(z_win_real, u_win_zero).cpu().numpy()[0]
