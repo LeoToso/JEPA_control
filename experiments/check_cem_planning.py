@@ -102,7 +102,9 @@ def main():
         _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
                       'encoder_type', 'patch_size', 'frame_stack',
                       'vit_embed_dim', 'vit_depth', 'vit_num_heads',
-                      'predictor_hidden_dim', 'predictor_n_layers', 'predictor_window')
+                      'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
+                      'predictor_window', 'predictor_embed_dim', 'predictor_depth',
+                      'predictor_num_heads', 'predictor_mlp_ratio')
         for _k in _arch_keys:
             if _k in _ckpt_cfg and _ckpt_cfg[_k] != model_cfg.get(_k):
                 print(f'[model] arch override: {_k}={_ckpt_cfg[_k]}  (yaml had {model_cfg.get(_k)})')
@@ -121,10 +123,14 @@ def main():
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
+        predictor_type=model_cfg.get('predictor_type', 'mlp'),
         predictor_hidden_dim=int(model_cfg.get('predictor_hidden_dim', 64)),
         predictor_n_layers=int(model_cfg.get('predictor_n_layers', 3)),
         predictor_window=int(model_cfg.get('predictor_window', 5)),
-        predictor_residual=bool(model_cfg.get('predictor_residual', False)),
+        predictor_embed_dim=int(model_cfg.get('predictor_embed_dim', 128)),
+        predictor_depth=int(model_cfg.get('predictor_depth', 4)),
+        predictor_num_heads=int(model_cfg.get('predictor_num_heads', 4)),
+        predictor_mlp_ratio=float(model_cfg.get('predictor_mlp_ratio', 4.0)),
     )
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
@@ -182,6 +188,15 @@ def main():
     c_drift_aug     = np.concatenate([c_drift_partial,
                                       np.zeros((W - 1) * d)])           # (W*d,)
     print(f'[control] fp_err={fp_err:.4f}')
+
+    # Project B through the action encoder so CEM receives scalar (1-D) actions.
+    # B_jac / B_aug have shape (d, action_latent_dim) or (W*d, action_latent_dim).
+    # W_enc maps scalar action → latent action: shape (action_latent_dim, 1).
+    if hasattr(model.action_encoder, 'W'):
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
+        B_jac = B_jac @ W_enc   # (d, 1)
+        B_aug = B_aug @ W_enc   # (W*d, 1)
+        print(f'[control] projected B through action encoder: B_jac {B_jac.shape}  B_aug {B_aug.shape}')
 
     # Pre-stabilise: try augmented first; fall back to partial if no unstable modes found
     from control.lqr import pre_stabilize_A
