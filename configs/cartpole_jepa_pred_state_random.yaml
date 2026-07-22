@@ -52,6 +52,7 @@ training:
   use_vicreg: true
   vicreg_lambda: 5.0
   vicreg_nu: 1.0
+  lambda_pred_vicreg: 5.0
   lambda_sigreg: 0.0
   sigreg_num_slices: 32
   sigreg_num_points: 9

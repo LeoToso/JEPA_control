@@ -75,6 +75,7 @@ class Trainer:
         self.use_vicreg    = bool(self.cfg.get('use_vicreg', False))
         self.vicreg_lambda = float(self.cfg.get('vicreg_lambda', 25.0))
         self.vicreg_nu     = float(self.cfg.get('vicreg_nu',      1.0))
+        self.lambda_pred_vicreg = float(self.cfg.get('lambda_pred_vicreg', 0.0))
         self.lambda_sigreg      = float(self.cfg.get('lambda_sigreg', 0.0))
         self.sigreg_num_slices  = int(self.cfg.get('sigreg_num_slices', 128))
         self.sigreg_num_points  = int(self.cfg.get('sigreg_num_points', 17))
@@ -393,6 +394,7 @@ class Trainer:
         u_win_buf = [torch.zeros(B, 1, device=self.device)] * (W - 1)    # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)
+        _pred_z_hats = [] if self.lambda_pred_vicreg > 0 else None
         for k in range(H):
             u_k = actions[:, k]                                # (B, 1)
             u_win_buf.append(u_k)                              # current action into window first
@@ -401,6 +403,8 @@ class Trainer:
             z_hat = self.model.predict(z_stack, u_stack)       # (B, d)
             pred_loss = pred_loss + F.mse_loss(z_hat, z_targets[:, k])
             z_win_buf.append(z_hat)
+            if _pred_z_hats is not None:
+                _pred_z_hats.append(z_hat)
         pred_loss = pred_loss / H
 
         total_loss = self.lambda_pred * pred_loss
@@ -422,6 +426,22 @@ class Trainer:
             total_loss = total_loss + vic_loss
             info.update(vic_info)
             info['vicreg_total'] = vic_loss.item()
+
+        # VICReg on predictor outputs — prevents predictor from collapsing to conditional mean.
+        # The predictor is NOT covered by the encoder VICReg above; without this it learns to
+        # output the conditional mean of training targets (z_pred flatlines at ~z*-offset).
+        if self.lambda_pred_vicreg > 0 and _pred_z_hats:
+            from losses.prediction import vicreg_collapse_loss
+            z_pred_all = torch.cat(_pred_z_hats, dim=0)   # (B*H, d)
+            pred_vic_loss, pred_vic_info = vicreg_collapse_loss(
+                z_pred_all,
+                lambda_var=self.vicreg_lambda,
+                nu_cov=self.vicreg_nu,
+            )
+            total_loss = total_loss + self.lambda_pred_vicreg * pred_vic_loss
+            info['pred_vicreg_var'] = pred_vic_info['vicreg_var']
+            info['pred_vicreg_cov'] = pred_vic_info['vicreg_cov']
+            info['pred_vicreg_total'] = pred_vic_loss.item()
 
         # SIGreg: Sketched Isotropic Gaussian Regularisation (LeJEPA, 2025).
         # Enforces z ~ N(0,I) via Epps-Pulley test on random 1-D projections.
