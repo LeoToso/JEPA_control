@@ -211,13 +211,13 @@ def main():
 
     # Use augmented Jacobian when rho(A_aug) > 1 — the unstable mode lives in the
     # history coupling and the partial 8×8 Jacobian misses it entirely.
-    # Note: n_def_aug=0 is CORRECT when the unstable mode is physical (within tol
-    # of GT eigenvalue); pre_stabilize_A leaves physical modes for DARE to handle.
+    # CEM is sampling-based (no DARE), so we use the RAW (non-deflated) A for
+    # planning.  pre_stabilize_A is printed for diagnostic purposes only.
     use_aug = (rho_aug > 1.0)
     if use_aug:
         print(f'[control] → using augmented ({W*d}D) Jacobian for CEM  '
-              f'ρ={rho_aug:.4f}>1  phantom_deflated={n_def_aug}')
-        A_plan   = A_aug_stab
+              f'ρ={rho_aug:.4f}>1  (using raw A_aug, not deflated)')
+        A_plan   = A_aug      # raw, not pre-stabilized
         B_plan   = B_aug
         c_plan   = c_drift_aug
         d_plan   = W * d
@@ -225,7 +225,7 @@ def main():
     else:
         print(f'[control] → using partial ({d}D) Jacobian for CEM  '
               f'ρ(aug)={rho_aug:.4f}≤1')
-        A_plan   = A_stab
+        A_plan   = A_jac      # raw, not pre-stabilized
         B_plan   = B_jac
         c_plan   = c_drift_partial
         d_plan   = d
