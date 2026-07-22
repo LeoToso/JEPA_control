@@ -75,6 +75,14 @@ def main():
     action_ub   = float(env_cfg['action_range'][1])
     horizon     = args.horizon or int(cem_cfg.get('horizon', 25))
 
+    # Action normalization: training may have divided actions by action_scale.
+    # CEM applies raw actions to the environment but must pass normalized actions
+    # to the model (linear B matrix or nonlinear predictor).
+    train_cfg = cfg.get('training', {})
+    normalize_actions = bool(train_cfg.get('normalize_actions', False))
+    action_scale = max(abs(action_lb), abs(action_ub)) if normalize_actions else 1.0
+    print(f'[control] normalize_actions={normalize_actions}  action_scale={action_scale}')
+
     # Ground truth for pre-stabilisation
     from ground_truth.cartpole_gt import CartpoleGroundTruth
     gt = CartpoleGroundTruth(
@@ -237,6 +245,12 @@ def main():
         z_star_plan = z_star
         print(f'[control] → nonlinear CEM mode  predictor_window={W}  Q is {d}×{d}')
 
+    # For linear mode: B was computed w.r.t. normalized action (u_norm = u_raw/action_scale).
+    # Divide B by action_scale so CEM can use raw actions directly.
+    if not args.nonlinear and action_scale != 1.0:
+        B_plan = B_plan / action_scale
+        print(f'[control] B_plan scaled by 1/{action_scale}  ||B_plan||={np.linalg.norm(B_plan):.4f}')
+
     # CEM
     from control.cem import CEMLatentPlanner
     from control.rollout import evaluate_stabilization_mpc
@@ -302,6 +316,7 @@ def main():
             warm_start_sigma=0.5,
             action_lb=action_lb,
             action_ub=action_ub,
+            action_scale=action_scale,
             device=device,
         )
     else:

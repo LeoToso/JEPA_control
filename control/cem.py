@@ -57,6 +57,7 @@ class CEMLatentPlanner:
         warm_start_sigma: float = 0.5,
         action_lb: float = -10.0,
         action_ub: float = 10.0,
+        action_scale: float = 1.0,
         device=None,
     ):
         self.horizon          = horizon
@@ -68,6 +69,7 @@ class CEMLatentPlanner:
         self.warm_start_sigma = warm_start_sigma
         self.action_lb        = action_lb
         self.action_ub        = action_ub
+        self._action_scale    = float(action_scale)
         self._prev_mu: Optional[torch.Tensor] = None
 
         self._linear_mode = A is not None
@@ -124,25 +126,28 @@ class CEMLatentPlanner:
             dz = z - z_star
             return dz @ self._A.T + u @ self._B.T + z_star + self._c
         else:
-            # Markov (W=1) nonlinear path — kept for backward compatibility
+            # Markov (W=1) nonlinear path — kept for backward compatibility.
+            # Model was trained on normalized actions; apply action_scale here.
             with torch.no_grad():
-                a = self.action_encoder(u)   # (N, d_a)
-                return self.predictor(z, a)  # (N, d)
+                a = self.action_encoder(u / self._action_scale)   # (N, d_a)
+                return self.predictor(z, a)                        # (N, d)
 
     def _step_windowed(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
         """Windowed nonlinear step.
-        z_win: (N, W, d)  u_win: (N, W, 1)
+        z_win: (N, W, d)  u_win: (N, W, 1)  — u_win contains RAW actions.
         Returns z_next: (N, d)
         Assumes self.predictor is a JEPAModel (has .predict()) or MLPPredictor directly.
+        Model was trained on normalized actions; divide by action_scale before passing.
         """
+        u_norm = u_win / self._action_scale   # normalize: raw → model units
         with torch.no_grad():
             # Check if predictor has a predict() method (JEPAModel) or is raw MLPPredictor
             if hasattr(self.predictor, 'predict'):
-                return self.predictor.predict(z_win, u_win)
+                return self.predictor.predict(z_win, u_norm)
             else:
                 # Raw MLPPredictor: encode actions then call predictor
                 N, W, d = z_win.shape
-                u_flat = u_win.reshape(N * W, 1)
+                u_flat = u_norm.reshape(N * W, 1)
                 a_flat = self.action_encoder(u_flat)
                 d_a = a_flat.shape[-1]
                 a_win = a_flat.reshape(N, W, d_a)
