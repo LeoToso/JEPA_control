@@ -49,12 +49,12 @@ training:
   lambda_fp: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  use_vicreg: true
+  use_vicreg: false
   vicreg_lambda: 5.0
   vicreg_nu: 1.0
-  lambda_pred_vicreg: 5.0
-  lambda_sigreg: 0.0
-  sigreg_num_slices: 32
+  lambda_pred_vicreg: 0.0
+  lambda_sigreg: 25.0
+  sigreg_num_slices: 64
   sigreg_num_points: 9
   sigreg_all_steps: true
   lambda_mirror: 0.0
@@ -69,7 +69,7 @@ training:
   lambda_temp: 0.0
   # ── Training dynamics ─────────────────────────────────────────────────────
   use_target_encoder: false
-  detach_targets: true
+  detach_targets: false
   target_encoder_momentum: 0.996
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
