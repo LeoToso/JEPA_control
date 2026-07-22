@@ -76,9 +76,9 @@ training:
   predictor_window: 5
   num_workers: 8        # parallel dataloader workers (match SLURM --cpus-per-task)
   checkpoint_every: 10
-  warmup_epochs: 0
-  warmup_lambda_state: 0.0
-  freeze_encoder_epochs: 9999  # freeze encoder for entire stage-2 run
+  warmup_epochs: 1          # must be >0 to enter the freeze logic branch
+  warmup_lambda_state: 0.0  # no loss during warmup epoch, encoder stays at ep120 init
+  freeze_encoder_epochs: 9999  # freeze encoder immediately after 1-epoch warmup
   encoder_lr_unfreeze_mult: 1.0
   jacobian_every: 10
   rho_max_init: 1.5
