@@ -985,6 +985,9 @@ class Trainer:
         # After warmup, optionally freeze the encoder for N epochs so the predictor
         # learns dynamics on the theta-encoding latent space without disturbing it.
         freeze_enc_epochs   = int(self.cfg.get('freeze_encoder_epochs', 0))
+        # Stage-1→2 transition: freeze encoder at a specific epoch without
+        # affecting the loss schedule (unlike warmup which disables pred_loss).
+        freeze_encoder_at   = int(self.cfg.get('freeze_encoder_at_epoch', 0))
         _encoder_frozen     = False
         _saved_lambdas = (
             self.lambda_pred, self.lambda_state, self.lambda_spec,
@@ -1036,6 +1039,15 @@ class Trainer:
                         self.optimizer.param_groups[0]['lr'] *= enc_lr_mult
                     print(f'[train] Encoder unfrozen at epoch {epoch+1}'
                           f'  (lr_mult={enc_lr_mult})')
+
+            # Stage-1→2 transition: freeze encoder at a fixed epoch (independent
+            # of warmup), keeping all losses active before and after the freeze.
+            if freeze_encoder_at > 0 and epoch == freeze_encoder_at and not _encoder_frozen:
+                for p in self.model.encoder.parameters():
+                    p.requires_grad_(False)
+                _encoder_frozen = True
+                print(f'[train] Stage-2: encoder frozen at epoch {epoch+1} '
+                      f'(freeze_encoder_at_epoch={freeze_encoder_at})')
 
             # Update ρ_max from growth rates collected during the previous epoch.
             if self.lambda_unstable > 0 and len(self._rho_buffer) > 10:
