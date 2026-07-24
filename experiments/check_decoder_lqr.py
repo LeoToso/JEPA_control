@@ -88,8 +88,10 @@ def main():
                    help='LQR state cost diagonal (physical units)')
     p.add_argument('--lqr-R',     type=float, default=0.01,
                    help='LQR action cost')
-    p.add_argument('--n-probe-steps', type=int, default=None,
-                   help='Deprecated alias for --probe-ep-len (ignored)')
+    p.add_argument('--dataset-dir', default=None,
+                   help='Path to HDF5 dataset dir (train.hdf5 / val.hdf5). '
+                        'If given, encoder is run on the stored images for a much '
+                        'larger and more diverse (z, state) probe set.')
     p.add_argument('--seed',       type=int,   default=42)
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default=None)
@@ -178,26 +180,57 @@ def main():
             return encoder(inp).cpu().numpy()[0]
 
     # ── Collect (z, physical_state) pairs for decoder fitting ────────────────
-    print(f'[probe] collecting {args.n_probe_rollouts} rollouts × {args.probe_ep_len} steps ...')
-    rng_p  = np.random.RandomState(args.seed + 1)
     Zs, Ss = [], []
-    for ep in range(args.n_probe_rollouts):
-        theta0 = rng_p.uniform(-0.8, 0.8)
-        x0     = np.array([rng_p.uniform(-0.5, 0.5), rng_p.uniform(-0.2, 0.2),
-                            theta0, rng_p.uniform(-0.3, 0.3)], dtype=np.float32)
-        obs, state, _ = env.reset_to_state(x0)
-        prev_obs = obs.copy()
-        for _ in range(args.probe_ep_len):
-            z = _encode(obs, prev_obs)
-            Zs.append(z.copy())
-            Ss.append(state.copy())
-            u_raw = rng_p.uniform(action_lb, action_ub)
-            obs_next, state_next, _, done, _ = env.step(u_raw)
+
+    if args.dataset_dir is not None:
+        # Load from HDF5 training data — much larger and more diverse than rollouts.
+        # Format: one HDF5 group per episode with datasets 'observations' (T, H, W, C)
+        # and 'states' (T, 4).  We try train.hdf5 first, then val.hdf5.
+        import h5py
+        ds_dir = Path(args.dataset_dir)
+        hdf5_paths = [ds_dir / 'train.hdf5', ds_dir / 'val.hdf5',
+                      ds_dir / 'train.h5', ds_dir / 'val.h5']
+        hdf5_path  = next((p for p in hdf5_paths if p.exists()), None)
+        if hdf5_path is None:
+            raise FileNotFoundError(f'No train.hdf5/val.hdf5 found in {ds_dir}')
+        print(f'[probe] loading from {hdf5_path} ...')
+        with h5py.File(hdf5_path, 'r') as f:
+            ep_keys = sorted(f.keys())
+            n_loaded = 0
+            for ep_key in ep_keys:
+                grp       = f[ep_key]
+                obs_all   = grp['observations'][:]   # (T+1, H, W, C) uint8
+                states_all = grp['states'][:]        # (T+1, 4)
+                T = obs_all.shape[0]
+                for t in range(1, T):               # t=1: prev=t-1, curr=t
+                    prev_obs_hdf5 = obs_all[t - 1]
+                    curr_obs_hdf5 = obs_all[t]
+                    z = _encode(curr_obs_hdf5, prev_obs_hdf5)
+                    Zs.append(z.copy())
+                    Ss.append(states_all[t].astype(np.float64))
+                    n_loaded += 1
+        print(f'[probe] loaded {n_loaded} (z, s) pairs from {len(ep_keys)} episodes')
+    else:
+        print(f'[probe] collecting {args.n_probe_rollouts} rollouts × {args.probe_ep_len} steps ...')
+        rng_p = np.random.RandomState(args.seed + 1)
+        for ep in range(args.n_probe_rollouts):
+            theta0 = rng_p.uniform(-0.8, 0.8)
+            x0     = np.array([rng_p.uniform(-0.5, 0.5), rng_p.uniform(-0.2, 0.2),
+                                theta0, rng_p.uniform(-0.3, 0.3)], dtype=np.float32)
+            obs, state, _ = env.reset_to_state(x0)
             prev_obs = obs.copy()
-            obs = obs_next
-            state = state_next
-            if done:
-                break
+            for _ in range(args.probe_ep_len):
+                z = _encode(obs, prev_obs)
+                Zs.append(z.copy())
+                Ss.append(state.copy())
+                u_raw = rng_p.uniform(action_lb, action_ub)
+                obs_next, state_next, _, done, _ = env.step(u_raw)
+                prev_obs = obs.copy()
+                obs = obs_next
+                state = state_next
+                if done:
+                    break
+        print(f'[probe] collected {len(Zs)} (z, s) pairs from {args.n_probe_rollouts} rollouts')
 
     Z = np.array(Zs, dtype=np.float64)   # (N, d)
     S = np.array(Ss, dtype=np.float64)   # (N, 4)
