@@ -31,24 +31,27 @@ import yaml
 class DecoderLQRController:
     """Apply GT-LQR on z decoded to physical state.
 
-    Control law: u = -K_gt @ D_weight @ (z - z_star)
+    Control law: u = gain_scale * (-K_gt @ D_weight @ (z - z_star))
     where (z - z_star) is the deviation from the encoded equilibrium.
     Using deviations rather than absolute z eliminates any decoder bias
     at the reference point.
 
     Parameters
     ----------
-    D_weight : (4, d) decoder weight matrix
-    z_star   : (d,) encoded equilibrium latent state
-    K_gt     : (1, 4) GT-LQR gain
+    D_weight   : (4, d) decoder weight matrix
+    z_star     : (d,) encoded equilibrium latent state
+    K_gt       : (1, 4) GT-LQR gain
+    gain_scale : scalar multiplier applied to u before clipping (default 1.0)
     action_lb/ub : raw action bounds
     """
 
     def __init__(self, D_weight, z_star, K_gt,
+                 gain_scale: float = 1.0,
                  action_lb=-10.0, action_ub=10.0):
         self.D_weight  = D_weight         # (4, d)
         self._z_star   = z_star           # (d,)
         self.K_gt      = K_gt             # (1, 4)
+        self.gain_scale = float(gain_scale)
         self.action_lb = action_lb
         self.action_ub = action_ub
         # Fake A so rollout_latent_mpc infers W_aug=1 (we don't use augmented state)
@@ -57,9 +60,9 @@ class DecoderLQRController:
         self._n_steps = 0
 
     def plan(self, z_t: np.ndarray, z_star: np.ndarray):
-        delta_z = z_t - self._z_star               # (d,) deviation from equilibrium
-        s_hat   = self.D_weight @ delta_z           # (4,) decoded physical deviation
-        u_raw   = float(-(self.K_gt @ s_hat)[0])
+        delta_z = z_t - self._z_star                       # (d,) deviation from equilibrium
+        s_hat   = self.D_weight @ delta_z                   # (4,) decoded physical deviation
+        u_raw   = float(-(self.K_gt @ s_hat)[0]) * self.gain_scale
         clipped = float(np.clip(u_raw, self.action_lb, self.action_ub))
         self._n_sat   += int(abs(u_raw) >= self.action_ub - 1e-6)
         self._n_steps += 1
@@ -95,6 +98,18 @@ def main():
     p.add_argument('--max-probe-eps', type=int, default=50,
                    help='Max episodes to load from HDF5 (batched encoding per episode). '
                         '50 eps × 500 steps = 25k pairs, takes ~30 s on GPU.')
+    p.add_argument('--gain-scale',  type=float, default=1.0,
+                   help='Multiply the raw LQR action by this factor before clipping. '
+                        'Use to compensate for global-vs-local decoder scale mismatch. '
+                        'Try 20–50 to test if controller direction is correct.')
+    p.add_argument('--jacobian-probe', action='store_true', default=False,
+                   help='Replace global decoder with a near-equilibrium Jacobian probe. '
+                        'Filters to pairs with |theta| < --near-eq-theta, computes '
+                        'deviations (Δz, Δs), and fits Δs = D @ Δz (no bias). '
+                        'This gives the correct LOCAL scale near the fixed point.')
+    p.add_argument('--near-eq-theta', type=float, default=0.15,
+                   help='|theta| threshold (rad) for near-equilibrium pair filtering '
+                        'when --jacobian-probe is active.')
     p.add_argument('--seed',       type=int,   default=42)
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default=None)
@@ -290,6 +305,46 @@ def main():
           f'x={s_eq_decoded[0]:.3f}  xdot={s_eq_decoded[1]:.3f}  '
           f'theta={s_eq_decoded[2]:.3f} rad  thetadot={s_eq_decoded[3]:.3f}')
 
+    # ── Near-equilibrium Jacobian probe (optional) ────────────────────────────
+    # Fit Δs = D_local @ Δz using only near-equilibrium pairs.
+    # This captures the local scale of the encoder near z* and corrects the
+    # global decoder's tendency to underestimate small-angle deviations.
+    if args.jacobian_probe:
+        near_eq_mask = np.abs(S[:, 2]) < args.near_eq_theta
+        n_near = int(near_eq_mask.sum())
+        print(f'[jacobian-probe] near-eq pairs (|θ|<{args.near_eq_theta:.2f} rad): '
+              f'{n_near} / {N_pairs}')
+        if n_near < 20:
+            print('[jacobian-probe] WARNING: fewer than 20 near-eq pairs — '
+                  'Jacobian will be poorly conditioned; falling back to global decoder.')
+            D_weight_use = D_weight
+        else:
+            Zn = Z[near_eq_mask]         # (M, d)
+            Sn = S[near_eq_mask]         # (M, 4)
+            # Deviations from equilibrium (s* ≈ 0 for CartPole)
+            dZ = Zn - z_star_arr[None, :]    # (M, d)
+            dS = Sn                          # (M, 4)  (s* = 0)
+            # Fit Δs ≈ dZ @ D_local.T  (no bias — deviation-space fitting)
+            D_local_T, _, _, _ = np.linalg.lstsq(dZ, dS, rcond=None)
+            D_weight_use = D_local_T.T   # (4, d)
+
+            # Diagnostics: R² on near-eq subset
+            dS_pred_local = dZ @ D_local_T      # (M, 4)
+            ss_res_l = np.sum((dS - dS_pred_local) ** 2, axis=0)
+            ss_tot_l = np.sum((dS - dS.mean(0)) ** 2, axis=0)
+            r2_local = 1.0 - ss_res_l / (ss_tot_l + 1e-12)
+            print(f'[jacobian-probe] local R² (near-eq): '
+                  f'x={r2_local[0]:.3f}  xdot={r2_local[1]:.3f}  '
+                  f'theta={r2_local[2]:.3f}  thetadot={r2_local[3]:.3f}')
+
+            # Compare scale: norm of local vs global decoder for theta channel
+            scale_ratio = (np.linalg.norm(D_weight_use[2]) /
+                           (np.linalg.norm(D_weight[2]) + 1e-12))
+            print(f'[jacobian-probe] ||D_local[theta]|| / ||D_global[theta]||'
+                  f' = {scale_ratio:.2f}x  (should be ~43 to fix the scale issue)')
+    else:
+        D_weight_use = D_weight
+
     # ── Ground-truth LQR gain ─────────────────────────────────────────────────
     from ground_truth.cartpole_gt import CartpoleGroundTruth
     gt = CartpoleGroundTruth(
@@ -307,16 +362,19 @@ def main():
     print(f'[GT-LQR] K={np.round(K_gt[0], 4)}  ρ(A_cl_GT)={rho_cl_gt:.4f}')
 
     # The decoder maps z - z* → physical state deviation.
-    # Control: u = -K_gt @ D_weight @ (z - z*).
-    # Effective gain in latent space: K_eff = K_gt @ D_weight  (1, d).
-    K_eff_latent = K_gt @ D_weight   # (1, d)
+    # Control: u = gain_scale * (-K_gt @ D_weight_use @ (z - z*)).
+    # Effective gain in latent space: K_eff = K_gt @ D_weight_use  (1, d).
+    K_eff_latent = K_gt @ D_weight_use   # (1, d)
     print(f'[GT-LQR] ||K_eff_latent||={np.linalg.norm(K_eff_latent):.4f}  '
-          f'max_u at ||Δz||=0.1: {float(np.linalg.norm(K_eff_latent))*0.1:.3f} N')
+          f'max_u at ||Δz||=0.1: {float(np.linalg.norm(K_eff_latent))*0.1:.3f} N'
+          f'  gain_scale={args.gain_scale:.1f}'
+          f'  => effective max_u: {float(np.linalg.norm(K_eff_latent))*0.1*args.gain_scale:.3f} N')
 
     # ── Build controller ──────────────────────────────────────────────────────
     ctrl = DecoderLQRController(
-        D_weight=D_weight, z_star=z_star_arr,
+        D_weight=D_weight_use, z_star=z_star_arr,
         K_gt=K_gt,
+        gain_scale=args.gain_scale,
         action_lb=action_lb, action_ub=action_ub,
     )
 
@@ -325,7 +383,9 @@ def main():
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
-    print(f'\n[eval] Decoder-LQR  Q_diag={args.lqr_Q_diag}  R={args.lqr_R}  '
+    decoder_tag = ('jacobian-probe' if args.jacobian_probe else 'global')
+    print(f'\n[eval] Decoder-LQR  decoder={decoder_tag}  gain_scale={args.gain_scale}  '
+          f'Q_diag={args.lqr_Q_diag}  R={args.lqr_R}  '
           f'n_trials={args.n_trials}  T={args.T}')
 
     # rollout_latent_mpc uses mpc.A.shape[0] to infer d_mpc.
