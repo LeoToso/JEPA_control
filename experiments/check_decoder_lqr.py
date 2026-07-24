@@ -163,6 +163,12 @@ def main():
                    help='Path to HDF5 dataset dir (train.hdf5 / val.hdf5). '
                         'If given, encoder is run on the stored images for a much '
                         'larger and more diverse (z, state) probe set.')
+    p.add_argument('--use-checkpoint-state-head', action='store_true', default=False,
+                   help='Load the pre-trained state_head (Linear(d,4)) from the '
+                        'checkpoint instead of fitting a new linear probe. '
+                        'Only works for checkpoints saved after the trainer fix '
+                        'that adds state_head_state to the payload. '
+                        'Skipped silently if state_head_state is not in the checkpoint.')
     p.add_argument('--max-probe-eps', type=int, default=50,
                    help='Max episodes to load from HDF5 (batched encoding per episode). '
                         '50 eps × 500 steps = 25k pairs, takes ~30 s on GPU.')
@@ -253,6 +259,21 @@ def main():
     model.to(device).eval()
     encoder = model.encoder
     d = model.latent_dim
+
+    # Load pre-trained state_head if requested and available in checkpoint.
+    # The trainer saves state_head_state since the fix to save_checkpoint.
+    _ckpt_state_head = None
+    if args.use_checkpoint_state_head and isinstance(raw, dict) and 'state_head_state' in raw:
+        import torch.nn as _nn
+        _sh = _nn.Linear(d, 4)
+        _sh.load_state_dict(raw['state_head_state'])
+        _ckpt_state_head = _sh.to('cpu').eval()
+        print(f'[model] Loaded pre-trained state_head from checkpoint '
+              f'(Linear({d}, 4), W norm={float(_sh.weight.norm()):.3f})')
+    elif args.use_checkpoint_state_head:
+        print('[model] --use-checkpoint-state-head requested but state_head_state '
+              'not found in checkpoint (checkpoint predates the trainer fix). '
+              'Falling back to freshly-fitted probe.')
     print(f'[model] latent_dim={d}')
 
     # ── Environment ───────────────────────────────────────────────────────────
@@ -364,6 +385,26 @@ def main():
     # params shape: (d+1, 4)
     D_weight = params[:d, :].T    # (4, d)
     D_bias   = params[d, :]       # (4,)
+
+    # Override with pre-trained checkpoint state_head if available.
+    # The checkpoint state_head was trained longer (full training run) and
+    # on normalized states; convert weights back to raw-state units using
+    # training-data statistics from the collected Z/S pairs.
+    if _ckpt_state_head is not None:
+        import torch as _torch
+        _W = _ckpt_state_head.weight.data.numpy()   # (4, d)  normalized-state units
+        _b = _ckpt_state_head.bias.data.numpy()      # (4,)
+        # The trainer normalizes states: s_norm = (s - mu) / sigma.
+        # state_head predicts s_norm, so: s = sigma * state_head(z) + mu.
+        # Recover mu, sigma from collected pairs.
+        S_mu    = S.mean(axis=0)    # (4,)
+        S_sigma = S.std(axis=0) + 1e-8  # (4,)
+        # Convert: s ≈ sigma * (W @ z + b) + mu = (sigma * W) @ z + (sigma * b + mu)
+        D_weight_ckpt = S_sigma[:, None] * _W          # (4, d)
+        D_bias_ckpt   = S_sigma * _b + S_mu            # (4,)
+        print('[model] Using checkpoint state_head (de-normalized to raw units)')
+        D_weight = D_weight_ckpt
+        D_bias   = D_bias_ckpt
 
     # Evaluate decoder quality: R² per physical dimension
     S_pred = Z @ D_weight.T + D_bias   # (N, 4)

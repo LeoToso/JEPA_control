@@ -1169,6 +1169,8 @@ class Trainer:
             payload['endpoint_action_decoder_state'] = self.endpoint_action_decoder.state_dict()
         if self.phys_endpoint_decoder is not None:
             payload['phys_endpoint_decoder_state'] = self.phys_endpoint_decoder.state_dict()
+        if self.state_head is not None:
+            payload['state_head_state'] = self.state_head.state_dict()
         torch.save(payload, path)
         # Always keep a 'latest' copy for easy resume
         if tag != 'latest':
@@ -1199,4 +1201,6 @@ class Trainer:
             self.endpoint_action_decoder.load_state_dict(ckpt['endpoint_action_decoder_state'])
         if 'phys_endpoint_decoder_state' in ckpt and self.phys_endpoint_decoder is not None:
             self.phys_endpoint_decoder.load_state_dict(ckpt['phys_endpoint_decoder_state'])
+        if 'state_head_state' in ckpt and self.state_head is not None:
+            self.state_head.load_state_dict(ckpt['state_head_state'])
         print(f'[ckpt] resumed from {path}  (epoch={self.epoch}, step={self.global_step})')

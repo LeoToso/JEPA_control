@@ -1,0 +1,139 @@
+environment:
+  name: cartpole
+  frame_skip: 3
+  image_size: 64
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 8
+  action_latent_dim: 8
+  action_encoder: linear
+  image_size: 64
+  patch_size: 8
+  frame_stack: 2
+  predictor_window: 5
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  predictor_type: transformer
+  predictor_embed_dim: 128
+  predictor_depth: 3
+  predictor_num_heads: 4
+  predictor_mlp_ratio: 4.0
+
+training:
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 300
+  horizon: 5
+  # ── Prediction loss ───────────────────────────────────────────────────────
+  lambda_pred: 1.0
+  # ── State reconstruction: Linear(z) -> (x, xdot, theta, thetadot) ────────
+  # Key change vs jepa_v5_sigreg: encoder is NOT frozen, so state supervision
+  # shapes the encoder itself (not just a post-hoc linear head).
+  # Heavy theta/thetadot weights compensate for near-equilibrium data having
+  # small angle variance — they amplify the state loss signal for theta.
+  lambda_state: 20.0
+  state_loss_weights: [1., 0.1, 100., 10.]   # theta:100x, thetadot:10x
+  state_encoder_grad_scale: 1.0              # full gradient into encoder
+  # ── SIGreg keeps representations diverse (prevents collapse) ─────────────
+  lambda_sigreg: 10.0
+  sigreg_num_slices: 64
+  sigreg_num_points: 9
+  sigreg_all_steps: true
+  # ── All other losses off ─────────────────────────────────────────────────
+  lambda_inv: 0.0
+  inv_frames: 5
+  inv_action_scale: 10.0
+  inv_hidden_dim: 128
+  lambda_action_reconstruction: 0.0
+  lambda_fp: 0.0
+  lambda_anchor: 0.0
+  lambda_enc_anchor: 0.0
+  use_vicreg: false
+  vicreg_lambda: 5.0
+  vicreg_nu: 1.0
+  lambda_pred_vicreg: 0.0
+  lambda_mirror: 0.0
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_spec_eig: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_varfloor: 0.0
+  lambda_temp: 0.0
+  # ── Training dynamics ─────────────────────────────────────────────────────
+  use_target_encoder: false
+  detach_targets: false
+  target_encoder_momentum: 0.996
+  aug_noise_std: 0.0
+  predictor_lr_mult: 5.0
+  predictor_window: 5
+  num_workers: 8
+  checkpoint_every: 10
+  # Encoder trains for ALL epochs — no freeze.
+  warmup_epochs: 0
+  warmup_lambda_state: 0.0
+  freeze_encoder_epochs: 0
+  encoder_lr_unfreeze_mult: 1.0
+  jacobian_every: 10
+  rho_max_init: 1.5
+  local_state_threshold: 0.05
+  unstable_eta: 0.05
+  normalize_actions: true
+  normalize_states: true
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+cem:
+  horizon: 25
+  chunk_size: 1
+  n_samples: 500
+  n_elites: 50
+  n_iter: 5
+  init_std: 0.3
+  n_trials: 50
+
+# ── Data collection notes ────────────────────────────────────────────────────
+# The existing cartpole_visual_v2 (25k pairs, all |theta|<0.15 rad) is
+# sufficient as a starting point — the heavy theta weight compensates for
+# small angle variance.  For better results collect diverse-angle data:
+#
+#   python experiments/generate_cartpole_dataset.py \
+#       --output-dir data/cartpole_visual_v3 \
+#       --num-transitions 50000 \
+#       --use-continuous-env \
+#       --pole-angle-range 0.5 \
+#       --frac-random 0.6 \
+#       --frac-lqr-near-eq 0.3 \
+#       --frac-passive 0.1 \
+#       --lqr-near-eq-angle-range 0.15 \
+#       --seed 42
+#
+# This gives: 60% random (large-angle exploration) + 30% LQR near-eq
+# (near-equilibrium with diversity from noise) + 10% passive free-fall.
+data:
+  train_frac: 0.8
+  val_frac: 0.1
+  n_random_episodes: 100
+  random_ep_len: 200
+  random_init_range: 1.0
