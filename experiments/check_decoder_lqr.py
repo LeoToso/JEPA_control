@@ -197,6 +197,8 @@ def main():
     p.add_argument('--seed',       type=int,   default=42)
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default=None)
+    p.add_argument('--init-scale', type=float, default=None,
+                   help='Override control.init_scale from config (initial state perturbation magnitude).')
     args = p.parse_args()
 
     device = torch.device(args.device if args.device else
@@ -553,7 +555,8 @@ def main():
         decoder_tag = ('jacobian-probe' if args.jacobian_probe else 'global')
 
     # ── Evaluation ────────────────────────────────────────────────────────────
-    init_scale = float(ctrl_cfg.get('init_scale', 0.05))
+    init_scale = float(args.init_scale if args.init_scale is not None
+                       else ctrl_cfg.get('init_scale', 0.05))
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
