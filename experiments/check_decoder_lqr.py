@@ -92,6 +92,9 @@ def main():
                    help='Path to HDF5 dataset dir (train.hdf5 / val.hdf5). '
                         'If given, encoder is run on the stored images for a much '
                         'larger and more diverse (z, state) probe set.')
+    p.add_argument('--max-probe-eps', type=int, default=50,
+                   help='Max episodes to load from HDF5 (batched encoding per episode). '
+                        '50 eps × 500 steps = 25k pairs, takes ~30 s on GPU.')
     p.add_argument('--seed',       type=int,   default=42)
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default=None)
@@ -193,21 +196,32 @@ def main():
         hdf5_path  = next((p for p in hdf5_paths if p.exists()), None)
         if hdf5_path is None:
             raise FileNotFoundError(f'No train.hdf5/val.hdf5 found in {ds_dir}')
-        print(f'[probe] loading from {hdf5_path} ...')
+        print(f'[probe] loading from {hdf5_path} (max {args.max_probe_eps} eps, batched) ...')
         with h5py.File(hdf5_path, 'r') as f:
-            ep_keys = sorted(f.keys())
+            # Support two layouts:
+            #   (A) flat: f['ep_000'] -> group with 'observations', 'states'
+            #   (B) nested: f['episodes']['0'] -> group with 'observations', 'states'
+            root    = f['episodes'] if 'episodes' in f else f
+            ep_keys = sorted(root.keys(), key=lambda x: int(x) if x.isdigit() else x)
+            ep_keys = ep_keys[:args.max_probe_eps]
             n_loaded = 0
             for ep_key in ep_keys:
-                grp       = f[ep_key]
-                obs_all   = grp['observations'][:]   # (T+1, H, W, C) uint8
-                states_all = grp['states'][:]        # (T+1, 4)
+                grp        = root[ep_key]
+                obs_all    = grp['observations'][:]   # (T+1, H, W, C) uint8
+                states_all = grp['states'][:]         # (T+1, 4)
                 T = obs_all.shape[0]
-                for t in range(1, T):               # t=1: prev=t-1, curr=t
-                    prev_obs_hdf5 = obs_all[t - 1]
-                    curr_obs_hdf5 = obs_all[t]
-                    z = _encode(curr_obs_hdf5, prev_obs_hdf5)
-                    Zs.append(z.copy())
-                    Ss.append(states_all[t].astype(np.float64))
+                # Build batch for the whole episode: (T-1, C*frame_stack, H, W)
+                obs_t  = torch.from_numpy(obs_all[1:]).float().permute(0, 3, 1, 2).to(device) / 255.0
+                obs_tm1 = torch.from_numpy(obs_all[:-1]).float().permute(0, 3, 1, 2).to(device) / 255.0
+                if frame_stack > 1:
+                    inp_batch = torch.cat([obs_tm1, obs_t], dim=1)   # (T-1, 2C, H, W)
+                else:
+                    inp_batch = obs_t                                  # (T-1, C, H, W)
+                with torch.no_grad():
+                    z_batch = encoder(inp_batch).cpu().numpy()        # (T-1, d)
+                for t_idx in range(T - 1):
+                    Zs.append(z_batch[t_idx])
+                    Ss.append(states_all[t_idx + 1].astype(np.float64))
                     n_loaded += 1
         print(f'[probe] loaded {n_loaded} (z, s) pairs from {len(ep_keys)} episodes')
     else:
