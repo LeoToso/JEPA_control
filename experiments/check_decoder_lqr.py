@@ -28,6 +28,74 @@ import torch
 import yaml
 
 
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+
+
+class _MLPDecoder(nn.Module):
+    """Small MLP for non-linear z → physical_state decoding."""
+    def __init__(self, d_in: int, d_out: int = 4, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_in, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, d_out),
+        )
+
+    def forward(self, z):
+        return self.net(z)
+
+
+class MLPDecoderLQRController:
+    """Apply GT-LQR on z decoded via a trained MLP.
+
+    Control law: u = gain_scale * (-K_gt @ (mlp(z_t) - mlp(z*)))
+    Subtracting mlp(z*) removes any constant bias in the MLP output.
+
+    Parameters
+    ----------
+    mlp      : trained _MLPDecoder (eval mode, on cpu)
+    z_star   : (d,) encoded equilibrium latent state (numpy)
+    K_gt     : (1, 4) GT-LQR gain (numpy)
+    gain_scale, action_lb, action_ub : control bounds / scale
+    """
+
+    def __init__(self, mlp: nn.Module, z_star: np.ndarray, K_gt: np.ndarray,
+                 gain_scale: float = 1.0,
+                 action_lb: float = -10.0, action_ub: float = 10.0):
+        self.mlp   = mlp.cpu().eval()
+        self.K_gt  = K_gt
+        self.gain_scale = float(gain_scale)
+        self.action_lb  = action_lb
+        self.action_ub  = action_ub
+        self.A = np.eye(1)   # fake A so rollout infers W_aug=1
+        self._n_sat   = 0
+        self._n_steps = 0
+
+        z_t = torch.from_numpy(z_star.astype(np.float32)).unsqueeze(0)
+        with torch.no_grad():
+            self._s_star_hat = self.mlp(z_t).numpy()[0]   # (4,) decoded equilibrium
+
+    def plan(self, z_t: np.ndarray, z_star: np.ndarray):
+        zt = torch.from_numpy(z_t.astype(np.float32)).unsqueeze(0)
+        with torch.no_grad():
+            s_hat = self.mlp(zt).numpy()[0]
+        delta_s = s_hat - self._s_star_hat              # (4,) deviation from decoded eq
+        u_raw   = float(-(self.K_gt @ delta_s)[0]) * self.gain_scale
+        clipped = float(np.clip(u_raw, self.action_lb, self.action_ub))
+        self._n_sat   += int(abs(u_raw) >= self.action_ub - 1e-6)
+        self._n_steps += 1
+        return [np.array([clipped])], []
+
+    def reset(self):
+        pass
+
+    @property
+    def saturation_fraction(self):
+        return self._n_sat / max(1, self._n_steps)
+
+
 class DecoderLQRController:
     """Apply GT-LQR on z decoded to physical state.
 
@@ -110,6 +178,16 @@ def main():
     p.add_argument('--near-eq-theta', type=float, default=0.15,
                    help='|theta| threshold (rad) for near-equilibrium pair filtering '
                         'when --jacobian-probe is active.')
+    p.add_argument('--mlp-decoder', action='store_true', default=False,
+                   help='Replace the linear decoder with a 2-layer MLP (d→64→64→4) '
+                        'trained on the collected (z, s) pairs. Tests whether '
+                        'non-linear decoding extracts more theta information.')
+    p.add_argument('--mlp-hidden',  type=int,   default=64,
+                   help='Hidden units per layer in the MLP decoder.')
+    p.add_argument('--mlp-epochs',  type=int,   default=500,
+                   help='Training epochs for the MLP decoder.')
+    p.add_argument('--mlp-lr',      type=float, default=1e-3,
+                   help='Adam learning rate for the MLP decoder.')
     p.add_argument('--seed',       type=int,   default=42)
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default=None)
@@ -345,6 +423,55 @@ def main():
     else:
         D_weight_use = D_weight
 
+    # ── Optional MLP decoder ─────────────────────────────────────────────────
+    mlp_net = None
+    if args.mlp_decoder:
+        rng_mlp = np.random.RandomState(args.seed + 99)
+        idx_all = np.arange(N_pairs)
+        rng_mlp.shuffle(idx_all)
+        n_val   = max(256, N_pairs // 10)
+        idx_tr  = idx_all[n_val:]
+        idx_val = idx_all[:n_val]
+
+        Z_tr = torch.from_numpy(Z[idx_tr].astype(np.float32))
+        S_tr = torch.from_numpy(S[idx_tr].astype(np.float32))
+        Z_vl = torch.from_numpy(Z[idx_val].astype(np.float32))
+        S_vl = torch.from_numpy(S[idx_val].astype(np.float32))
+
+        mlp_net = _MLPDecoder(d, d_out=4, hidden=args.mlp_hidden).to(device)
+        opt     = optim.Adam(mlp_net.parameters(), lr=args.mlp_lr)
+        loader  = DataLoader(TensorDataset(Z_tr.to(device), S_tr.to(device)),
+                             batch_size=256, shuffle=True)
+
+        best_val_loss = float('inf')
+        for ep in range(1, args.mlp_epochs + 1):
+            mlp_net.train()
+            for zb, sb in loader:
+                loss = nn.functional.mse_loss(mlp_net(zb), sb)
+                opt.zero_grad(); loss.backward(); opt.step()
+            if ep % 100 == 0 or ep == args.mlp_epochs:
+                mlp_net.eval()
+                with torch.no_grad():
+                    val_pred = mlp_net(Z_vl.to(device)).cpu()
+                    val_loss = float(nn.functional.mse_loss(val_pred, S_vl))
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                print(f'[mlp-decoder] epoch {ep:4d}  val_mse={val_loss:.5f}')
+
+        # R² per channel on val set
+        mlp_net.eval()
+        with torch.no_grad():
+            S_vl_pred = mlp_net(Z_vl.to(device)).cpu().numpy()
+        S_vl_np = S_vl.numpy()
+        ss_res_m = np.sum((S_vl_np - S_vl_pred) ** 2, axis=0)
+        ss_tot_m = np.sum((S_vl_np - S_vl_np.mean(0)) ** 2, axis=0)
+        r2_mlp   = 1.0 - ss_res_m / (ss_tot_m + 1e-12)
+        print(f'[mlp-decoder] val R²: x={r2_mlp[0]:.3f}  xdot={r2_mlp[1]:.3f}  '
+              f'theta={r2_mlp[2]:.3f}  thetadot={r2_mlp[3]:.3f}')
+        print(f'[mlp-decoder] theta R² gain vs linear: '
+              f'{r2_mlp[2]:.3f} vs {r2[2]:.3f}  '
+              f'(+{r2_mlp[2]-r2[2]:.3f})')
+
     # ── Ground-truth LQR gain ─────────────────────────────────────────────────
     from ground_truth.cartpole_gt import CartpoleGroundTruth
     gt = CartpoleGroundTruth(
@@ -361,29 +488,34 @@ def main():
     rho_cl_gt = float(np.max(np.abs(np.linalg.eigvals(A_cl_gt))))
     print(f'[GT-LQR] K={np.round(K_gt[0], 4)}  ρ(A_cl_GT)={rho_cl_gt:.4f}')
 
-    # The decoder maps z - z* → physical state deviation.
-    # Control: u = gain_scale * (-K_gt @ D_weight_use @ (z - z*)).
-    # Effective gain in latent space: K_eff = K_gt @ D_weight_use  (1, d).
-    K_eff_latent = K_gt @ D_weight_use   # (1, d)
-    print(f'[GT-LQR] ||K_eff_latent||={np.linalg.norm(K_eff_latent):.4f}  '
-          f'max_u at ||Δz||=0.1: {float(np.linalg.norm(K_eff_latent))*0.1:.3f} N'
-          f'  gain_scale={args.gain_scale:.1f}'
-          f'  => effective max_u: {float(np.linalg.norm(K_eff_latent))*0.1*args.gain_scale:.3f} N')
-
     # ── Build controller ──────────────────────────────────────────────────────
-    ctrl = DecoderLQRController(
-        D_weight=D_weight_use, z_star=z_star_arr,
-        K_gt=K_gt,
-        gain_scale=args.gain_scale,
-        action_lb=action_lb, action_ub=action_ub,
-    )
+    if mlp_net is not None:
+        ctrl = MLPDecoderLQRController(
+            mlp=mlp_net, z_star=z_star_arr, K_gt=K_gt,
+            gain_scale=args.gain_scale,
+            action_lb=action_lb, action_ub=action_ub,
+        )
+        decoder_tag = 'mlp'
+    else:
+        # Linear / Jacobian decoder
+        K_eff_latent = K_gt @ D_weight_use   # (1, d)
+        print(f'[GT-LQR] ||K_eff_latent||={np.linalg.norm(K_eff_latent):.4f}  '
+              f'max_u at ||Δz||=0.1: {float(np.linalg.norm(K_eff_latent))*0.1:.3f} N'
+              f'  gain_scale={args.gain_scale:.1f}'
+              f'  => effective max_u: {float(np.linalg.norm(K_eff_latent))*0.1*args.gain_scale:.3f} N')
+        ctrl = DecoderLQRController(
+            D_weight=D_weight_use, z_star=z_star_arr,
+            K_gt=K_gt,
+            gain_scale=args.gain_scale,
+            action_lb=action_lb, action_ub=action_ub,
+        )
+        decoder_tag = ('jacobian-probe' if args.jacobian_probe else 'global')
 
     # ── Evaluation ────────────────────────────────────────────────────────────
     init_scale = float(ctrl_cfg.get('init_scale', 0.05))
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
-    decoder_tag = ('jacobian-probe' if args.jacobian_probe else 'global')
     print(f'\n[eval] Decoder-LQR  decoder={decoder_tag}  gain_scale={args.gain_scale}  '
           f'Q_diag={args.lqr_Q_diag}  R={args.lqr_R}  '
           f'n_trials={args.n_trials}  T={args.T}')
