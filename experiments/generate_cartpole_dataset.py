@@ -45,6 +45,8 @@ def _parse() -> argparse.Namespace:
                    help='Target transition count (25k / 50k / 100k / 200k)')
     p.add_argument('--image-size',       type=int, default=64,
                    help='Pixel height and width of stored observations')
+    p.add_argument('--frame-skip',       type=int, default=1,
+                   help='Physics steps per action (temporal resolution)')
     p.add_argument('--seed',             type=int, default=0,
                    help='Master random seed')
     p.add_argument('--custom-reset',     action='store_true', default=True,
@@ -99,6 +101,7 @@ def main() -> None:
     cfg.output_dir      = args.output_dir
     cfg.num_transitions = args.num_transitions
     cfg.image_size      = args.image_size
+    cfg.frame_skip      = args.frame_skip
     cfg.seed            = args.seed
     cfg.custom_reset    = args.custom_reset
     cfg.resume          = args.resume

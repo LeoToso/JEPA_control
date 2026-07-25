@@ -78,6 +78,9 @@ class DatasetConfig:
     image_size: int = 64
     image_crop: bool = False
 
+    # Environment
+    frame_skip: int = 1
+
     # Behavior-policy mixture (fractions; must sum to 1.0)
     frac_expert:       float = 0.20
     frac_noisy_005:    float = 0.20
@@ -383,6 +386,7 @@ def _make_continuous_env(cfg: DatasetConfig):
     """Build ContinuousCartpoleVisual with optional viscous friction."""
     from envs.cartpole_visual import ContinuousCartpoleVisual
     return ContinuousCartpoleVisual(
+        frame_skip=cfg.frame_skip,
         friction_cart=cfg.friction_cart,
         friction_pole=cfg.friction_pole,
     )
