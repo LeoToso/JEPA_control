@@ -76,7 +76,7 @@ training:
   predictor_lr_mult: 5.0
   # predictor_window must match model.predictor_window (read independently by Trainer)
   predictor_window: 3
-  num_workers: 8
+  num_workers: 2
   checkpoint_every: 10
   warmup_epochs: 0
   warmup_lambda_state: 0.0
