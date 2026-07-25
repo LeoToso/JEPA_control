@@ -328,6 +328,8 @@ def check_duplicate_frames(episodes: List[Dict], split: str,
         if obs.std(axis=0).mean() < 0.5:
             constant_count += 1
         # Near-duplicate consecutive frames in the middle
+        if len(obs) < 3:
+            continue
         mid   = len(obs) // 2
         diff  = np.abs(obs[mid + 1] - obs[mid]).mean()
         if diff < 1.0:
