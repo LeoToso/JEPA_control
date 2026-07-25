@@ -90,6 +90,7 @@ def check_transition_alignment(episodes: List[Dict], split: str,
         from envs.cartpole_visual import ContinuousCartpoleVisual
         env_meta = (meta or {}).get('environment', {})
         sim_env = ContinuousCartpoleVisual(
+            frame_skip=env_meta.get('frame_skip', 1),
             friction_cart=env_meta.get('friction_cart', 0.0),
             friction_pole=env_meta.get('friction_pole', 0.0),
         )

@@ -676,6 +676,7 @@ def _build_metadata(
         'environment': {
             'id':                'ContinuousCartpoleVisual' if cfg.use_continuous_env else 'CartPole-v1',
             'gymnasium_version': cfg.gymnasium_version,
+            'frame_skip':        cfg.frame_skip,
             'force_mag':         10.0,
             'gravity':           9.8,
             'masscart':          1.0,
