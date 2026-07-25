@@ -478,8 +478,12 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
     def _find_valid_starts(self):
         H, ep = self.horizon, self.ep_ids
-        valid = [i for i in range(len(ep) - H) if np.all(ep[i:i + H] == ep[i])]
-        return np.array(valid, dtype=np.int64)
+        N = len(ep) - H
+        if N <= 0:
+            return np.array([], dtype=np.int64)
+        windows = np.lib.stride_tricks.sliding_window_view(ep[:N + H], H)  # (N, H)
+        mask = np.all(windows == windows[:, :1], axis=1)
+        return np.where(mask)[0].astype(np.int64)
 
     def _file(self) -> 'h5py.File':
         pid = os.getpid()
@@ -545,6 +549,30 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
                 pass
 
 
+def _estimate_obs_bytes(hdf5_path: str, target_image_size: int | None,
+                        data_fraction: float) -> int:
+    """Estimate total observation bytes without loading any pixel data.
+
+    Samples up to 100 episodes to estimate average episode length, then
+    scales to the full dataset — fast even for 10k-episode files.
+    """
+    try:
+        with h5py.File(hdf5_path, 'r') as f:
+            ep_grp = f['episodes']
+            keys = sorted(ep_grp.keys(), key=int)
+            n_keep = max(1, int(len(keys) * data_fraction))
+            # Image shape from first episode (shape read = metadata only, no pixel I/O)
+            _, h, w, c = ep_grp[keys[0]]['observations'].shape
+            if target_image_size is not None:
+                h = w = target_image_size
+            # Sample up to 100 episodes to estimate average episode length
+            sample = keys[:min(100, n_keep)]
+            avg_frames = sum(len(ep_grp[k]['actions']) + 1 for k in sample) / len(sample)
+        return int(avg_frames * n_keep * h * w * c)
+    except Exception:
+        return 0
+
+
 def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               num_workers: int = 0, horizon: int = 1,
                               frame_stack: int = 1,
@@ -555,16 +583,25 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               preload_obs: bool = True,
                               data_fraction: float = 1.0) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
+    _PRELOAD_LIMIT_BYTES = 2 * 1024 ** 3  # 2 GB
     loaders = {}
     for split in ('train', 'val', 'test'):
         path = Path(dataset_dir) / f'{split}.hdf5'
         if not path.exists():
             continue
+        # Auto-disable obs preloading when dataset would exceed RAM budget
+        _preload = preload_obs
+        if _preload:
+            _est = _estimate_obs_bytes(str(path), target_image_size, data_fraction)
+            if _est > _PRELOAD_LIMIT_BYTES:
+                print(f'[dataset:{split}] obs too large to preload '
+                      f'({_est / 1e9:.1f} GB > 2 GB) — using lazy loading')
+                _preload = False
         ds = DiscreteHDF5TrajectoryDataset(
             dataset_dir, split=split, horizon=horizon,
             frame_stack=frame_stack, state_mean=state_mean, state_std=state_std,
             action_scale=action_scale,
-            target_image_size=target_image_size, preload_obs=preload_obs,
+            target_image_size=target_image_size, preload_obs=_preload,
             data_fraction=data_fraction)
         if len(ds) == 0:
             continue
