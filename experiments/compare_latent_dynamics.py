@@ -392,6 +392,8 @@ def main():
     parser.add_argument('--rollout_len', type=int, default=50)
     parser.add_argument('--seed',        type=int, default=0)
     parser.add_argument('--gramian_T',   type=int, default=20)
+    parser.add_argument('--frame-skip',  type=int, default=None,
+                        help='Physics steps per action (auto-read from first --cfgs if omitted)')
     parser.add_argument('--device',      default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
@@ -413,12 +415,32 @@ def main():
         models.append((model, frame_stack, cfg_p))
         print(f'       frame_stack={frame_stack}  params={sum(p.numel() for p in model.parameters()):,}')
 
+    # ── Determine frame_skip (auto-detect from first config if not given) ──
+    frame_skip = args.frame_skip
+    if frame_skip is None:
+        try:
+            with open(args.cfgs[0]) as _yf:
+                _ycfg = yaml.safe_load(_yf)
+            frame_skip = int(_ycfg.get('environment', {}).get('frame_skip', 1))
+        except Exception:
+            frame_skip = 1
+    print(f'[GT] frame_skip={frame_skip}  (effective physics steps per latent step)')
+
     # ── Ground-truth spectral radius ──────────────────────────────────────
     try:
         from ground_truth.cartpole_gt import CartpoleGroundTruth
         _gt = CartpoleGroundTruth()
-        rho_gt = float(np.max(np.abs(np.linalg.eigvals(_gt.A_star))))
-        print(f'[GT] rho(A_star)={rho_gt:.4f}  (target: >1.0 for instability)')
+        rho_gt_1step = float(np.max(np.abs(np.linalg.eigvals(_gt.A_star))))
+        # For frame_skip > 1 the model predicts frame_skip physics steps; the
+        # correct GT reference is rho(A_star^frame_skip), not rho(A_star).
+        A_fs = np.linalg.matrix_power(_gt.A_star, frame_skip)
+        rho_gt = float(np.max(np.abs(np.linalg.eigvals(A_fs))))
+        if frame_skip > 1:
+            print(f'[GT] rho(A_star^1)={rho_gt_1step:.4f}  '
+                  f'rho(A_star^{frame_skip})={rho_gt:.4f}  '
+                  f'(target for frame_skip={frame_skip}: >{1.0:.1f})')
+        else:
+            print(f'[GT] rho(A_star)={rho_gt:.4f}  (target: >1.0 for instability)')
     except Exception as _e:
         print(f'[GT] could not compute ground-truth rho: {_e}')
         rho_gt = None
