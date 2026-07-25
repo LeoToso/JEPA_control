@@ -8,6 +8,8 @@ environment:
   gravity: 9.8
   dt: 0.02
   action_range: [-10, 10]
+  friction_cart: 0.1
+  friction_pole: 0.01
 
 model:
   latent_dim: 8
