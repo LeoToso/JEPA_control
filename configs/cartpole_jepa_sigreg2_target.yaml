@@ -67,11 +67,12 @@ training:
   lambda_varfloor: 0.0
   lambda_temp: 0.0
   # ── Training dynamics ─────────────────────────────────────────────────────
-  # Target encoder: EMA of online encoder provides stable prediction targets,
-  # reducing the structural gap between predict(z_win) and encode(next_obs)
-  # that causes large one-step pred error even at near-equilibrium states.
+  # Target encoder: EMA of online encoder provides stable prediction targets.
+  # detach_targets MUST be true for use_target_encoder to take effect — the
+  # trainer only routes through target_encoder when targets are detached
+  # (the no_grad branch). With detach_targets=false both configs are identical.
   use_target_encoder: true
-  detach_targets: false
+  detach_targets: true
   target_encoder_momentum: 0.996
   aug_noise_std: 0.0
   predictor_lr_mult: 5.0
