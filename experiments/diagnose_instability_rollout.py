@@ -221,16 +221,33 @@ def main():
             break
     gt_nlin = np.array(gt_nlin)
 
-    # Learned model
-    z0 = _encode(model, obs0, device, frame_stack)
-    history = [z_star.clone()] * (W - 1) + [z0]
-    s0_dec  = _decode(state_head, z0, state_mean, state_std)
-    lrn     = [s0_dec.copy()]
+    # Learned model — warm-start: run real env for W steps to build
+    # in-distribution context, then hand off to model for prediction.
+    # This avoids the out-of-distribution [z★,z★,z₀] initialization.
+    obs_cur, s_cur, _ = env.reset_to_state(x0)
+    real_history = []   # real encoded latents for W warm-start steps
+    warmup_states = [s_cur.copy()]
+    for _ in range(W):
+        z_cur = _encode(model, obs_cur, device, frame_stack)
+        real_history.append(z_cur)
+        obs_next, s_next, _, done, _ = env.step(0.0)
+        warmup_states.append(s_next.copy())
+        obs_cur = obs_next
+        if done:
+            break
+
+    # Decode the warm-start latents to show the initial trajectory
+    lrn_warmup = [_decode(state_head, z, state_mean, state_std) for z in real_history]
+
+    # From step W onward: pure model prediction (u=0)
+    history = list(real_history[-W:])   # in-distribution context
+    lrn = lrn_warmup[:]
     for _ in range(args.n_steps):
         z_next = _predict(model, history, device)
         lrn.append(_decode(state_head, z_next, state_mean, state_std))
         history = history[1:] + [z_next]
-    lrn = np.array(lrn)
+    lrn       = np.array(lrn)
+    warmup_end = len(lrn_warmup)  # index where model takes over
 
     # Print table
     n_fit  = min(10, args.n_steps // 2)
@@ -238,13 +255,14 @@ def main():
     rate_gn = _fit_growth_rate(gt_nlin[:, 2], n_fit)
     rate_lrn= _fit_growth_rate(lrn[:, 2],     n_fit)
 
-    print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"Learned θ (°)":>14}')
-    print('-' * 60)
+    print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"Learned θ (°)":>14}  note')
+    print('-' * 70)
     n_rep = min(len(gt_lin), len(gt_nlin), len(lrn))
     for t in range(n_rep):
+        note = '← warm-start (real enc)' if t < warmup_end else '← model pred'
         print(f'{t:5d}  {np.degrees(gt_lin[t, 2]):16.3f}  '
               f'{np.degrees(gt_nlin[t, 2]):16.3f}  '
-              f'{np.degrees(lrn[t, 2]):14.3f}')
+              f'{np.degrees(lrn[t, 2]):14.3f}  {note}')
 
     print(f'\n[growth rate per latent step, fit over first {n_fit} steps]')
     print(f'  GT linear    : {rate_gl:.4f}  (expected {rho_gt:.4f})')
@@ -263,7 +281,9 @@ def main():
     ax = axes[0]
     ax.semilogy(t_gl,  np.abs(gt_lin[:, 2]),  'g-',   lw=2,    label=f'GT linear (λ={rate_gl:.3f})')
     ax.semilogy(t_gn,  np.abs(gt_nlin[:, 2]), 'b--',  lw=2,    label=f'GT nonlinear (λ={rate_gn:.3f})')
-    ax.semilogy(t_lrn, np.abs(lrn[:, 2]),     'r-o',  lw=1.5, ms=4, label=f'Learned decoded (λ={rate_lrn:.3f})')
+    ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 2]), 'r--', lw=1.2, alpha=0.5, label=f'Learned warm-start (real enc)')
+    ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 2]), 'r-o', lw=1.5, ms=4, label=f'Learned model pred (λ={rate_lrn:.3f})')
+    ax.axvline(warmup_end - 1, color='orange', lw=0.8, linestyle=':', label=f'model takes over (step {warmup_end-1})')
     ax.axhline(np.pi / 2, color='gray', lw=0.8, linestyle=':', label='90°')
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps = ×{frame_skip * env_cfg["dt"]:.3f}s)')
     ax.set_ylabel('|θ| (rad)')
@@ -275,6 +295,7 @@ def main():
     ax = axes[1]
     ax.plot(t_gl,  np.degrees(gt_lin[:, 2]),  'g-',   lw=2,   label='GT linear')
     ax.plot(t_gn,  np.degrees(gt_nlin[:, 2]), 'b--',  lw=2,   label='GT nonlinear')
+    ax.axvline(warmup_end - 1, color='orange', lw=0.8, linestyle=':', label=f'model takes over')
     ax.plot(t_lrn, np.degrees(lrn[:, 2]),     'r-o',  lw=1.5, ms=4, label='Learned decoded')
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps)')
     ax.set_ylabel('θ (degrees)')
