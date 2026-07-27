@@ -98,6 +98,10 @@ class DatasetConfig:
     use_continuous_env: bool  = False
     friction_cart:      float = 0.0   # viscous cart friction  [N·s/m]
     friction_pole:      float = 0.0   # viscous pole friction  [N·m·s/rad]
+    # Done threshold: pole angle at which episode terminates (radians).
+    # Default None = 12 degrees (standard CartPole). Raise to e.g. math.pi/2
+    # for longer passive episodes that show the full instability trajectory.
+    theta_threshold:    float = None
 
     # Burst-noise parameters
     burst_start_prob: float = 0.03
@@ -389,6 +393,7 @@ def _make_continuous_env(cfg: DatasetConfig):
         frame_skip=cfg.frame_skip,
         friction_cart=cfg.friction_cart,
         friction_pole=cfg.friction_pole,
+        theta_threshold=cfg.theta_threshold,
     )
 
 

@@ -12,12 +12,14 @@ class ContinuousCartpoleVisual:
                  mass_cart=1.0, mass_pole=0.1, pole_length=0.5,
                  gravity=9.8, dt=0.02,
                  friction_cart=0.0, friction_pole=0.0,
+                 theta_threshold=None,
                  seed=None):
         self.frame_skip=frame_skip; self.image_size=image_size
         self.action_low,self.action_high=action_range
         self.mass_cart=mass_cart; self.mass_pole=mass_pole
         self.pole_length=pole_length; self.gravity=gravity; self.dt=dt
         self.friction_cart=friction_cart; self.friction_pole=friction_pole
+        self.theta_threshold = theta_threshold if theta_threshold is not None else 12*2*math.pi/360
         self._env=gym.make('CartPole-v1',render_mode='rgb_array')
         self._env.unwrapped.masscart=mass_cart
         self._env.unwrapped.masspole=mass_pole
@@ -71,8 +73,8 @@ class ContinuousCartpoleVisual:
         new_theta=theta+dt*theta_dot; new_theta_dot=theta_dot+dt*theta_acc
         new_state=np.array([new_x,new_x_dot,new_theta,new_theta_dot],dtype=np.float64)
         env.state=new_state
-        x_threshold=2.4; theta_threshold=12*2*math.pi/360
-        done=bool(new_x<-x_threshold or new_x>x_threshold or new_theta<-theta_threshold or new_theta>theta_threshold)
+        x_threshold=2.4
+        done=bool(new_x<-x_threshold or new_x>x_threshold or abs(new_theta)>self.theta_threshold)
         return new_state,done
 
     def _render_obs(self):

@@ -43,7 +43,7 @@ training:
   state_loss_weights: [1., 0.1, 100., 10.]
   state_encoder_grad_scale: 1.0
   # ── SIGreg ────────────────────────────────────────────────────────────────
-  lambda_sigreg: 1.0
+  lambda_sigreg: 0.0
   sigreg_num_slices: 64
   sigreg_num_points: 9
   sigreg_all_steps: true

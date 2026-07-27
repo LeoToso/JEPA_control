@@ -81,6 +81,10 @@ def _parse() -> argparse.Namespace:
                       help='Viscous cart friction coefficient [N·s/m]')
     cont.add_argument('--friction-pole', type=float, default=None,
                       help='Viscous pole friction coefficient [N·m·s/rad]')
+    cont.add_argument('--theta-threshold', type=float, default=None,
+                      help='Pole angle at which episode terminates (rad). '
+                           'Default: 12 deg (0.2094). Raise to e.g. 1.5708 (90 deg) '
+                           'for longer passive episodes.')
 
     # Reset range overrides
     rst = p.add_argument_group('custom reset ranges')
@@ -130,8 +134,9 @@ def main() -> None:
     if args.use_continuous_env:
         cfg.use_continuous_env = True
     for attr, val in [
-        ('friction_cart', args.friction_cart),
-        ('friction_pole', args.friction_pole),
+        ('friction_cart',    args.friction_cart),
+        ('friction_pole',    args.friction_pole),
+        ('theta_threshold',  args.theta_threshold),
     ]:
         if val is not None:
             setattr(cfg, attr, val)
