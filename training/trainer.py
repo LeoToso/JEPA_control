@@ -989,6 +989,8 @@ class Trainer:
         # affecting the loss schedule (unlike warmup which disables pred_loss).
         freeze_encoder_at   = int(self.cfg.get('freeze_encoder_at_epoch', 0))
         _encoder_frozen     = False
+        freeze_action_proj_at = int(self.cfg.get('freeze_action_proj_at_epoch', 0))
+        _action_proj_frozen   = False
         _saved_lambdas = (
             self.lambda_pred, self.lambda_state, self.lambda_spec,
             self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
@@ -1048,6 +1050,19 @@ class Trainer:
                 _encoder_frozen = True
                 print(f'[train] Stage-2: encoder frozen at epoch {epoch+1} '
                       f'(freeze_encoder_at_epoch={freeze_encoder_at})')
+
+            # Freeze action encoder + predictor a_proj to prevent B→0 on passive data.
+            # Locks the action-to-token mapping at its current value so B stays nonzero
+            # even when the training data is mostly passive (u=0).
+            if freeze_action_proj_at > 0 and epoch == freeze_action_proj_at and not _action_proj_frozen:
+                for p in self.model.action_encoder.parameters():
+                    p.requires_grad_(False)
+                if hasattr(self.model.predictor, 'a_proj'):
+                    for p in self.model.predictor.a_proj.parameters():
+                        p.requires_grad_(False)
+                _action_proj_frozen = True
+                print(f'[train] Action projection frozen at epoch {epoch+1} '
+                      f'(freeze_action_proj_at_epoch={freeze_action_proj_at})')
 
             # Update ρ_max from growth rates collected during the previous epoch.
             if self.lambda_unstable > 0 and len(self._rho_buffer) > 10:

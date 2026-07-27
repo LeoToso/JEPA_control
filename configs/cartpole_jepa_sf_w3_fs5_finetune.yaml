@@ -34,7 +34,8 @@ training:
   batch_size: 256
   epochs: 150
   horizon: 5
-  freeze_encoder_at_epoch: 1   # freeze encoder from epoch 1 onward
+  freeze_encoder_at_epoch: 1        # freeze encoder from epoch 1 onward
+  freeze_action_proj_at_epoch: 1    # freeze action_encoder + predictor.a_proj to prevent B→0
   predictor_lr_mult: 5.0       # keep predictor learning faster
   # ── Prediction loss ───────────────────────────────────────────────────────
   lambda_pred: 1.0
