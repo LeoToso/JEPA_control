@@ -16,6 +16,7 @@ htmlcov/
 venv/
 *.h5
 *.hdf5
+data/*/
 results/
 checkpoints/
 wandb/
