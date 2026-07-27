@@ -49,6 +49,8 @@ def main():
     p.add_argument('--extra-data', nargs='+', default=None,
                    help='Additional dataset dirs to concatenate with the primary dataset '
                         '(normalization stats from primary are applied to all)')
+    p.add_argument('--no-preload', action='store_true',
+                   help='Disable preloading observations into RAM (slower batches, fast startup)')
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -111,7 +113,7 @@ def main():
             state_mean=state_mean, state_std=state_std,
             action_scale=action_scale,
             target_image_size=int(model_cfg.get('image_size', 224)),
-            preload_obs=True,
+            preload_obs=not args.no_preload,
             data_fraction=args.data_fraction)
         obs_eq, state_eq = None, np.zeros(4, dtype=np.float32)
 
@@ -127,7 +129,7 @@ def main():
                     horizon=horizon, frame_stack=frame_stack,
                     state_mean=state_mean, state_std=state_std,
                     action_scale=action_scale,
-                    target_image_size=_img_size, preload_obs=True,
+                    target_image_size=_img_size, preload_obs=not args.no_preload,
                     data_fraction=args.data_fraction)
                 extra_train_ds.append(_ds)
                 print(f'[data]   -> {len(_ds)} windows from {_extra_dir}')
