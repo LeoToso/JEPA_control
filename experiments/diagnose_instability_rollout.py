@@ -107,12 +107,19 @@ def _encode(model, obs, device, frame_stack):
 
 
 def _predict(model, z_history, device):
-    """z_history: list of (1,d) tensors, oldest first, len=W. Returns (1,d)."""
+    """z_history: list of (1,d) tensors, oldest first, len=W. Returns (1,d).
+
+    Predictor signature: forward(z, a)
+        z: (B, W*latent_dim)  — flattened window
+        a: (B, W*action_dim)  — flattened action embeddings
+    """
     with torch.no_grad():
-        z_win  = torch.stack(z_history, dim=1)          # (1, W, d)
+        W      = len(z_history)
+        z_flat = torch.cat(z_history, dim=1)            # (1, W*d)
         a_zero = torch.zeros(1, 1, device=device)
-        a_emb  = model.action_encoder(a_zero)           # (1, d_a)
-        return model.predictor(z_win, a_emb)            # (1, d)
+        a_emb  = model.action_encoder(a_zero)           # (1, d_a) for u=0
+        a_flat = a_emb.repeat(1, W)                     # (1, W*d_a)
+        return model.predictor(z_flat, a_flat)          # (1, d)
 
 
 def _decode(state_head, z, state_mean, state_std):
