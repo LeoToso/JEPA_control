@@ -40,6 +40,7 @@ def _load_norm_stats(data_dir):
 
 
 def _load_model(ckpt_path, cfg, device):
+    import torch.nn as nn
     from models.jepa import make_jepa
     env_cfg   = cfg['environment']
     model_cfg = dict(cfg['model'])
@@ -80,9 +81,21 @@ def _load_model(ckpt_path, cfg, device):
     model.load_state_dict(state, strict=False)
     model.to(device).eval()
 
+    # state_head is saved separately in the checkpoint (not part of model)
+    # It operates on L2-normalized z and predicts normalized physical state.
+    state_head = None
+    if isinstance(raw, dict) and 'state_head_state' in raw:
+        d_lat = int(model_cfg['latent_dim'])
+        state_head = nn.Linear(d_lat, 4).to(device)
+        state_head.load_state_dict(raw['state_head_state'])
+        state_head.eval()
+        print('[model] state_head loaded from checkpoint')
+    else:
+        print('[warn] No state_head_state in checkpoint — decode unavailable')
+
     W = int(model_cfg.get('predictor_window', 1))
     fs = int(model_cfg.get('frame_stack', 1))
-    return model, fs, W
+    return model, state_head, fs, W
 
 
 def _encode(model, obs, device, frame_stack):
@@ -102,10 +115,12 @@ def _predict(model, z_history, device):
         return model.predictor(z_win, a_emb)            # (1, d)
 
 
-def _decode(model, z, state_mean, state_std):
-    """state_head(z) → denormalized physical state (4,)."""
+def _decode(state_head, z, state_mean, state_std):
+    """state_head(normalize(z)) → denormalized physical state (4,)."""
+    import torch.nn.functional as F
     with torch.no_grad():
-        s_norm = model.state_head(z).cpu().numpy()[0]   # (4,) normalized
+        z_n   = F.normalize(z, dim=-1)                  # unit sphere, matches training
+        s_norm = state_head(z_n).cpu().numpy()[0]        # (4,) normalized
     if state_mean is not None and state_std is not None:
         return s_norm * state_std + state_mean
     return s_norm
@@ -148,10 +163,10 @@ def main():
     if state_mean is not None:
         print(f'[norm] mean={np.round(state_mean, 3)}  std={np.round(state_std, 3)}')
 
-    model, frame_stack, W = _load_model(args.checkpoint, cfg, device)
+    model, state_head, frame_stack, W = _load_model(args.checkpoint, cfg, device)
     print(f'[model] frame_stack={frame_stack}  predictor_window={W}')
-    if not hasattr(model, 'state_head') or model.state_head is None:
-        raise RuntimeError('Model has no state_head — needs lambda_state > 0 during training')
+    if state_head is None:
+        raise RuntimeError('No state_head_state in checkpoint — train with lambda_state > 0')
 
     from envs.cartpole_visual import ContinuousCartpoleVisual
     frame_skip = int(env_cfg.get('frame_skip', 1))
@@ -202,11 +217,11 @@ def main():
     # Learned model
     z0 = _encode(model, obs0, device, frame_stack)
     history = [z_star.clone()] * (W - 1) + [z0]
-    s0_dec  = _decode(model, z0, state_mean, state_std)
+    s0_dec  = _decode(state_head, z0, state_mean, state_std)
     lrn     = [s0_dec.copy()]
     for _ in range(args.n_steps):
         z_next = _predict(model, history, device)
-        lrn.append(_decode(model, z_next, state_mean, state_std))
+        lrn.append(_decode(state_head, z_next, state_mean, state_std))
         history = history[1:] + [z_next]
     lrn = np.array(lrn)
 
