@@ -46,6 +46,9 @@ def main():
     p.add_argument('--nonlinear',  action='store_true',
                    help='Use the actual nonlinear predictor (windowed MLP) for CEM '
                         'instead of the linearized Jacobian. Q stays d-dimensional.')
+    p.add_argument('--bias-correct', action='store_true',
+                   help='(nonlinear mode only) Subtract fixed-point bias c=f(z*,0)-z* '
+                        'from each predictor step, so the corrected predictor has f(z*,0)=z*.')
     p.add_argument('--n-samples',  type=int,   default=500)
     p.add_argument('--n-elites',   type=int,   default=50)
     p.add_argument('--n-iter',     type=int,   default=10)
@@ -304,9 +307,26 @@ def main():
         Qf = args.alpha * np.eye(d_plan)
     R  = args.beta  * np.eye(1)
 
+    # Bias correction: wrap predictor to subtract c=f(z*,0)-z* from every step
+    predictor_for_cem = model
+    if args.nonlinear and args.bias_correct:
+        c_bias_t = torch.tensor(c_drift_partial, dtype=torch.float32, device=device)
+        print(f'[bias-correct] subtracting c from each prediction step  '
+              f'||c||={fp_err:.4f}  (effective fp_err after correction = 0)')
+
+        class _BiasCorrectedPredictor:
+            def __init__(self, m, c):
+                self.latent_dim = m.latent_dim
+                self._m = m
+                self._c = c
+            def predict(self, z_win, u_norm):
+                return self._m.predict(z_win, u_norm) - self._c.unsqueeze(0)
+
+        predictor_for_cem = _BiasCorrectedPredictor(model, c_bias_t)
+
     if args.nonlinear:
         cem = CEMLatentPlanner(
-            predictor=model, action_encoder=model.action_encoder, predictor_window=W,
+            predictor=predictor_for_cem, action_encoder=model.action_encoder, predictor_window=W,
             Q=Q, R=R, Q_f=Qf,
             horizon=horizon, chunk_size=1,
             n_samples=args.n_samples,
@@ -339,7 +359,8 @@ def main():
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
     q_desc = f'PearsonQ(w={args.w_phys})' if args.pearson_Q else 'αI'
-    dyn_desc = 'nonlinear-predictor' if args.nonlinear else 'linear-jacobian'
+    bc_desc = '+bias-correct' if (args.nonlinear and args.bias_correct) else ''
+    dyn_desc = f'nonlinear-predictor{bc_desc}' if args.nonlinear else 'linear-jacobian'
     print(f'\n[eval] CEM  H={horizon}  Q={q_desc}  α={args.alpha}  β={args.beta}  '
           f'dynamics={dyn_desc}  n_trials={args.n_trials}  T={args.T}')
 
