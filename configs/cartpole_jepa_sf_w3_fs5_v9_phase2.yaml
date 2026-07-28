@@ -33,8 +33,8 @@ training:
   epochs: 300
   horizon: 5
   # ── Phase 2: freeze encoder + action encoder, train predictor only ────────
-  freeze_encoder_at_epoch: 1
-  freeze_action_proj_at_epoch: 1
+  freeze_encoder_at_epoch: 0
+  freeze_action_proj_at_epoch: 0
   # ── Prediction loss (sole objective) ─────────────────────────────────────
   lambda_pred: 1.0
   # ── fp: keep fixed point at z* ───────────────────────────────────────────
