@@ -38,7 +38,7 @@ training:
   lambda_pred: 1.0
   # ── State reconstruction ─────────────────────────────────────────────────
   lambda_state: 2.0
-  state_loss_weights: [1., 0.1, 100., 10.]
+  state_loss_weights: [1.0, 10.0, 100.0, 10.0]
   state_encoder_grad_scale: 1.0
   # ── SIGreg ────────────────────────────────────────────────────────────────
   lambda_sigreg: 1.0
