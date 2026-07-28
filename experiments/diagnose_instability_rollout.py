@@ -160,6 +160,10 @@ def main():
     p.add_argument('--fit-steps',  type=int,   default=5,
                    help='How many model-prediction steps to use for the growth-rate fit '
                         '(default 5 = training horizon; should match --horizon used during training)')
+    p.add_argument('--plot-steps', type=int,   default=None,
+                   help='Clip the x-axis of the plot to this many total latent steps '
+                        '(default: show all n-steps). Set to warmup_end+fit_steps to show '
+                        'only the trained horizon.')
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default='cuda' if torch.cuda.is_available() else 'cpu')
     args = p.parse_args()
@@ -283,6 +287,8 @@ def main():
     print(f'  Learned/GT   : {ratio:.3f}  ({ratio*100:.1f}% of GT growth rate)')
 
     # ── Plot ──────────────────────────────────────────────────────────────────
+    plot_end = args.plot_steps if args.plot_steps is not None else args.n_steps + warmup_end
+
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
     t_gl  = np.arange(len(gt_lin))
     t_gn  = np.arange(len(gt_nlin))
@@ -299,6 +305,7 @@ def main():
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps = ×{frame_skip * env_cfg["dt"]:.3f}s)')
     ax.set_ylabel('|θ| (rad)')
     ax.set_title(f'Passive divergence — semilog  (θ₀={np.degrees(eps):.1f}°, u=0)')
+    ax.set_xlim(0, plot_end)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3, which='both')
 
@@ -311,6 +318,7 @@ def main():
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps)')
     ax.set_ylabel('θ (degrees)')
     ax.set_title('Pole angle — linear scale')
+    ax.set_xlim(0, plot_end)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
 
