@@ -157,6 +157,9 @@ def main():
                    help='Latent steps to roll out (each = frame_skip physics steps)')
     p.add_argument('--n-eps',      type=int,   default=5,
                    help='Number of eps values to sweep (shows family of curves)')
+    p.add_argument('--fit-steps',  type=int,   default=5,
+                   help='How many model-prediction steps to use for the growth-rate fit '
+                        '(default 5 = training horizon; should match --horizon used during training)')
     p.add_argument('--out',        default=None)
     p.add_argument('--device',     default='cuda' if torch.cuda.is_available() else 'cpu')
     args = p.parse_args()
@@ -249,11 +252,17 @@ def main():
     lrn       = np.array(lrn)
     warmup_end = len(lrn_warmup)  # index where model takes over
 
-    # Print table
-    n_fit  = min(10, args.n_steps // 2)
-    rate_gl = _fit_growth_rate(gt_lin[:, 2],  n_fit)
-    rate_gn = _fit_growth_rate(gt_nlin[:, 2], n_fit)
-    rate_lrn= _fit_growth_rate(lrn[:, 2],     n_fit)
+    # Growth-rate fits.
+    # GT: fit from step 0 over the same number of steps as the trained horizon.
+    # Learned: fit only over the model-prediction phase (post warm-start),
+    #          limited to fit_steps so we don't penalise the model for steps
+    #          it was never trained to predict.
+    n_fit     = args.fit_steps
+    rate_gl   = _fit_growth_rate(gt_lin[:, 2],  n_fit)
+    rate_gn   = _fit_growth_rate(gt_nlin[:, 2], n_fit)
+    # Learned slice: [warmup_end .. warmup_end + n_fit]
+    lrn_fit_slice = lrn[warmup_end:warmup_end + n_fit + 1, 2]
+    rate_lrn  = _fit_growth_rate(lrn_fit_slice, n_fit)
 
     print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"Learned θ (°)":>14}  note')
     print('-' * 70)
@@ -264,7 +273,9 @@ def main():
               f'{np.degrees(gt_nlin[t, 2]):16.3f}  '
               f'{np.degrees(lrn[t, 2]):14.3f}  {note}')
 
-    print(f'\n[growth rate per latent step, fit over first {n_fit} steps]')
+    fit_start = warmup_end
+    fit_end   = warmup_end + n_fit
+    print(f'\n[growth rate per latent step — GT: steps 0–{n_fit}, Learned: model steps {fit_start}–{fit_end}]')
     print(f'  GT linear    : {rate_gl:.4f}  (expected {rho_gt:.4f})')
     print(f'  GT nonlinear : {rate_gn:.4f}')
     print(f'  Learned      : {rate_lrn:.4f}')
@@ -282,7 +293,7 @@ def main():
     ax.semilogy(t_gl,  np.abs(gt_lin[:, 2]),  'g-',   lw=2,    label=f'GT linear (λ={rate_gl:.3f})')
     ax.semilogy(t_gn,  np.abs(gt_nlin[:, 2]), 'b--',  lw=2,    label=f'GT nonlinear (λ={rate_gn:.3f})')
     ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 2]), 'r--', lw=1.2, alpha=0.5, label=f'Learned warm-start (real enc)')
-    ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 2]), 'r-o', lw=1.5, ms=4, label=f'Learned model pred (λ={rate_lrn:.3f})')
+    ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 2]), 'r-o', lw=1.5, ms=4, label=f'Learned model pred (λ={rate_lrn:.3f}, fit steps {fit_start}–{fit_end})')
     ax.axvline(warmup_end - 1, color='orange', lw=0.8, linestyle=':', label=f'model takes over (step {warmup_end-1})')
     ax.axhline(np.pi / 2, color='gray', lw=0.8, linestyle=':', label='90°')
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps = ×{frame_skip * env_cfg["dt"]:.3f}s)')
