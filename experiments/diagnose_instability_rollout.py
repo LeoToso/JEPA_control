@@ -289,13 +289,12 @@ def main():
     # ── Plot ──────────────────────────────────────────────────────────────────
     plot_end = args.plot_steps if args.plot_steps is not None else args.n_steps + warmup_end
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
     t_gl  = np.arange(len(gt_lin))
     t_gn  = np.arange(len(gt_nlin))
     t_lrn = np.arange(len(lrn))
 
-    # Panel 1: semilog
-    ax = axes[0]
+    # Semilog panel
     ax.semilogy(t_gl,  np.abs(gt_lin[:, 2]),  'g-',   lw=2,    label=f'GT linear (λ={rate_gl:.3f})')
     ax.semilogy(t_gn,  np.abs(gt_nlin[:, 2]), 'b--',  lw=2,    label=f'GT nonlinear (λ={rate_gn:.3f})')
     ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 2]), 'r--', lw=1.2, alpha=0.5, label=f'Learned warm-start (real enc)')
@@ -308,19 +307,6 @@ def main():
     ax.set_xlim(0, plot_end)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3, which='both')
-
-    # Panel 2: linear
-    ax = axes[1]
-    ax.plot(t_gl,  np.degrees(gt_lin[:, 2]),  'g-',   lw=2,   label='GT linear')
-    ax.plot(t_gn,  np.degrees(gt_nlin[:, 2]), 'b--',  lw=2,   label='GT nonlinear')
-    ax.axvline(warmup_end - 1, color='orange', lw=0.8, linestyle=':', label=f'model takes over')
-    ax.plot(t_lrn, np.degrees(lrn[:, 2]),     'r-o',  lw=1.5, ms=4, label='Learned decoded')
-    ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps)')
-    ax.set_ylabel('θ (degrees)')
-    ax.set_title('Pole angle — linear scale')
-    ax.set_xlim(0, plot_end)
-    ax.legend(fontsize=9)
-    ax.grid(alpha=0.3)
 
     ckpt_name = Path(args.checkpoint).stem
     fig.suptitle(f'Instability Rollout — {ckpt_name}', fontsize=11)
