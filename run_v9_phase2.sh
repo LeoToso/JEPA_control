@@ -8,4 +8,5 @@ python experiments/train_jepa_pred_inv_random.py \
     --init-checkpoint  results/jepa_sf_w3_fs5_v9/checkpoints/checkpoint_epoch0100.pt \
     --save-dir         results/jepa_sf_w3_fs5_v9_phase2 \
     --epochs 500 \
+    --no-preload \
     --device cuda:2
