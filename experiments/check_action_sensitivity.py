@@ -47,7 +47,9 @@ def _predict_step(model, z_win_np, u_raw, action_scale, device):
     W, d = z_win_np.shape
     z_t = torch.tensor(z_win_np, dtype=torch.float32, device=device).unsqueeze(0)  # (1,W,d)
     u_norm = u_raw / action_scale
-    u_t = torch.tensor([[[u_norm]]], dtype=torch.float32, device=device)  # (1,W,1)
+    # u_win shape must be (1, W, 1): zeros for history, u_norm at last (current) slot
+    u_t = torch.zeros(1, W, 1, dtype=torch.float32, device=device)
+    u_t[0, -1, 0] = u_norm
     with torch.no_grad():
         z_next = model.predict(z_t, u_t).cpu().numpy()[0]
     return z_next
