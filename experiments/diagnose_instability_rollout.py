@@ -151,6 +151,9 @@ def main():
     p.add_argument('--config',     required=True)
     p.add_argument('--data',       required=True,
                    help='Dataset dir for normalization stats')
+    p.add_argument('--state-head-ckpt', default=None,
+                   help='Checkpoint to load state_head from (use when main checkpoint '
+                        'has no state head, e.g. phase-2 frozen-encoder runs)')
     p.add_argument('--eps',        type=float, default=0.05,
                    help='Initial pole angle (rad) — default 0.05 (~3 deg)')
     p.add_argument('--n-steps',    type=int,   default=20,
@@ -179,6 +182,17 @@ def main():
 
     model, state_head, frame_stack, W = _load_model(args.checkpoint, cfg, device)
     print(f'[model] frame_stack={frame_stack}  predictor_window={W}')
+    if state_head is None and args.state_head_ckpt is not None:
+        import torch.nn as nn
+        d_lat = int(cfg['model']['latent_dim'])
+        sh_raw = torch.load(args.state_head_ckpt, map_location=device, weights_only=False)
+        if isinstance(sh_raw, dict) and 'state_head_state' in sh_raw:
+            state_head = nn.Linear(d_lat, 4).to(device)
+            state_head.load_state_dict(sh_raw['state_head_state'])
+            state_head.eval()
+            print(f'[model] state_head loaded from --state-head-ckpt ({args.state_head_ckpt})')
+        else:
+            print('[warn] --state-head-ckpt also has no state_head_state')
     if state_head is None:
         raise RuntimeError('No state_head_state in checkpoint — train with lambda_state > 0')
 
