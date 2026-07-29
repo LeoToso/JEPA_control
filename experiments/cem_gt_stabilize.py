@@ -150,7 +150,7 @@ def main():
         ).to(device)
         planner = CEMLatentPlanner(
             predictor=physics, action_encoder=None,
-            predictor_window=1,         # Markov: only current state needed
+            predictor_window=2,         # W=2 uses windowed path (predict()); W=1 path needs action_encoder
             Q=Q, R=R, Q_f=Q_f,
             horizon=args.horizon, chunk_size=1,
             n_samples=args.n_samples, n_elites=args.n_elites,
