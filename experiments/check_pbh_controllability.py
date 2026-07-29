@@ -108,11 +108,23 @@ def main():
     from control.jacobian import compute_augmented_jacobian_np
     print('[jacobian] computing A_aug, B_aug ...')
     A_aug, B_aug = compute_augmented_jacobian_np(model, z_star, device)
-    print(f'[jacobian] A_aug shape={A_aug.shape}  B_aug shape={B_aug.shape}')
+    print(f'[jacobian] A_aug shape={A_aug.shape}  B_aug (pre-proj) shape={B_aug.shape}')
 
     eigs_aug = scipy.linalg.eigvals(A_aug)
     rho_aug  = float(np.max(np.abs(eigs_aug)))
-    print(f'[jacobian] ρ(A_aug)={rho_aug:.4f}  ||B_aug||={np.linalg.norm(B_aug):.4f}')
+    print(f'[jacobian] ρ(A_aug)={rho_aug:.4f}  ||B_aug (pre-proj)||={np.linalg.norm(B_aug):.4f}')
+
+    # Project B through action encoder (latent action → scalar u), matching check_lqr_aug.py.
+    # B_jac/B_aug are ∂f/∂c (c = encoded action, shape m).  The real control input is
+    # scalar u_raw, and c = W_enc @ u_raw  →  B_eff = B_aug @ W_enc  (Wd, 1).
+    if hasattr(model.action_encoder, 'W'):
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
+        B_aug = B_aug @ W_enc                                          # (Wd, 1)
+        print(f'[jacobian] projected B through action encoder W_enc ({W_enc.shape})')
+        print(f'[jacobian] B_eff shape={B_aug.shape}  ||B_eff||={np.linalg.norm(B_aug):.4f}')
+    else:
+        print('[jacobian] WARNING: action_encoder has no .W — using B_aug as-is '
+              f'(shape {B_aug.shape}, may be multi-column)')
 
     # Fixed-point error
     c_aug = np.zeros(Wd)
