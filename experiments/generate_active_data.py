@@ -108,6 +108,29 @@ def _collect_passive_episode(env, ep_len, init_max, rng):
             np.stack(state_list).astype(np.float32))
 
 
+def _collect_random_episode(env, ep_len, amplitude, init_max, rng,
+                             action_lb, action_ub):
+    """Continuous uniform random actions: u ~ Uniform(-amplitude, amplitude).
+
+    Never terminates early — keeps stepping even after the pole falls.
+    Every (z, u, z') transition is valid predictor training data regardless
+    of physical state, so we collect the full ep_len steps unconditionally.
+    """
+    x0 = rng.uniform(-init_max, init_max, 4).astype(np.float32)
+    obs, state, _ = env.reset_to_state(x0)
+    obs_list, state_list, act_list = [obs.copy()], [state.copy()], []
+    for _ in range(ep_len):
+        u = float(np.clip(rng.uniform(-amplitude, amplitude), action_lb, action_ub))
+        next_obs, next_state, _, _, _ = env.step(u)
+        act_list.append(np.float32(u))
+        obs_list.append(next_obs.copy())
+        state_list.append(next_state.copy())
+        obs, state = next_obs, next_state
+    return (np.stack(obs_list).astype(np.uint8),
+            np.array(act_list, dtype=np.float32),
+            np.stack(state_list).astype(np.float32))
+
+
 def _write_hdf5(path: Path, episodes_data: list) -> None:
     """Write episodes in DiscreteHDF5TrajectoryDataset-compatible format."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +168,12 @@ def main():
     p.add_argument('--n-passive',      type=int,   default=100)
     p.add_argument('--passive-ep-len', type=int,   default=80)
     p.add_argument('--passive-init-max', type=float, default=0.05)
+    # Random episodes
+    p.add_argument('--n-random',          type=int,   default=0)
+    p.add_argument('--random-ep-len',     type=int,   default=100)
+    p.add_argument('--random-amplitude',  type=float, default=6.0,
+                   help='Uniform random action amplitude (N)')
+    p.add_argument('--random-init-max',   type=float, default=0.1)
     # Split
     p.add_argument('--train-frac',     type=float, default=0.85)
     p.add_argument('--val-frac',       type=float, default=0.10)
@@ -160,7 +189,7 @@ def main():
     action_ub  = float(env_cfg['action_range'][1])
 
     rng = np.random.RandomState(args.seed)
-    K   = _compute_lqr_gain(env_cfg, frame_skip)
+    K   = _compute_lqr_gain(env_cfg, frame_skip) if args.n_lqr > 0 else None
 
     from envs.cartpole_visual import ContinuousCartpoleVisual
     env = ContinuousCartpoleVisual(
@@ -178,43 +207,60 @@ def main():
 
     # ── LQR episodes ──────────────────────────────────────────────────────────
     n_lqr = args.n_lqr
-    print(f'[collect] LQR: {n_lqr} ep × {args.lqr_ep_len} steps  '
-          f'init_max={args.lqr_init_max}  noise_std={args.lqr_noise_std}')
-    t0 = time.time()
-    for i in range(n_lqr):
-        obs, acts, states = _collect_lqr_episode(
-            env, K, args.lqr_ep_len, args.lqr_init_max, rng,
-            action_lb, action_ub, noise_std=args.lqr_noise_std)
-        episodes.append((obs, acts, states))
-        if (i + 1) % 100 == 0:
-            print(f'  {i+1}/{n_lqr}  ({time.time()-t0:.1f}s)')
+    if n_lqr > 0:
+        print(f'[collect] LQR: {n_lqr} ep × {args.lqr_ep_len} steps  '
+              f'init_max={args.lqr_init_max}  noise_std={args.lqr_noise_std}')
+        t0 = time.time()
+        for i in range(n_lqr):
+            obs, acts, states = _collect_lqr_episode(
+                env, K, args.lqr_ep_len, args.lqr_init_max, rng,
+                action_lb, action_ub, noise_std=args.lqr_noise_std)
+            episodes.append((obs, acts, states))
+            if (i + 1) % 100 == 0:
+                print(f'  {i+1}/{n_lqr}  ({time.time()-t0:.1f}s)')
 
     # ── PRBS episodes ─────────────────────────────────────────────────────────
     n_prbs = args.n_prbs
-    print(f'[collect] PRBS: {n_prbs} ep × {args.prbs_ep_len} steps  '
-          f'amp={args.prbs_amplitude}  flip_prob={args.prbs_flip_prob}')
-    for i in range(n_prbs):
-        obs, acts, states = _collect_prbs_episode(
-            env, args.prbs_ep_len, args.prbs_amplitude, args.prbs_flip_prob,
-            args.prbs_init_max, rng, action_lb, action_ub)
-        episodes.append((obs, acts, states))
-        if (i + 1) % 100 == 0:
-            print(f'  {i+1}/{n_prbs}')
+    if n_prbs > 0:
+        print(f'[collect] PRBS: {n_prbs} ep × {args.prbs_ep_len} steps  '
+              f'amp={args.prbs_amplitude}  flip_prob={args.prbs_flip_prob}')
+        for i in range(n_prbs):
+            obs, acts, states = _collect_prbs_episode(
+                env, args.prbs_ep_len, args.prbs_amplitude, args.prbs_flip_prob,
+                args.prbs_init_max, rng, action_lb, action_ub)
+            episodes.append((obs, acts, states))
+            if (i + 1) % 100 == 0:
+                print(f'  {i+1}/{n_prbs}')
 
     # ── Passive episodes ──────────────────────────────────────────────────────
     n_passive = args.n_passive
-    print(f'[collect] Passive: {n_passive} ep × {args.passive_ep_len} steps  '
-          f'init_max={args.passive_init_max}')
-    for i in range(n_passive):
-        obs, acts, states = _collect_passive_episode(
-            env, args.passive_ep_len, args.passive_init_max, rng)
-        episodes.append((obs, acts, states))
+    if n_passive > 0:
+        print(f'[collect] Passive: {n_passive} ep × {args.passive_ep_len} steps  '
+              f'init_max={args.passive_init_max}')
+        for i in range(n_passive):
+            obs, acts, states = _collect_passive_episode(
+                env, args.passive_ep_len, args.passive_init_max, rng)
+            episodes.append((obs, acts, states))
+
+    # ── Random episodes ───────────────────────────────────────────────────────
+    n_random = args.n_random
+    if n_random > 0:
+        print(f'[collect] Random: {n_random} ep × {args.random_ep_len} steps  '
+              f'amp={args.random_amplitude}  init_max={args.random_init_max}')
+        t0 = time.time()
+        for i in range(n_random):
+            obs, acts, states = _collect_random_episode(
+                env, args.random_ep_len, args.random_amplitude, args.random_init_max,
+                rng, action_lb, action_ub)
+            episodes.append((obs, acts, states))
+            if (i + 1) % 100 == 0:
+                print(f'  {i+1}/{n_random}  ({time.time()-t0:.1f}s)')
 
     env.close()
 
     total_transitions = sum(len(a) for _, a, _ in episodes)
     print(f'\n[data] Total: {len(episodes)} episodes  {total_transitions:,} transitions')
-    print(f'       Composition: {n_lqr} LQR + {n_prbs} PRBS + {n_passive} passive')
+    print(f'       Composition: {n_lqr} LQR + {n_prbs} PRBS + {n_passive} passive + {n_random} random')
 
     # ── Shuffle and split ─────────────────────────────────────────────────────
     idx = np.arange(len(episodes))
@@ -256,6 +302,10 @@ def main():
         'n_passive':          n_passive,
         'passive_ep_len':     args.passive_ep_len,
         'passive_init_max':   args.passive_init_max,
+        'n_random':           n_random,
+        'random_ep_len':      args.random_ep_len,
+        'random_amplitude':   args.random_amplitude,
+        'random_init_max':    args.random_init_max,
         'seed':               args.seed,
         'total_transitions':  total_transitions,
         'generation_timestamp': datetime.datetime.now().isoformat(),
