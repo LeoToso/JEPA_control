@@ -148,9 +148,11 @@ def main():
         idx = int(np.argmin(residuals))
         v = vl_mat[:, idx]
 
-        # PBH score: |v^H B| / (||v|| ||B||)
-        vHB   = np.abs(v.conj() @ B_aug)          # scalar (m=1)
-        score = float(vHB / (np.linalg.norm(v) * np.linalg.norm(B_aug) + 1e-12))
+        # PBH score: ||v^H B||_2 / (||v|| ||B||_F)
+        # v^H B_aug is a (m,) row vector; use its 2-norm
+        vHB      = v.conj() @ B_aug               # (m,) complex row vector
+        vHB_norm = float(np.linalg.norm(vHB))
+        score    = vHB_norm / (np.linalg.norm(v) * np.linalg.norm(B_aug, 'fro') + 1e-12)
 
         # σ_min([λI - A | B])
         M      = np.hstack([lam * np.eye(Wd) - A_aug, B_aug])
@@ -162,7 +164,7 @@ def main():
               f'(0=uncontrollable, 1=max)')
         print(f'  σ_min([λI-A | B])     = {sig_min:.6f}  '
               f'(0=rank-deficient = uncontrollable)')
-        print(f'  |v^H B|               = {float(vHB):.6f}')
+        print(f'  ||v^H B||_2           = {vHB_norm:.6f}')
         print()
 
     # ── Controllability Gramian (finite-time) ─────────────────────────────────
@@ -206,8 +208,9 @@ def main():
                      for i in range(4)]
         idx = int(np.argmin(residuals))
         v_gt  = vl_gt[:, idx]
-        score_gt = float(np.abs(v_gt.conj() @ gt.B_star) /
-                         (np.linalg.norm(v_gt) * np.linalg.norm(gt.B_star) + 1e-12))
+        vHB_gt   = v_gt.conj() @ gt.B_star          # (m_gt,) vector
+        score_gt = float(np.linalg.norm(vHB_gt) /
+                         (np.linalg.norm(v_gt) * np.linalg.norm(gt.B_star, 'fro') + 1e-12))
         print(f'GT λ={lam_gt:.4f}  PBH score={score_gt:.6f}  '
               f'(GT is fully controllable)')
 
@@ -221,8 +224,8 @@ def main():
                      for i in range(Wd)]
         idx   = int(np.argmin(residuals))
         v     = vl_mat[:, idx]
-        score = float(np.abs(v.conj() @ B_aug) /
-                      (np.linalg.norm(v) * np.linalg.norm(B_aug) + 1e-12))
+        score = float(np.linalg.norm(v.conj() @ B_aug) /
+                      (np.linalg.norm(v) * np.linalg.norm(B_aug, 'fro') + 1e-12))
         status = 'CONTROLLABLE' if score > 0.1 else ('MARGINAL' if score > 0.01 else 'UNCONTROLLABLE')
         print(f'  λ={lam:.4f}  PBH={score:.4f}  → {status}')
         if score <= 0.01:
