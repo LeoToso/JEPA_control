@@ -987,10 +987,25 @@ class Trainer:
         freeze_enc_epochs   = int(self.cfg.get('freeze_encoder_epochs', 0))
         # Stage-1→2 transition: freeze encoder at a specific epoch without
         # affecting the loss schedule (unlike warmup which disables pred_loss).
-        freeze_encoder_at   = int(self.cfg.get('freeze_encoder_at_epoch', 0))
+        freeze_encoder_at   = int(self.cfg.get('freeze_encoder_at_epoch', -1))
         _encoder_frozen     = False
-        freeze_action_proj_at = int(self.cfg.get('freeze_action_proj_at_epoch', 0))
+        freeze_action_proj_at = int(self.cfg.get('freeze_action_proj_at_epoch', -1))
         _action_proj_frozen   = False
+
+        # freeze_encoder_at_epoch=0 → freeze before any gradient step
+        if freeze_encoder_at == 0 and not _encoder_frozen:
+            for p in self.model.encoder.parameters():
+                p.requires_grad_(False)
+            _encoder_frozen = True
+            print('[train] encoder frozen before epoch 0 (freeze_encoder_at_epoch=0)')
+        if freeze_action_proj_at == 0 and not _action_proj_frozen:
+            for p in self.model.action_encoder.parameters():
+                p.requires_grad_(False)
+            if hasattr(self.model.predictor, 'a_proj'):
+                for p in self.model.predictor.a_proj.parameters():
+                    p.requires_grad_(False)
+            _action_proj_frozen = True
+            print('[train] action projection frozen before epoch 0 (freeze_action_proj_at_epoch=0)')
         _saved_lambdas = (
             self.lambda_pred, self.lambda_state, self.lambda_spec,
             self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
