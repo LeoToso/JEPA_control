@@ -49,6 +49,15 @@ def main():
     p.add_argument('--bias-correct', action='store_true',
                    help='(nonlinear mode only) Subtract fixed-point bias c=f(z*,0)-z* '
                         'from each predictor step, so the corrected predictor has f(z*,0)=z*.')
+    p.add_argument('--state-head-ckpt', default=None,
+                   help='Checkpoint containing state_head_state (for phase-2 runs without state head)')
+    p.add_argument('--state-head-Q', action='store_true',
+                   help='Build Q = Ws^T Q_phys Ws from the state_head weight matrix. '
+                        'Requires --state-head-ckpt or a checkpoint that contains state_head_state.')
+    p.add_argument('--q-phys', type=float, nargs=4,
+                   default=[1.0, 1.0, 100.0, 10.0],
+                   metavar=('Q_X', 'Q_XDOT', 'Q_THETA', 'Q_THETADOT'),
+                   help='Physical state cost weights for --state-head-Q (default: 1 1 100 10)')
     p.add_argument('--n-samples',  type=int,   default=500)
     p.add_argument('--n-elites',   type=int,   default=50)
     p.add_argument('--n-iter',     type=int,   default=10)
@@ -174,6 +183,28 @@ def main():
     d = len(z_star)
     print(f'[control] d={d}  ||z*||={np.linalg.norm(z_star):.3f}')
 
+    # Load state_head (needed for --state-head-Q controllability diagnostic)
+    import torch.nn as nn
+    state_head = None
+    _sh_sources = []
+    if isinstance(raw, dict) and 'state_head_state' in raw:
+        state_head = nn.Linear(d, 4).to(device)
+        state_head.load_state_dict(raw['state_head_state'])
+        state_head.eval()
+        _sh_sources.append(f'main ckpt ({ckpt_path.name})')
+    if state_head is None and args.state_head_ckpt is not None:
+        _sh_raw = torch.load(args.state_head_ckpt, map_location=device, weights_only=False)
+        if isinstance(_sh_raw, dict) and 'state_head_state' in _sh_raw:
+            state_head = nn.Linear(d, 4).to(device)
+            state_head.load_state_dict(_sh_raw['state_head_state'])
+            state_head.eval()
+            _sh_sources.append(f'--state-head-ckpt ({args.state_head_ckpt})')
+    if state_head is not None:
+        print(f'[state_head] loaded from {", ".join(_sh_sources)}')
+    elif args.state_head_Q:
+        raise RuntimeError('--state-head-Q requires a state_head; provide --state-head-ckpt '
+                           'or a checkpoint with state_head_state')
+
     # Jacobian — partial (d×d) and augmented (Wd×Wd)
     from control.jacobian import compute_jacobian_np, compute_augmented_jacobian_np
     W = getattr(model.config, 'predictor_window', 1)
@@ -208,6 +239,17 @@ def main():
         B_jac = B_jac @ W_enc   # (d, 1)
         B_aug = B_aug @ W_enc   # (W*d, 1)
         print(f'[control] projected B through action encoder: B_jac {B_jac.shape}  B_aug {B_aug.shape}')
+
+    # Controllability diagnostic: how much does action affect each decoded state dimension?
+    if state_head is not None:
+        Ws = state_head.weight.detach().cpu().numpy()  # (4, d)
+        # d_phys/d_u_norm = Ws @ B_jac  (4, 1) — normalized action sensitivity on physical state
+        dphys_du = (Ws @ B_jac).flatten()             # (4,)
+        print(f'[controllability] ∂decoded_state/∂u_norm: '
+              f'x={dphys_du[0]:.4f}  xdot={dphys_du[1]:.4f}  '
+              f'theta={dphys_du[2]:.4f}  thetadot={dphys_du[3]:.4f}')
+        print(f'[controllability] ∂theta/∂u_raw = {dphys_du[2]/action_scale:.5f}  '
+              f'(GT ∂theta/∂u_raw via B_star ≈ {float(gt.B_star[2, 0]):.5f})')
 
     # Pre-stabilise: try augmented first; fall back to partial if no unstable modes found
     from control.lqr import pre_stabilize_A
@@ -258,7 +300,20 @@ def main():
     from control.cem import CEMLatentPlanner
     from control.rollout import evaluate_stabilization_mpc
 
-    if args.pearson_Q:
+    if args.state_head_Q:
+        Ws = state_head.weight.detach().cpu().numpy()   # (4, d)
+        Q_phys = np.diag(args.q_phys)                  # (4, 4)
+        Q_base = Ws.T @ Q_phys @ Ws                    # (d, d)
+        Q_base = Q_base / (np.trace(Q_base) / d)       # normalise: trace = d
+        Q_base = args.alpha * Q_base
+        tile = W if (use_aug and not args.nonlinear) else 1
+        Q  = np.kron(np.eye(tile), Q_base)
+        Qf = Q.copy()
+        eigvals = np.linalg.eigvalsh(Q_base)
+        print(f'[state-head-Q] Q_phys diag={args.q_phys}')
+        print(f'[state-head-Q] Q_base eigs: min={eigvals[0]:.4f}  max={eigvals[-1]:.4f}  '
+              f'cond={eigvals[-1]/(eigvals[0]+1e-12):.1f}')
+    elif args.pearson_Q:
         # Collect rollouts to estimate Pearson correlation matrix C (d×4)
         print(f'[pearson-Q] collecting {args.pearson_rollouts} rollouts to estimate C ...')
         rng_p = np.random.RandomState(0)
@@ -358,7 +413,9 @@ def main():
     stab_thr   = float(ctrl_cfg.get('stabilization_threshold', 0.1))
     sett_thr   = float(ctrl_cfg.get('settling_threshold', 0.05))
 
-    q_desc = f'PearsonQ(w={args.w_phys})' if args.pearson_Q else 'αI'
+    q_desc = (f'StateHeadQ(w={args.q_phys})' if args.state_head_Q
+              else f'PearsonQ(w={args.w_phys})' if args.pearson_Q
+              else 'αI')
     bc_desc = '+bias-correct' if (args.nonlinear and args.bias_correct) else ''
     dyn_desc = f'nonlinear-predictor{bc_desc}' if args.nonlinear else 'linear-jacobian'
     print(f'\n[eval] CEM  H={horizon}  Q={q_desc}  α={args.alpha}  β={args.beta}  '
