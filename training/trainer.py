@@ -991,6 +991,8 @@ class Trainer:
         _encoder_frozen     = False
         freeze_action_proj_at = int(self.cfg.get('freeze_action_proj_at_epoch', -1))
         _action_proj_frozen   = False
+        freeze_predictor_at = int(self.cfg.get('freeze_predictor_at_epoch', -1))
+        _predictor_frozen   = False
 
         # freeze_encoder_at_epoch=0 → freeze before any gradient step
         if freeze_encoder_at == 0 and not _encoder_frozen:
@@ -1006,6 +1008,11 @@ class Trainer:
                     p.requires_grad_(False)
             _action_proj_frozen = True
             print('[train] action projection frozen before epoch 0 (freeze_action_proj_at_epoch=0)')
+        if freeze_predictor_at == 0 and not _predictor_frozen:
+            for p in self.model.predictor.parameters():
+                p.requires_grad_(False)
+            _predictor_frozen = True
+            print('[train] predictor frozen before epoch 0 (freeze_predictor_at_epoch=0)')
         _saved_lambdas = (
             self.lambda_pred, self.lambda_state, self.lambda_spec,
             self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
@@ -1078,6 +1085,14 @@ class Trainer:
                 _action_proj_frozen = True
                 print(f'[train] Action projection frozen at epoch {epoch+1} '
                       f'(freeze_action_proj_at_epoch={freeze_action_proj_at})')
+
+            # Freeze entire predictor to preserve A_aug while only training action encoder.
+            if freeze_predictor_at > 0 and epoch == freeze_predictor_at and not _predictor_frozen:
+                for p in self.model.predictor.parameters():
+                    p.requires_grad_(False)
+                _predictor_frozen = True
+                print(f'[train] predictor frozen at epoch {epoch+1} '
+                      f'(freeze_predictor_at_epoch={freeze_predictor_at})')
 
             # Update ρ_max from growth rates collected during the previous epoch.
             if self.lambda_unstable > 0 and len(self._rho_buffer) > 10:
