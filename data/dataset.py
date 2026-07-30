@@ -352,7 +352,10 @@ def load_discrete_dataset_meta(dataset_dir: str) -> dict:
                 train_actions.append(a.astype(np.float32))
 
     if train_states:
-        all_s      = np.concatenate(train_states, axis=0)
+        all_s = np.concatenate(train_states, axis=0)
+        # Wrap theta (col 2) to [-pi, pi] so passive spinning episodes
+        # don't inflate the std and corrupt normalization.
+        all_s[:, 2] = np.arctan2(np.sin(all_s[:, 2]), np.cos(all_s[:, 2]))
         state_mean = all_s.mean(axis=0)
         state_std  = all_s.std(axis=0).clip(min=1e-6)
     else:
@@ -535,6 +538,9 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         states = torch.from_numpy(
             np.concatenate([self.states[start: start + H],
                             self.next_states[start + H - 1: start + H]], axis=0))  # (H+1, 4)
+        # Wrap theta to [-pi, pi] before normalisation (passive episodes accumulate
+        # theta past 2*pi; wrapping eliminates visual-ambiguity in state supervision).
+        states[:, 2] = torch.atan2(states[:, 2].sin(), states[:, 2].cos())
         if self.state_mean is not None and self.state_std is not None:
             states = ((states - torch.from_numpy(self.state_mean))
                       / torch.from_numpy(self.state_std))
