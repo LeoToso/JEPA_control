@@ -81,7 +81,8 @@ def main():
     cem_cfg   = cfg.get('cem', {})
     ctrl_cfg  = cfg.get('control', {})
 
-    frame_stack = int(model_cfg.get('frame_stack', 1))
+    frame_stack    = int(model_cfg.get('frame_stack', 1))
+    use_frame_diff = bool(model_cfg.get('use_frame_diff', False))
     frame_skip  = int(env_cfg.get('frame_skip', 1))
     action_lb   = float(env_cfg['action_range'][0])
     action_ub   = float(env_cfg['action_range'][1])
@@ -170,16 +171,18 @@ def main():
 
     def _make_obs_t(obs_np, prev_obs_np=None):
         curr = torch.from_numpy(obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0
+        prev = (curr if prev_obs_np is None else
+                torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
         if frame_stack > 1:
-            prev = (curr if prev_obs_np is None else
-                    torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
             return torch.cat([prev, curr], dim=1)
+        elif use_frame_diff:
+            return torch.cat([prev, curr, curr - prev], dim=1)
         return curr
 
     obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
     obs_eq_t = _make_obs_t(obs_eq)
     with torch.no_grad():
-        z_star = model.encoder(obs_eq_t).cpu().numpy()[0]
+        z_star = model.encoder(obs_eq_t).cpu().numpy()[0]   # obs_eq_t already has correct channels
     d = len(z_star)
     print(f'[control] d={d}  ||z*||={np.linalg.norm(z_star):.3f}')
 
@@ -326,7 +329,7 @@ def main():
             for _ in range(50):
                 obs_t = _make_obs_t(obs, prev_obs)
                 with torch.no_grad():
-                    z = model.encoder(obs_t).cpu().numpy()[0]
+                    z = model.encoder(obs_t).cpu().numpy()[0]   # obs_t already has correct channels
                 zs_p.append(z); states_p.append(state.copy())
                 action = env.sample_action()
                 obs_next, state_next, _, done, _ = env.step(action)
@@ -429,7 +432,7 @@ def main():
         settling_threshold=sett_thr,
         seed=args.seed, device=device, z_star=z_star_plan,
         vis_trial=0,
-        frame_stack=frame_stack,
+        frame_stack=frame_stack, use_frame_diff=use_frame_diff,
     )
 
     print(f'\n[result] success_rate          = {cr["success_rate"]:.3f}')
