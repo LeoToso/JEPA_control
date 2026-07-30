@@ -18,19 +18,26 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 
-def load_episodes(hdf5_path, max_eps=None):
+def load_episodes(hdf5_path, max_eps=None, seed=0):
+    rng = np.random.RandomState(seed)
     eps = []
     with h5py.File(hdf5_path, 'r') as f:
         keys = sorted(f['episodes'].keys(), key=int)
-        if max_eps is not None:
-            keys = keys[:max_eps]
+        if max_eps is not None and max_eps < len(keys):
+            keys = rng.choice(keys, size=max_eps, replace=False).tolist()
         for k in keys:
             ep = f['episodes'][k]
+            policy = ep.attrs.get('policy_type', '')
+            # Fallback: infer from action_source if policy_type attr missing
+            if not policy and 'action_source' in ep:
+                src = ep['action_source'][:]
+                # SRC_PASSIVE=4, SRC_RANDOM=3
+                policy = 'passive' if (src == 4).mean() > 0.5 else 'random'
             eps.append({
-                'obs':    ep['observations'][:],   # (T, H, W, 3) uint8
-                'states': ep['states'][:],          # (T, 4) float32
-                'actions':ep['actions'][:],         # (T,) float32
-                'policy': ep.attrs.get('policy_type', 'unknown'),
+                'obs':    ep['observations'][:],
+                'states': ep['states'][:],
+                'actions':ep['actions'][:],
+                'policy': str(policy),
                 'length': int(ep.attrs.get('length', len(ep['actions']))),
             })
     return eps
@@ -40,13 +47,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--data', default='data/cartpole_visual_fs5_v4')
     p.add_argument('--out',  default='results/dataset_viz.png')
-    p.add_argument('--n-eps', type=int, default=300,
-                   help='Max episodes to load for statistics')
+    p.add_argument('--n-eps', type=int, default=600,
+                   help='Episodes to randomly sample for statistics (None=all)')
     args = p.parse_args()
 
     train_path = Path(args.data) / 'train.hdf5'
     print(f'Loading {train_path} …')
-    eps = load_episodes(train_path, max_eps=args.n_eps)
+    eps = load_episodes(train_path, max_eps=args.n_eps, seed=0)
 
     passive = [e for e in eps if 'passive' in e['policy']]
     random  = [e for e in eps if 'random'  in e['policy']]
