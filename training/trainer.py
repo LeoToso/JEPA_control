@@ -681,6 +681,15 @@ class Trainer:
             fp_loss = F.mse_loss(z_star_pred, self._z_star_ema.unsqueeze(0).detach())
             total_loss = total_loss + self.lambda_fp * fp_loss
             info['fp_loss'] = fp_loss.item()
+            info['fp_err'] = torch.norm(z_star_pred.squeeze(0) - self._z_star_ema.detach()).item()
+
+        # fp_err diagnostic: track ||f(z*,0)-z*|| even when lambda_fp=0 or during val
+        if self._z_star_ema is not None and 'fp_err' not in info:
+            with torch.no_grad():
+                _zw = self._z_star_ema.unsqueeze(0).unsqueeze(0).expand(1, W, -1)
+                _uw = torch.zeros(1, W, 1, device=self.device)
+                _zp = self.model.predict(_zw, _uw)
+                info['fp_err'] = torch.norm(_zp.squeeze(0) - self._z_star_ema).item()
 
         # B-alignment loss: predictor's action sensitivity at z* must match encoder FD.
         # f(z*, u_test) - f(z*, 0) should equal B_target * u_test (direction + magnitude).
@@ -999,6 +1008,51 @@ class Trainer:
                     metrics.setdefault(k, []).append(v)
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
+    def _eval_z_ss_delta(self):
+        """Once-per-epoch diagnostic: ||(I-A_cl)^{-1} c_aug|| via DARE.
+
+        Measures how far the LQR closed-loop steady state drifts from z* due
+        to fp_err (the affine fixed-point offset c_aug).  Large values (>10)
+        indicate the controller will saturate and fail even if ρ(A_aug)>1.
+        """
+        if self._z_star_ema is None:
+            return None
+        try:
+            import scipy.linalg as sla
+            from control.jacobian import compute_augmented_jacobian_np
+            _W  = self.predictor_window
+            _d  = self._z_star_ema.shape[0]
+            _Wd = _W * _d
+            _z_np = self._z_star_ema.cpu().numpy()
+            _was_train = self.model.training
+            self.model.eval()
+            _A_aug, _B_aug = compute_augmented_jacobian_np(self.model, _z_np, self.device)
+            if _was_train:
+                self.model.train()
+            # Project B_aug through scalar action encoder (c = W_enc @ u)
+            if hasattr(self.model.action_encoder, 'W'):
+                _W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()  # (m,1)
+                _B_aug = _B_aug @ _W_enc   # (Wd, 1)
+            # c_aug: affine drift at z* in augmented coordinates
+            with torch.no_grad():
+                _z_t   = self._z_star_ema.unsqueeze(0)
+                _z_win = _z_t.unsqueeze(1).expand(1, _W, -1)
+                _u_win = torch.zeros(1, _W, 1, device=self.device)
+                _z_pred = self.model.predict(_z_win, _u_win)   # (1, d)
+            _c_p   = (_z_pred.squeeze(0) - self._z_star_ema).cpu().numpy()   # (d,)
+            _c_aug = np.concatenate([_c_p, np.zeros((_W - 1) * _d)])         # (Wd,)
+            # DARE → K → A_cl → steady-state offset
+            _Q = np.eye(_Wd)
+            _R = np.array([[0.01]])
+            _P = sla.solve_discrete_are(_A_aug, _B_aug, _Q, _R)
+            _K = np.linalg.solve(_R + _B_aug.T @ _P @ _B_aug,
+                                 _B_aug.T @ _P @ _A_aug)     # (1, Wd)
+            _A_cl = _A_aug - _B_aug @ _K
+            _z_ss = np.linalg.solve(np.eye(_Wd) - _A_cl, _c_aug)
+            return float(np.linalg.norm(_z_ss))
+        except Exception:
+            return None
+
     def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10,
             resume_from=None):
         if epochs is None:
@@ -1144,6 +1198,7 @@ class Trainer:
             t0 = time.time()
             tr  = self.train_epoch(train_loader)
             val = self.val_epoch(val_loader)
+            _z_ss_delta = self._eval_z_ss_delta()
             self.scheduler.step()
             history['train'].append(tr)
             history['val'].append(val)
@@ -1166,6 +1221,9 @@ class Trainer:
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
+            fp_err_str   = f"  fp_err={tr.get('fp_err',      0):.4f}" if 'fp_err'          in tr else ''
+            B_align_str  = f"  Bal={tr.get('B_align_loss',   0):.4f}" if 'B_align_loss'    in tr else ''
+            z_ss_str     = f"  z_ss={_z_ss_delta:.1f}"                 if _z_ss_delta is not None else ''
             local_str    = f"  local={tr.get('local_loss',   0):.4f}" if 'local_loss'     in tr else ''
             unstable_str = f"  ρ={tr.get('unstable_loss',   0):.4f}" if 'unstable_loss'  in tr else ''
             spec_str     = (f"  spec={tr.get('spec_loss', 0):.4f}"
@@ -1195,7 +1253,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{zmove_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
