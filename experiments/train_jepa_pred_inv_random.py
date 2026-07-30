@@ -240,27 +240,27 @@ def main():
             mass_cart=_env_cfg['mass_cart'], mass_pole=_env_cfg['mass_pole'],
             pole_length=_env_cfg['pole_length'], gravity=_env_cfg['gravity'],
             dt=_env_cfg['dt'], seed=0)
-        _du_raw  = 2.0                # 2N finite-difference step
-        _scale   = float(meta.get('action_scale', 1.0)) if normalize_actions else 1.0
-        _x_eq    = np.zeros(4, dtype=np.float32)
-        # +du step
+        _du_raw      = 2.0    # 2N physical finite-difference step
+        _u_test_norm = 0.2    # MUST match u_test_norm in trainer B_align loss
+        # B_target = (z_plus - z_minus) / (2 * u_test_norm)
+        # because the loss computes B_pred = (f(z*,u_test) - f(z*,0)) / u_test_norm
+        _x_eq = np.zeros(4, dtype=np.float32)
         _, _s0, _ = _env.reset_to_state(_x_eq)
         _obs_plus, _, _, _, _ = _env.step(_du_raw)
-        # -du step
         _, _s0, _ = _env.reset_to_state(_x_eq)
         _obs_minus, _, _, _, _ = _env.step(-_du_raw)
         _env.close()
         _img_size = int(model_cfg.get('image_size', 224))
         import torchvision.transforms.functional as TF
         def _to_tensor(obs):
-            t = torch.from_numpy(obs).permute(2, 0, 1).float() / 255.0  # (3, H, W)
-            if obs.shape[0] != _img_size:
+            t = torch.from_numpy(obs).permute(2, 0, 1).float() / 255.0
+            if obs.shape[1] != _img_size:
                 t = TF.resize(t, [_img_size, _img_size], antialias=True)
             return t.unsqueeze(0).to(device)
         with torch.no_grad():
             _z_plus  = model.encoder(_to_tensor(_obs_plus)).squeeze(0).cpu().numpy()
             _z_minus = model.encoder(_to_tensor(_obs_minus)).squeeze(0).cpu().numpy()
-        B_eff_physical = (_z_plus - _z_minus) / (2.0 * _du_raw / (_scale if _scale > 0 else 1.0))
+        B_eff_physical = (_z_plus - _z_minus) / (2.0 * _u_test_norm)
         print(f'[B_align] ||B_eff_physical||={np.linalg.norm(B_eff_physical):.4f}')
         trainer.set_B_target(B_eff_physical)
 
