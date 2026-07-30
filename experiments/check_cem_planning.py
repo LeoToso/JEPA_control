@@ -121,7 +121,7 @@ def main():
     if isinstance(raw, dict) and 'config' in raw:
         _ckpt_cfg = raw['config']
         _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
-                      'encoder_type', 'patch_size', 'frame_stack',
+                      'encoder_type', 'patch_size', 'frame_stack', 'use_frame_diff',
                       'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                       'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
                       'predictor_window', 'predictor_embed_dim', 'predictor_depth',
@@ -132,6 +132,7 @@ def main():
                 model_cfg[_k] = _ckpt_cfg[_k]
 
     from models.jepa import make_jepa
+    use_frame_diff = bool(model_cfg.get('use_frame_diff', False))   # re-read after arch override
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg['latent_dim']),
@@ -141,6 +142,7 @@ def main():
         image_size=int(env_cfg['image_size']),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=frame_stack,
+        use_frame_diff=use_frame_diff,
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
