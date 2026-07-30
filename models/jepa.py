@@ -23,6 +23,7 @@ class JEPAConfig:
     patch_size: int = 8
     in_chans: int = 3              # 3 * frame_stack (set by JEPAModel.__init__)
     frame_stack: int = 1           # number of consecutive frames stacked channel-wise
+    use_frame_diff: bool = False   # encode [o_{t-1}, o_t, o_t - o_{t-1}] (9-ch when fs=1)
     vit_embed_dim: int = 128
     vit_depth: int = 4
     vit_num_heads: int = 4
@@ -56,7 +57,10 @@ class JEPAModel(nn.Module):
     def __init__(self, config: JEPAConfig):
         super().__init__()
         self.config = config
-        config.in_chans = config.frame_stack * 3
+        if config.use_frame_diff:
+            config.in_chans = config.frame_stack * 9  # [prev, curr, diff] × 3ch
+        else:
+            config.in_chans = config.frame_stack * 3
         if config.encoder_type == 'cnn':
             from models.cnn_encoder import CNNEncoder
             self.encoder = CNNEncoder(
@@ -115,6 +119,21 @@ class JEPAModel(nn.Module):
     def latent_dim(self):
         return self.config.latent_dim
 
+    def encode_obs(self, obs: torch.Tensor,
+                   prev_obs: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Encode obs, optionally with previous frame for frame-diff input.
+
+        When use_frame_diff=True the encoder receives [prev, obs, obs-prev]
+        concatenated channel-wise.  If prev_obs is None or use_frame_diff=False
+        the call falls through to the plain encoder.
+        """
+        if not self.config.use_frame_diff:
+            return self.encoder(obs)
+        if prev_obs is None:
+            prev_obs = obs
+        inp = torch.cat([prev_obs, obs, obs - prev_obs], dim=1)
+        return self.encoder(inp)
+
     def predict(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
         """Windowed prediction: z_{t+1} = f([z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]).
 
@@ -172,7 +191,8 @@ class JEPAModel(nn.Module):
             'action_dim': c.action_dim, 'action_latent_dim': c.action_latent_dim,
             'action_encoder': c.action_encoder, 'encoder_type': c.encoder_type,
             'image_size': c.image_size, 'patch_size': c.patch_size,
-            'frame_stack': c.frame_stack, 'in_chans': c.in_chans,
+            'frame_stack': c.frame_stack, 'use_frame_diff': c.use_frame_diff,
+            'in_chans': c.in_chans,
             'vit_embed_dim': c.vit_embed_dim, 'vit_depth': c.vit_depth,
             'vit_num_heads': c.vit_num_heads,
             'predictor_type': c.predictor_type,

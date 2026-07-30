@@ -311,7 +311,7 @@ class Trainer:
         if self._obs_eq is None:
             return None
         with torch.no_grad():
-            return self.model.encoder(self._obs_eq).squeeze(0)
+            return self.model.encode_obs(self._obs_eq, self._obs_eq).squeeze(0)
 
     # ── CSV logging ──────────────────────────────────────────────────────────
     def _init_csv_log(self):
@@ -349,29 +349,39 @@ class Trainer:
         # the eval-time distribution exactly (no train/eval mismatch for dynamics).
         # Gradient from pred_loss flows back through this clean path into the encoder.
         obs_0 = obs_seq[:, 0]
-        z_0   = self.model.encoder(obs_0)   # (B, d) — clean, gradient flows here
+
+        # Build encoder inputs (frame-diff: [prev, curr, diff] stacked channel-wise)
+        if self.model.config.use_frame_diff:
+            inp_0 = torch.cat([obs_0, obs_0, torch.zeros_like(obs_0)], dim=1)  # (B,9,h,w)
+            curr_r = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
+            prev_r = obs_seq[:, :-1].contiguous().view(B * H, C, h, w)
+            inp_rest = torch.cat([prev_r, curr_r, curr_r - prev_r], dim=1)     # (B*H,9,h,w)
+        else:
+            inp_0    = obs_0
+            inp_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
+
+        z_0 = self.model.encoder(inp_0)   # (B, d) — clean, gradient flows here
 
         # Augmented z_0 for collapse-prevention losses (varfloor, dynSIG) only.
-        # Adding pixel noise to the collapse-prevention path keeps those gradients
-        # non-trivial even near equilibrium, without polluting the predictor's
-        # training distribution.  At eval (is_train=False) z_0_aug == z_0.
         if self.aug_noise_std > 0 and is_train:
-            z_0_aug = self.model.encoder(
-                (obs_0 + self.aug_noise_std * torch.randn_like(obs_0)).clamp(0., 1.)
-            )
+            obs_0_n = (obs_0 + self.aug_noise_std * torch.randn_like(obs_0)).clamp(0., 1.)
+            if self.model.config.use_frame_diff:
+                inp_0_n = torch.cat([obs_0_n, obs_0_n, torch.zeros_like(obs_0_n)], dim=1)
+            else:
+                inp_0_n = obs_0_n
+            z_0_aug = self.model.encoder(inp_0_n)
         else:
             z_0_aug = z_0
         d   = z_0.shape[-1]
-        obs_rest = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
         if self.detach_targets:
             with torch.no_grad():
                 _target_enc = (self.model.target_encoder
                                if self.use_target_encoder
                                else self.model.encoder)
-                z_rest = _target_enc(obs_rest).view(B, H, d)
+                z_rest = _target_enc(inp_rest).view(B, H, d)
         else:
             from torch.utils.checkpoint import checkpoint
-            z_rest = checkpoint(self.model.encoder, obs_rest,
+            z_rest = checkpoint(self.model.encoder, inp_rest,
                                 use_reentrant=False).view(B, H, d)
         z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
 
@@ -586,8 +596,8 @@ class Trainer:
 
             # Explicit re-encode with grad enabled.  z_rest is under no_grad when
             # detach_targets=True, so we cannot reuse z_all for z_end.
-            z_s = self.model.encoder(obs_s)   # (B, d)  grad enabled → flows to encoder
-            z_e = self.model.encoder(obs_e)   # (B, d)  grad enabled → flows to encoder
+            z_s = self.model.encode_obs(obs_s, obs_s)   # (B, d)  grad enabled → flows to encoder
+            z_e = self.model.encode_obs(obs_e, obs_e)   # (B, d)  grad enabled → flows to encoder
             action_hat = self.endpoint_action_decoder(z_s, z_e)  # (B, H_act, 1)
             ep_act_loss = F.mse_loss(action_hat, act_tgt)
             total_loss  = total_loss + self.lambda_action_reconstruction * ep_act_loss
@@ -625,7 +635,7 @@ class Trainer:
         # initialising z* near 0 so all downstream controllers have a known
         # target. After encoder freeze the gradient is zero — completely inert.
         if is_train and self.lambda_enc_anchor > 0 and self._obs_eq is not None:
-            z_eq_grad = self.model.encoder(self._obs_eq).squeeze(0)  # grad enabled
+            z_eq_grad = self.model.encode_obs(self._obs_eq, self._obs_eq).squeeze(0)  # grad enabled
             enc_anchor_loss = z_eq_grad.pow(2).mean()
             total_loss = total_loss + self.lambda_enc_anchor * enc_anchor_loss
             info['enc_anchor_loss'] = enc_anchor_loss.item()
@@ -721,7 +731,7 @@ class Trainer:
         # breaks the |θ| vs θ sign degeneracy without any state labels.
         if is_train and self.lambda_mirror > 0 and self._z_star_ema is not None:
             obs_0_flip = torch.flip(obs_0, dims=[-1])          # flip width axis
-            z_flip = self.model.encoder(obs_0_flip)            # (B, d)
+            z_flip = self.model.encode_obs(obs_0_flip, obs_0_flip)   # (B, d)
             target = 2.0 * self._z_star_ema.detach().unsqueeze(0).expand(B, -1)
             mirror_loss = F.mse_loss(z_0 + z_flip, target)
             total_loss = total_loss + self.lambda_mirror * mirror_loss
@@ -742,7 +752,7 @@ class Trainer:
                 and self._obs_v_u is not None
                 and self._z_star_ema is not None):
             try:
-                z_pert_ge  = self.model.encoder(self._obs_v_u).squeeze(0)   # (d,) grad on
+                z_pert_ge  = self.model.encode_obs(self._obs_v_u, self._obs_v_u).squeeze(0)   # (d,) grad on
                 z_star_sg  = self._z_star_ema.detach()
                 v_u_lat    = z_pert_ge - z_star_sg
                 v_norm_sg  = v_u_lat.norm().detach()   # detach norm — no grad through scale
@@ -1008,6 +1018,74 @@ class Trainer:
                     metrics.setdefault(k, []).append(v)
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
+    def _eval_checkpoint_diagnostics(self, val_loader, epoch: int) -> None:
+        """Print ρ(A_aug), ||B||, and R² state probes. Called every checkpoint_every epochs."""
+        if self._z_star_ema is None:
+            return
+        was_train = self.model.training
+        self.model.eval()
+
+        # ── Jacobian ──────────────────────────────────────────────────────────
+        rho = B_norm = float('nan')
+        try:
+            from control.jacobian import compute_augmented_jacobian_np
+            z_np = self._z_star_ema.cpu().numpy()
+            A_aug, B_aug = compute_augmented_jacobian_np(self.model, z_np, self.device)
+            if hasattr(self.model.action_encoder, 'W'):
+                W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()
+                B_aug = B_aug @ W_enc
+            rho    = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
+            B_norm = float(np.linalg.norm(B_aug))
+        except Exception:
+            pass
+
+        # ── R² state probes (first 5 val batches) ─────────────────────────────
+        r2 = [float('nan')] * 4
+        if self.state_head is not None:
+            import torch.nn.functional as F_
+            z_list, s_list = [], []
+            n_done = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    if n_done >= 5:
+                        break
+                    if 'states' not in batch:
+                        break
+                    obs_seq = batch['obs_seq'].to(self.device).float().div_(255.0)
+                    states  = batch['states'].to(self.device).float()
+                    Bv, H1v, Cv, hv, wv = obs_seq.shape
+                    Hv = H1v - 1
+                    if self.model.config.use_frame_diff:
+                        o0 = obs_seq[:, 0]
+                        inp0 = torch.cat([o0, o0, torch.zeros_like(o0)], dim=1)
+                        z0   = self.model.encoder(inp0)
+                        cr   = obs_seq[:, 1:].contiguous().view(Bv*Hv, Cv, hv, wv)
+                        pr   = obs_seq[:, :-1].contiguous().view(Bv*Hv, Cv, hv, wv)
+                        zr   = self.model.encoder(
+                            torch.cat([pr, cr, cr - pr], dim=1)).view(Bv, Hv, -1)
+                        z_traj = torch.cat([z0.unsqueeze(1), zr], dim=1)
+                    else:
+                        flat = obs_seq.view(Bv*(Hv+1), Cv, hv, wv)
+                        z_traj = self.model.encoder(flat).view(Bv, Hv+1, -1)
+                    z_flat = F_.normalize(z_traj.view(Bv*(Hv+1), -1), dim=-1)
+                    s_flat = states.view(Bv*(Hv+1), 4)
+                    z_list.append(z_flat); s_list.append(s_flat)
+                    n_done += 1
+            if z_list:
+                Z = torch.cat(z_list); S = torch.cat(s_list)
+                S_pred = self.state_head(Z)
+                for i in range(4):
+                    ss_res = ((S_pred[:, i] - S[:, i]) ** 2).sum()
+                    ss_tot = ((S[:, i] - S[:, i].mean()) ** 2).sum() + 1e-12
+                    r2[i] = float(1.0 - ss_res / ss_tot)
+
+        if was_train:
+            self.model.train()
+
+        names = ['x', 'ẋ', 'θ', 'θ̇']
+        r2_str = '  '.join(f'r({n})={v:.3f}' for n, v in zip(names, r2))
+        print(f'[Diag ep{epoch+1:03d}]  ρ(A)={rho:.4f}  ||B||={B_norm:.4f}  {r2_str}')
+
     def _eval_z_ss_delta(self):
         """Once-per-epoch diagnostic: ||(I-A_cl)^{-1} c_aug|| via DARE.
 
@@ -1215,6 +1293,7 @@ class Trainer:
             self._log_csv(epoch, 'train', self.global_step, tr)
             self._log_csv(epoch, 'val',   self.global_step, val)
             if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
+                self._eval_checkpoint_diagnostics(val_loader, epoch)
                 self.save_checkpoint(tag=f'epoch{epoch+1:04d}')
             dt = time.time() - t0
             state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
