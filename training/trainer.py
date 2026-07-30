@@ -647,6 +647,11 @@ class Trainer:
         # All H+1 trajectory frames contribute state loss for denser supervision.
         if self.lambda_state > 0 and self.state_head is not None and 'states' in batch:
             states = batch['states'].to(self.device, non_blocking=True).float()  # (B, H+1, 4)
+            # Passive episodes with theta_threshold=100 accumulate theta past 2*pi.
+            # Wrap to [-pi, pi] so the state target is always bounded; the image is
+            # visually periodic in theta, so the latent cannot distinguish theta=pi+k*2pi anyway.
+            states = states.clone()
+            states[:, :, 2] = torch.atan2(states[:, :, 2].sin(), states[:, :, 2].cos())
             # Configurable per-dim weights [x, xdot, theta, thetadot].
             # Default: prioritise position & angle (visually prominent).
             # For IDM to learn, set high weights on xdot & thetadot
