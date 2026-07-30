@@ -227,6 +227,43 @@ def main():
     if obs_eq is not None:
         trainer.set_obs_eq(obs_eq)
 
+    # Precompute physical B_eff at z* for B-alignment loss.
+    # Uses frozen encoder's finite difference: (encoder(next_obs|+du) - encoder(next_obs|-du)) / (2*du/scale)
+    if float(train_cfg.get('lambda_B_align', 0.0)) > 0 and Path(args.data).is_dir():
+        print('[B_align] precomputing B_eff_physical at equilibrium ...')
+        with open(args.config) as _f:
+            _env_cfg = yaml.safe_load(_f)['environment']
+        from envs.cartpole_visual import ContinuousCartpoleVisual
+        _env = ContinuousCartpoleVisual(
+            frame_skip=int(_env_cfg.get('frame_skip', 1)),
+            image_size=int(_env_cfg['image_size']),
+            mass_cart=_env_cfg['mass_cart'], mass_pole=_env_cfg['mass_pole'],
+            pole_length=_env_cfg['pole_length'], gravity=_env_cfg['gravity'],
+            dt=_env_cfg['dt'], seed=0)
+        _du_raw  = 2.0                # 2N finite-difference step
+        _scale   = float(meta.get('action_scale', 1.0)) if normalize_actions else 1.0
+        _x_eq    = np.zeros(4, dtype=np.float32)
+        # +du step
+        _, _s0, _ = _env.reset_to_state(_x_eq)
+        _obs_plus, _, _, _, _ = _env.step(_du_raw)
+        # -du step
+        _, _s0, _ = _env.reset_to_state(_x_eq)
+        _obs_minus, _, _, _, _ = _env.step(-_du_raw)
+        _env.close()
+        _img_size = int(model_cfg.get('image_size', 224))
+        import torchvision.transforms.functional as TF
+        def _to_tensor(obs):
+            t = torch.from_numpy(obs).permute(2, 0, 1).float() / 255.0  # (3, H, W)
+            if obs.shape[0] != _img_size:
+                t = TF.resize(t, [_img_size, _img_size], antialias=True)
+            return t.unsqueeze(0).to(device)
+        with torch.no_grad():
+            _z_plus  = model.encoder(_to_tensor(_obs_plus)).squeeze(0).cpu().numpy()
+            _z_minus = model.encoder(_to_tensor(_obs_minus)).squeeze(0).cpu().numpy()
+        B_eff_physical = (_z_plus - _z_minus) / (2.0 * _du_raw / (_scale if _scale > 0 else 1.0))
+        print(f'[B_align] ||B_eff_physical||={np.linalg.norm(B_eff_physical):.4f}')
+        trainer.set_B_target(B_eff_physical)
+
     print(f'[train] training for {epochs} epochs ...')
     trainer.fit(loaders['train'], loaders['val'], epochs=epochs,
                 checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),

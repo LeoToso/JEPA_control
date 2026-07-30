@@ -68,6 +68,8 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
+        self.lambda_B_align = float(self.cfg.get('lambda_B_align', 0.0))
+        self._B_target: Optional[torch.Tensor] = None   # set via set_B_target()
         self.lambda_anchor     = float(self.cfg.get('lambda_anchor',     0.0))
         self.lambda_enc_anchor = float(self.cfg.get('lambda_enc_anchor', 0.0))
         self.lambda_inv   = float(self.cfg.get('lambda_inv',   0.0))
@@ -266,6 +268,17 @@ class Trainer:
         self.best_val_loss = float('inf')
         self.global_step   = 0
         self.epoch         = 0
+
+    def set_B_target(self, B_target: 'np.ndarray') -> None:
+        """Set the physical B_eff vector (d,) used by lambda_B_align.
+
+        Precomputed from the frozen encoder's finite difference at z*:
+          B_target = (encoder(obs_after_+du) - encoder(obs_after_-du)) / (2*du/action_scale)
+        This teaches the predictor the correct action sensitivity at z* — both
+        direction AND magnitude — without requiring stabilized training trajectories.
+        """
+        import numpy as np
+        self._B_target = torch.tensor(B_target, dtype=torch.float32)
 
     def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
         """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*.
@@ -668,6 +681,30 @@ class Trainer:
             fp_loss = F.mse_loss(z_star_pred, self._z_star_ema.unsqueeze(0).detach())
             total_loss = total_loss + self.lambda_fp * fp_loss
             info['fp_loss'] = fp_loss.item()
+
+        # B-alignment loss: predictor's action sensitivity at z* must match encoder FD.
+        # f(z*, u_test) - f(z*, 0) should equal B_target * u_test (direction + magnitude).
+        # Fixes the near-z* calibration failure where fp_loss suppresses B_magnitude.
+        if is_train and self.lambda_B_align > 0 and self._B_target is not None and self._z_star_ema is not None:
+            W = self.predictor_window
+            B_tgt = self._B_target.to(self.device)          # (d,)
+            z_star_win = self._z_star_ema.detach().unsqueeze(0).unsqueeze(0).expand(1, W, -1)
+            u_zero_win = torch.zeros(1, W, 1, device=self.device)
+            u_test_win = u_zero_win.clone()
+            u_test_norm = 0.2   # normalized = 2N raw (accurate regime from per-action check)
+            u_test_win[0, -1, 0] = u_test_norm
+            z_pred_zero = self.model.predict(z_star_win, u_zero_win)
+            z_pred_plus = self.model.predict(z_star_win, u_test_win)
+            B_pred = (z_pred_plus - z_pred_zero) / u_test_norm          # (1, d)
+            B_pred_flat = B_pred.squeeze(0)
+            # Direction: 1 - cosine similarity
+            dir_loss = 1.0 - F.cosine_similarity(B_pred_flat.unsqueeze(0),
+                                                  B_tgt.unsqueeze(0), dim=-1).squeeze()
+            # Magnitude: relative squared error
+            mag_loss = ((B_pred_flat.norm() - B_tgt.norm()) / (B_tgt.norm() + 1e-8)).pow(2)
+            B_align_loss = dir_loss + mag_loss
+            total_loss = total_loss + self.lambda_B_align * B_align_loss
+            info['B_align_loss'] = B_align_loss.item()
 
         # Mirror antisymmetry loss: encoder(flip(obs)) + encoder(obs) ≈ 2·z*
         # Horizontal flip of the cartpole image negates all state components
