@@ -589,7 +589,7 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               preload_obs: bool = True,
                               data_fraction: float = 1.0) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
-    _PRELOAD_LIMIT_BYTES = 2 * 1024 ** 3  # 2 GB
+    _PRELOAD_LIMIT_BYTES = 8 * 1024 ** 3  # 8 GB
     loaders = {}
     for split in ('train', 'val', 'test'):
         path = Path(dataset_dir) / f'{split}.hdf5'
