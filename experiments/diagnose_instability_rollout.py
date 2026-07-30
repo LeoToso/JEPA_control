@@ -193,8 +193,9 @@ def main():
             print(f'[model] state_head loaded from --state-head-ckpt ({args.state_head_ckpt})')
         else:
             print('[warn] --state-head-ckpt also has no state_head_state')
-    if state_head is None:
-        raise RuntimeError('No state_head_state in checkpoint — train with lambda_state > 0')
+    latent_mode = (state_head is None)
+    if latent_mode:
+        print('[info] No state_head — using latent norm ||z-z*|| as proxy for divergence')
 
     from envs.cartpole_visual import ContinuousCartpoleVisual
     frame_skip = int(env_cfg.get('frame_skip', 1))
@@ -257,18 +258,32 @@ def main():
         if done:
             break
 
-    # Decode the warm-start latents to show the initial trajectory
-    lrn_warmup = [_decode(state_head, z, state_mean, state_std) for z in real_history]
-
-    # From step W onward: pure model prediction (u=0)
+    # Build lrn: (T, 4) decoded physical state, OR (T, 1) latent norm when no state head.
     history = list(real_history[-W:])   # in-distribution context
-    lrn = lrn_warmup[:]
-    for _ in range(args.n_steps):
-        z_next = _predict(model, history, device)
-        lrn.append(_decode(state_head, z_next, state_mean, state_std))
-        history = history[1:] + [z_next]
-    lrn       = np.array(lrn)
-    warmup_end = len(lrn_warmup)  # index where model takes over
+    if latent_mode:
+        z_star_t = torch.cat(list(real_history), dim=0).mean(0, keepdim=True).detach()  # rough z* from warm-start
+        # Better z*: encode the exact equilibrium observation
+        obs_eq_t  = torch.from_numpy(obs_eq).float().permute(2, 0, 1)[None].to(device) / 255.0
+        if frame_stack > 1:
+            obs_eq_t = torch.cat([obs_eq_t, obs_eq_t], dim=1)
+        with torch.no_grad():
+            z_star_t = model.encoder(obs_eq_t)   # (1, d)
+        def _latent_norm(z): return float((z - z_star_t).norm().item())
+        lrn_vals = [[_latent_norm(z)] for z in real_history]
+        for _ in range(args.n_steps):
+            z_next = _predict(model, history, device)
+            lrn_vals.append([_latent_norm(z_next)])
+            history = history[1:] + [z_next]
+        lrn = np.array(lrn_vals)   # (T, 1)
+    else:
+        lrn_warmup = [_decode(state_head, z, state_mean, state_std) for z in real_history]
+        lrn = lrn_warmup[:]
+        for _ in range(args.n_steps):
+            z_next = _predict(model, history, device)
+            lrn.append(_decode(state_head, z_next, state_mean, state_std))
+            history = history[1:] + [z_next]
+        lrn = np.array(lrn)
+    warmup_end = W   # W real-encoder steps before model takes over
 
     # Growth-rate fits.
     # GT: fit from step 0 over the same number of steps as the trained horizon.
@@ -278,18 +293,27 @@ def main():
     n_fit     = args.fit_steps
     rate_gl   = _fit_growth_rate(gt_lin[:, 2],  n_fit)
     rate_gn   = _fit_growth_rate(gt_nlin[:, 2], n_fit)
-    # Learned slice: [warmup_end .. warmup_end + n_fit]
-    lrn_fit_slice = lrn[warmup_end:warmup_end + n_fit + 1, 2]
+    _col = 0 if latent_mode else 2
+    lrn_fit_slice = lrn[warmup_end:warmup_end + n_fit + 1, _col]
     rate_lrn  = _fit_growth_rate(lrn_fit_slice, n_fit)
 
-    print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"Learned θ (°)":>14}  note')
-    print('-' * 70)
     n_rep = min(len(gt_lin), len(gt_nlin), len(lrn))
-    for t in range(n_rep):
-        note = '← warm-start (real enc)' if t < warmup_end else '← model pred'
-        print(f'{t:5d}  {np.degrees(gt_lin[t, 2]):16.3f}  '
-              f'{np.degrees(gt_nlin[t, 2]):16.3f}  '
-              f'{np.degrees(lrn[t, 2]):14.3f}  {note}')
+    if latent_mode:
+        print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"||z-z*|| (model)":>18}  note')
+        print('-' * 75)
+        for t in range(n_rep):
+            note = '← warm-start (real enc)' if t < warmup_end else '← model pred'
+            print(f'{t:5d}  {np.degrees(gt_lin[t, 2]):16.3f}  '
+                  f'{np.degrees(gt_nlin[t, 2]):16.3f}  '
+                  f'{lrn[t, 0]:18.5f}  {note}')
+    else:
+        print(f'\n{"step":>5}  {"GT_linear θ (°)":>16}  {"GT_nonlin θ (°)":>16}  {"Learned θ (°)":>14}  note')
+        print('-' * 70)
+        for t in range(n_rep):
+            note = '← warm-start (real enc)' if t < warmup_end else '← model pred'
+            print(f'{t:5d}  {np.degrees(gt_lin[t, 2]):16.3f}  '
+                  f'{np.degrees(gt_nlin[t, 2]):16.3f}  '
+                  f'{np.degrees(lrn[t, 2]):14.3f}  {note}')
 
     fit_start = warmup_end
     fit_end   = warmup_end + n_fit
@@ -311,13 +335,19 @@ def main():
     # Semilog panel
     ax.semilogy(t_gl,  np.abs(gt_lin[:, 2]),  'g-',   lw=2,    label=f'GT linear (λ={rate_gl:.3f})')
     ax.semilogy(t_gn,  np.abs(gt_nlin[:, 2]), 'b--',  lw=2,    label=f'GT nonlinear (λ={rate_gn:.3f})')
-    ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 2]), 'r--', lw=1.2, alpha=0.5, label=f'Learned warm-start (real enc)')
-    ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 2]), 'r-o', lw=1.5, ms=4, label=f'Learned model pred (λ={rate_lrn:.3f}, fit steps {fit_start}–{fit_end})')
+    if latent_mode:
+        ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 0]), 'r--', lw=1.2, alpha=0.5, label='Learned ||z-z*|| warm-start')
+        ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 0]), 'r-o', lw=1.5, ms=4, label=f'Learned ||z-z*|| model pred (λ={rate_lrn:.3f})')
+        ax.set_ylabel('|θ| (rad) / ||z−z*||')
+        ax.set_title(f'Passive divergence — semilog  (θ₀={np.degrees(eps):.1f}°, u=0, latent-norm proxy)')
+    else:
+        ax.semilogy(t_lrn[:warmup_end], np.abs(lrn[:warmup_end, 2]), 'r--', lw=1.2, alpha=0.5, label='Learned warm-start (real enc)')
+        ax.semilogy(t_lrn[warmup_end-1:], np.abs(lrn[warmup_end-1:, 2]), 'r-o', lw=1.5, ms=4, label=f'Learned model pred (λ={rate_lrn:.3f}, fit steps {fit_start}–{fit_end})')
+        ax.set_ylabel('|θ| (rad)')
+        ax.set_title(f'Passive divergence — semilog  (θ₀={np.degrees(eps):.1f}°, u=0)')
     ax.axvline(warmup_end - 1, color='orange', lw=0.8, linestyle=':', label=f'model takes over (step {warmup_end-1})')
     ax.axhline(np.pi / 2, color='gray', lw=0.8, linestyle=':', label='90°')
     ax.set_xlabel(f'Latent step  (×{frame_skip} physics steps = ×{frame_skip * env_cfg["dt"]:.3f}s)')
-    ax.set_ylabel('|θ| (rad)')
-    ax.set_title(f'Passive divergence — semilog  (θ₀={np.degrees(eps):.1f}°, u=0)')
     ax.set_xlim(0, plot_end)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3, which='both')
