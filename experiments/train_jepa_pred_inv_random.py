@@ -250,7 +250,6 @@ def main():
                             abs(float(_env_cfg['action_range'][1])))
         _du_raw    = 2.0          # 2N physical FD step (matches check_action_sensitivity)
         _init_scale = 0.02        # near-eq initial state perturbation
-        _n_states   = 10          # number of starting states to average over
         _img_size   = int(model_cfg.get('image_size', 224))
         import torchvision.transforms.functional as TF
         def _to_tensor(obs):
@@ -258,7 +257,8 @@ def main():
             if t.shape[-1] != _img_size or t.shape[-2] != _img_size:
                 t = TF.resize(t, [_img_size, _img_size], antialias=True)
             return t.unsqueeze(0).to(device)
-        _rng = np.random.RandomState(0)
+        _rng = np.random.RandomState(42)   # match check_action_sensitivity default seed
+        _n_states   = 50                   # more states for stable average
         _B_emp_list = []
         for _ in range(_n_states):
             _x0 = _rng.uniform(-_init_scale, _init_scale, 4).astype(np.float32)
@@ -279,7 +279,7 @@ def main():
         _env.close()
         B_eff_physical = np.mean(_B_emp_list, axis=0)
         print(f'[B_align] ||B_eff_physical||={np.linalg.norm(B_eff_physical):.4f}  '
-              f'(averaged over {_n_states} near-eq states, W-1={_W-1} passive drift steps)')
+              f'(averaged over {len(_B_emp_list)} near-eq states, W-1={_W-1} passive drift steps)')
         trainer.set_B_target(B_eff_physical)
 
     print(f'[train] training for {epochs} epochs ...')
