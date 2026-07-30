@@ -57,9 +57,9 @@ training:
   action_reconstruction_use_delta: true
   # ── VICReg collapse prevention ───────────────────────────────────────────
   use_vicreg: true
-  vicreg_lambda: 25.0
+  vicreg_lambda: 5.0
   vicreg_nu: 1.0
-  lambda_pred_vicreg: 1.0
+  lambda_pred_vicreg: 0.5
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   lambda_anchor: 0.0
