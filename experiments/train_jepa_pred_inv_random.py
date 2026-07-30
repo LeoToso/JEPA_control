@@ -227,41 +227,59 @@ def main():
     if obs_eq is not None:
         trainer.set_obs_eq(obs_eq)
 
-    # Precompute physical B_eff at z* for B-alignment loss.
-    # Uses frozen encoder's finite difference: (encoder(next_obs|+du) - encoder(next_obs|-du)) / (2*du/scale)
+    # Precompute physical B_eff for B-alignment loss.
+    # Mirrors check_action_sensitivity's B_emp computation: sample n_states near-eq starting
+    # points, run W-1 passive steps (let the unstable system drift slightly), then measure
+    # encoder FD response to ±2N physical force.  Averaging over near-eq states gives a
+    # stable B_target that matches the B magnitude seen by the predictor during training
+    # (~0.15), unlike a single measurement at x*=(0,0,0,0) which gives ~0.02 because
+    # one frame-skip=5 step barely moves the image from rest.
     if float(train_cfg.get('lambda_B_align', 0.0)) > 0 and Path(args.data).is_dir():
-        print('[B_align] precomputing B_eff_physical at equilibrium ...')
+        print('[B_align] precomputing B_eff_physical (near-eq average, W-1 drift) ...')
         with open(args.config) as _f:
             _env_cfg = yaml.safe_load(_f)['environment']
         from envs.cartpole_visual import ContinuousCartpoleVisual
+        _W = int(model_cfg.get('predictor_window', 3))
         _env = ContinuousCartpoleVisual(
             frame_skip=int(_env_cfg.get('frame_skip', 1)),
             image_size=int(_env_cfg['image_size']),
             mass_cart=_env_cfg['mass_cart'], mass_pole=_env_cfg['mass_pole'],
             pole_length=_env_cfg['pole_length'], gravity=_env_cfg['gravity'],
             dt=_env_cfg['dt'], seed=0)
-        _du_raw      = 2.0    # 2N physical finite-difference step
-        _u_test_norm = 0.2    # MUST match u_test_norm in trainer B_align loss
-        # B_target = (z_plus - z_minus) / (2 * u_test_norm)
-        # because the loss computes B_pred = (f(z*,u_test) - f(z*,0)) / u_test_norm
-        _x_eq = np.zeros(4, dtype=np.float32)
-        _, _s0, _ = _env.reset_to_state(_x_eq)
-        _obs_plus, _, _, _, _ = _env.step(_du_raw)
-        _, _s0, _ = _env.reset_to_state(_x_eq)
-        _obs_minus, _, _, _, _ = _env.step(-_du_raw)
-        _env.close()
-        _img_size = int(model_cfg.get('image_size', 224))
+        _action_scale = max(abs(float(_env_cfg['action_range'][0])),
+                            abs(float(_env_cfg['action_range'][1])))
+        _du_raw    = 2.0          # 2N physical FD step (matches check_action_sensitivity)
+        _init_scale = 0.02        # near-eq initial state perturbation
+        _n_states   = 10          # number of starting states to average over
+        _img_size   = int(model_cfg.get('image_size', 224))
         import torchvision.transforms.functional as TF
         def _to_tensor(obs):
             t = torch.from_numpy(obs).permute(2, 0, 1).float() / 255.0
-            if obs.shape[1] != _img_size:
+            if t.shape[-1] != _img_size or t.shape[-2] != _img_size:
                 t = TF.resize(t, [_img_size, _img_size], antialias=True)
             return t.unsqueeze(0).to(device)
-        with torch.no_grad():
-            _z_plus  = model.encoder(_to_tensor(_obs_plus)).squeeze(0).cpu().numpy()
-            _z_minus = model.encoder(_to_tensor(_obs_minus)).squeeze(0).cpu().numpy()
-        B_eff_physical = (_z_plus - _z_minus) / (2.0 * _u_test_norm)
-        print(f'[B_align] ||B_eff_physical||={np.linalg.norm(B_eff_physical):.4f}')
+        _rng = np.random.RandomState(0)
+        _B_emp_list = []
+        for _ in range(_n_states):
+            _x0 = _rng.uniform(-_init_scale, _init_scale, 4).astype(np.float32)
+            _obs, _state, _ = _env.reset_to_state(_x0)
+            for _ in range(_W - 1):               # drift W-1 passive steps
+                _obs, _state, _, _, _ = _env.step(0.0)
+            _state_phys = _state.copy()
+            # FD: reset to same state, apply ±du
+            _env.reset_to_state(_state_phys)
+            _obs_plus, _, _, _, _ = _env.step(_du_raw)
+            _env.reset_to_state(_state_phys)
+            _obs_minus, _, _, _, _ = _env.step(-_du_raw)
+            with torch.no_grad():
+                _zp = model.encoder(_to_tensor(_obs_plus)).squeeze(0).cpu().numpy()
+                _zm = model.encoder(_to_tensor(_obs_minus)).squeeze(0).cpu().numpy()
+            # Denominator: 2 * du_normalized = 2 * (du_raw / action_scale)
+            _B_emp_list.append((_zp - _zm) / (2.0 * _du_raw / _action_scale))
+        _env.close()
+        B_eff_physical = np.mean(_B_emp_list, axis=0)
+        print(f'[B_align] ||B_eff_physical||={np.linalg.norm(B_eff_physical):.4f}  '
+              f'(averaged over {_n_states} near-eq states, W-1={_W-1} passive drift steps)')
         trainer.set_B_target(B_eff_physical)
 
     print(f'[train] training for {epochs} epochs ...')
