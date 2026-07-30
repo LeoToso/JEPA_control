@@ -36,7 +36,7 @@ training:
   epochs: 500
   horizon: 10
   # ── Prediction loss ───────────────────────────────────────────────────────
-  lambda_pred: 1.0
+  lambda_pred: 0.2
   # ── State reconstruction (off) ───────────────────────────────────────────
   lambda_state: 0.0
   state_loss_weights: [2.0, 20.0, 100.0, 20.0]
