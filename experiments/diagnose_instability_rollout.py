@@ -66,6 +66,7 @@ def _load_model(ckpt_path, cfg, device):
         image_size=int(env_cfg['image_size']),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=int(model_cfg.get('frame_stack', 1)),
+        use_frame_diff=bool(model_cfg.get('use_frame_diff', False)),
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
@@ -98,12 +99,14 @@ def _load_model(ckpt_path, cfg, device):
     return model, state_head, fs, W
 
 
-def _encode(model, obs, device, frame_stack):
+def _encode(model, obs, device, frame_stack, prev_obs=None):
     t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
     if frame_stack > 1:
         t = torch.cat([t, t], dim=1)
     with torch.no_grad():
-        return model.encoder(t)   # (1, d)
+        prev_t = (t if prev_obs is None else
+                  torch.from_numpy(prev_obs).float().permute(2, 0, 1)[None].to(device) / 255.0)
+        return model.encode_obs(t, prev_t)   # (1, d)
 
 
 def _predict(model, z_history, device):
@@ -264,10 +267,8 @@ def main():
         z_star_t = torch.cat(list(real_history), dim=0).mean(0, keepdim=True).detach()  # rough z* from warm-start
         # Better z*: encode the exact equilibrium observation
         obs_eq_t  = torch.from_numpy(obs_eq).float().permute(2, 0, 1)[None].to(device) / 255.0
-        if frame_stack > 1:
-            obs_eq_t = torch.cat([obs_eq_t, obs_eq_t], dim=1)
         with torch.no_grad():
-            z_star_t = model.encoder(obs_eq_t)   # (1, d)
+            z_star_t = model.encode_obs(obs_eq_t, obs_eq_t)   # (1, d)
         def _latent_norm(z): return float((z - z_star_t).norm().item())
         lrn_vals = [[_latent_norm(z)] for z in real_history]
         for _ in range(args.n_steps):

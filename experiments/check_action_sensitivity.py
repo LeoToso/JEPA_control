@@ -39,7 +39,7 @@ import yaml
 def _get_z(model, obs_np, device):
     t = torch.from_numpy(obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0
     with torch.no_grad():
-        return model.encoder(t).cpu().numpy()[0]
+        return model.encode_obs(t, t).cpu().numpy()[0]
 
 
 def _predict_step(model, z_win_np, u_raw, action_scale, device):
@@ -65,6 +65,8 @@ def main():
                    help='Initial state perturbation range (near upright)')
     p.add_argument('--seed',       type=int, default=42)
     p.add_argument('--device',     default=None)
+    p.add_argument('--out',        default=None,
+                   help='Save figure to this path (PNG). If omitted no figure is saved.')
     args = p.parse_args()
 
     device = torch.device(args.device if args.device else
@@ -104,6 +106,7 @@ def main():
         image_size=int(env_cfg['image_size']),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=int(model_cfg.get('frame_stack', 1)),
+        use_frame_diff=bool(model_cfg.get('use_frame_diff', False)),
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
@@ -211,8 +214,6 @@ def main():
         B_emp  = (z_real_arr[idx_p2] - z_real_arr[idx_m2]) / (2 * u_fd / action_scale)
         all_B_empirical.append(B_emp)
 
-    env.close()
-
     # ── Jacobian B_eff from model ─────────────────────────────────────────────
     from control.jacobian import compute_augmented_jacobian_np
     obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
@@ -278,6 +279,7 @@ def main():
     print()
     print('[per-action breakdown at one state (state 0)]')
     print(f'  {"u (N)":>8}  {"||Δz_pred||":>12}  {"||Δz_real||":>12}  ratio')
+    dz_pred_per_u, dz_real_per_u = [], []
     obs_eq2, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
     z_h = [_get_z(model, obs_eq2, device)] * W
     z_w  = np.stack(z_h)
@@ -294,7 +296,56 @@ def main():
         dz_r = np.linalg.norm(zr - z_real_ref)
         ratio_str = f'{dz_p/(dz_r+1e-8):.2f}' if abs(u) > 0 else '—'
         print(f'  {u:>8.1f}  {dz_p:>12.4f}  {dz_r:>12.4f}  {ratio_str}')
+        dz_pred_per_u.append(dz_p)
+        dz_real_per_u.append(dz_r)
     env.close()
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    if args.out:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        ckpt_name = Path(args.checkpoint).name
+        fig.suptitle(f'Action Sensitivity — {ckpt_name}\n'
+                     f'cos={cos_mean:.3f}  mag_ratio={mag_mean:.3f}  '
+                     f'R²={r2_mean:.3f}  cos(B)={cos_B:.3f}', fontsize=10)
+
+        # Panel 1: per-state metrics
+        ax = axes[0]
+        xs = np.arange(args.n_states)
+        ax.bar(xs - 0.25, all_cos_pred_real, 0.25, label='cos(Δpred,Δreal)', color='steelblue')
+        ax.bar(xs,        all_r2,            0.25, label='R²',               color='darkorange')
+        ax.bar(xs + 0.25, all_mag_ratio,     0.25, label='mag ratio',        color='seagreen', alpha=0.7)
+        ax.axhline(0, color='k', lw=0.6); ax.axhline(1, color='k', lw=0.6, ls='--')
+        ax.set_title('Per-state metrics', fontsize=10)
+        ax.set_xlabel('state index'); ax.legend(fontsize=7)
+        ax.grid(alpha=0.3)
+
+        # Panel 2: per-action response magnitudes at eq
+        ax2 = axes[1]
+        ax2.plot(u_test_values, dz_pred_per_u, 'o-', label='||Δz_pred||', color='steelblue')
+        ax2.plot(u_test_values, dz_real_per_u, 's--', label='||Δz_real||', color='crimson')
+        ax2.set_title('Response magnitude vs action (at eq)', fontsize=10)
+        ax2.set_xlabel('u (N)'); ax2.set_ylabel('||Δz||')
+        ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
+
+        # Panel 3: B_model vs B_physical per latent dim
+        ax3 = axes[2]
+        dims = np.arange(len(B_eff))
+        ax3.bar(dims - 0.2, B_eff,      0.4, label=f'B_model (||·||={np.linalg.norm(B_eff):.3f})',
+                color='steelblue')
+        ax3.bar(dims + 0.2, B_emp_mean, 0.4, label=f'B_phys  (||·||={np.linalg.norm(B_emp_mean):.3f})',
+                color='darkorange', alpha=0.8)
+        ax3.axhline(0, color='k', lw=0.5)
+        ax3.set_title(f'B_model vs B_physical  cos={cos_B:.3f}', fontsize=10)
+        ax3.set_xlabel('latent dim'); ax3.legend(fontsize=7); ax3.grid(alpha=0.3)
+
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=150, bbox_inches='tight')
+        print(f'Saved → {out_path}')
 
 
 if __name__ == '__main__':

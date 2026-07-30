@@ -171,7 +171,7 @@ def collect_rollouts(env, model, frame_stack: int, device,
         for _ in range(rollout_len):
             obs_t = _stack_obs(obs, prev_obs, frame_stack, device)
             with torch.no_grad():
-                z = model.encoder(obs_t).cpu().numpy()[0]
+                z = model.encode_obs(obs_t, obs_t).cpu().numpy()[0]
 
             zs.append(z)
             states.append(state.copy())
@@ -339,7 +339,7 @@ def plot_phase_portrait(ax, model, frame_stack: int, device, env,
                 obs_t = torch.cat([obs_t, obs_t], dim=1)
 
             with torch.no_grad():
-                z = model.encoder(obs_t)
+                z = model.encode_obs(obs_t, obs_t)
                 z_win = z.unsqueeze(1).expand(1, W_pred, -1)
                 u_win = torch.zeros(1, W_pred, 1, device=device)
                 z_next = model.predict(z_win, u_win)
@@ -468,10 +468,8 @@ def main():
               f'thetadot={max_r_per_state[3]:.3f}')
 
         obs_eq_t = _to_tensor(obs_eq, device)
-        if frame_stack > 1:
-            obs_eq_t = torch.cat([obs_eq_t, obs_eq_t], dim=1)
         with torch.no_grad():
-            z_star = model.encoder(obs_eq_t).cpu().numpy()[0]
+            z_star = model.encode_obs(obs_eq_t, obs_eq_t).cpu().numpy()[0]
 
         print(f'    computing Gramian (T={args.gramian_T}) ...')
         rho = None

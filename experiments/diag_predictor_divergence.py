@@ -68,6 +68,7 @@ def main():
         image_size=int(env_cfg['image_size']),
         patch_size=int(model_cfg.get('patch_size', 8)),
         frame_stack=int(model_cfg.get('frame_stack', 1)),
+        use_frame_diff=bool(model_cfg.get('use_frame_diff', False)),
         vit_embed_dim=int(model_cfg.get('vit_embed_dim', 128)),
         vit_depth=int(model_cfg.get('vit_depth', 4)),
         vit_num_heads=int(model_cfg.get('vit_num_heads', 4)),
@@ -96,14 +97,13 @@ def main():
 
     def encode(obs_np, prev_obs_np=None):
         curr = torch.from_numpy(obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0
+        prev = (curr if prev_obs_np is None else
+                torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
         if frame_stack > 1:
-            prev = (curr if prev_obs_np is None else
-                    torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
-            inp = torch.cat([prev, curr], dim=1)
-        else:
-            inp = curr
+            curr = torch.cat([prev, curr], dim=1)
+            prev = curr
         with torch.no_grad():
-            return model.encoder(inp).cpu().numpy()[0]
+            return model.encode_obs(curr, prev).cpu().numpy()[0]
 
     # Equilibrium z_star
     obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
