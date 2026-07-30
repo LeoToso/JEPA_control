@@ -48,7 +48,7 @@ def _build_jepa_config(d: dict):
     from models.jepa import JEPAConfig
     cfg = JEPAConfig()
     for k in ('latent_dim', 'action_latent_dim', 'action_encoder', 'image_size',
-              'patch_size', 'frame_stack', 'vit_embed_dim', 'vit_depth',
+              'patch_size', 'frame_stack', 'use_frame_diff', 'vit_embed_dim', 'vit_depth',
               'vit_num_heads', 'predictor_type', 'predictor_window',
               'predictor_hidden_dim', 'predictor_n_layers',
               'predictor_embed_dim', 'predictor_depth', 'predictor_num_heads',
