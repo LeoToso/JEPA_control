@@ -193,15 +193,19 @@ class Trainer:
             self.cfg.get('action_reconstruction_mode', 'endpoint_sequence'))
         self.action_reconstruction_horizon = int(
             self.cfg.get('action_reconstruction_horizon', 5))
+        self.action_reconstruction_stride = int(
+            self.cfg.get('action_reconstruction_stride', 5))
         self.ar_action_scale = float(
             self.cfg.get('action_reconstruction_action_scale', 1.0))
 
         if self.lambda_action_reconstruction > 0:
             from models.endpoint_action_decoder import EndpointActionDecoder
             d_lat = model.config.latent_dim
-            # local_pair always reconstructs a single action; other modes use configured H_act
+            # local_pair → 1 action; fixed_stride → T actions; others → configured horizon
             _H_act = (1 if self.action_reconstruction_mode == 'local_pair'
-                      else self.action_reconstruction_horizon)
+                      else (self.action_reconstruction_stride
+                            if self.action_reconstruction_mode == 'fixed_stride'
+                            else self.action_reconstruction_horizon))
             _ar_hidden = int(self.cfg.get('action_reconstruction_hidden_dim', 256))
             _ar_layers = int(self.cfg.get('action_reconstruction_n_layers', 3))
             _ar_delta  = bool(self.cfg.get('action_reconstruction_use_delta', True))
@@ -567,7 +571,7 @@ class Trainer:
             total_loss = total_loss + self.lambda_inv * inv_loss
             info['inv_loss'] = inv_loss.item()
 
-        # Endpoint action reconstruction (endpoint_sequence | local_pair | local_window).
+        # Endpoint action reconstruction (fixed_stride | local_pair | local_window | endpoint_sequence).
         # Unlike inv_head, the decoder receives ONLY (z_start, z_end) — no intermediate
         # latent states.  Both endpoints are re-encoded here with grad enabled so the
         # loss shapes the encoder even when detach_targets=True (which would stop grad
@@ -576,30 +580,49 @@ class Trainer:
             mode  = self.action_reconstruction_mode
             H_act = self.endpoint_action_decoder.H_act
 
-            if mode == 'local_pair':
+            if mode == 'fixed_stride':
+                # All stride-T pairs in the horizon: (z_t, z_{t+T}) → [u_t … u_{t+T-1}]
+                # for t = 0, 1, …, H-T.  Batches all pairs into two encoder calls.
+                T       = self.action_reconstruction_stride        # e.g. 5
+                n_pairs = H - T + 1                               # 6 for H=10, T=5
+                obs_starts = torch.cat(
+                    [obs_seq[:, t]     for t in range(n_pairs)], dim=0)  # (B*n_pairs, C, h, w)
+                obs_ends   = torch.cat(
+                    [obs_seq[:, t + T] for t in range(n_pairs)], dim=0)  # (B*n_pairs, C, h, w)
+                # grad enabled on both endpoints → flows into online encoder
+                z_s = self.model.encode_obs(obs_starts, obs_starts)      # (B*n_pairs, d)
+                z_e = self.model.encode_obs(obs_ends,   obs_ends)        # (B*n_pairs, d)
+                act_tgt = torch.cat(
+                    [actions[:, t:t + T] for t in range(n_pairs)], dim=0
+                ) / self.ar_action_scale                                  # (B*n_pairs, T, 1)
+                action_hat = self.endpoint_action_decoder(z_s, z_e)      # (B*n_pairs, T, 1)
+                ep_act_loss = F.mse_loss(action_hat, act_tgt)
+
+            elif mode == 'local_pair':
                 # Random adjacent pair: (z_t, z_{t+1}) → u_t
                 k = int(torch.randint(0, H, (1,)).item())
-                obs_s   = obs_seq[:, k]          # (B, C, h, w)
-                obs_e   = obs_seq[:, k + 1]      # (B, C, h, w)
+                obs_s   = obs_seq[:, k]
+                obs_e   = obs_seq[:, k + 1]
                 act_tgt = actions[:, k:k+1] / self.ar_action_scale   # (B, 1, 1)
-                _start  = k                      # for physical decoder lookup below
-                _end    = k + 1
+                _start, _end = k, k + 1
+                z_s = self.model.encode_obs(obs_s, obs_s)             # (B, d)
+                z_e = self.model.encode_obs(obs_e, obs_e)             # (B, d)
+                action_hat  = self.endpoint_action_decoder(z_s, z_e)  # (B, 1, 1)
+                ep_act_loss = F.mse_loss(action_hat, act_tgt)
+
             else:
                 # local_window / endpoint_sequence: random subwindow of length H_act
-                # start_idx ~ Uniform{0, …, H - H_act}
                 max_start = H - H_act
                 _start  = int(torch.randint(0, max_start + 1, (1,)).item()) if max_start > 0 else 0
                 _end    = _start + H_act
-                obs_s   = obs_seq[:, _start]     # (B, C, h, w)
-                obs_e   = obs_seq[:, _end]       # (B, C, h, w)
+                obs_s   = obs_seq[:, _start]
+                obs_e   = obs_seq[:, _end]
                 act_tgt = actions[:, _start:_end] / self.ar_action_scale  # (B, H_act, 1)
+                z_s = self.model.encode_obs(obs_s, obs_s)                  # (B, d)
+                z_e = self.model.encode_obs(obs_e, obs_e)                  # (B, d)
+                action_hat  = self.endpoint_action_decoder(z_s, z_e)       # (B, H_act, 1)
+                ep_act_loss = F.mse_loss(action_hat, act_tgt)
 
-            # Explicit re-encode with grad enabled.  z_rest is under no_grad when
-            # detach_targets=True, so we cannot reuse z_all for z_end.
-            z_s = self.model.encode_obs(obs_s, obs_s)   # (B, d)  grad enabled → flows to encoder
-            z_e = self.model.encode_obs(obs_e, obs_e)   # (B, d)  grad enabled → flows to encoder
-            action_hat = self.endpoint_action_decoder(z_s, z_e)  # (B, H_act, 1)
-            ep_act_loss = F.mse_loss(action_hat, act_tgt)
             total_loss  = total_loss + self.lambda_action_reconstruction * ep_act_loss
             info['endpoint_action_loss'] = ep_act_loss.item()
 
@@ -608,12 +631,11 @@ class Trainer:
                 ss_res = ((action_hat - act_tgt) ** 2).sum()
                 ss_tot = ((act_tgt - act_tgt.mean()) ** 2).sum() + 1e-12
                 info['endpoint_action_r2'] = float(1.0 - ss_res / ss_tot)
-                # Baseline MSE: predict zero (= mean of normalized actions for random data)
                 baseline_mse = (act_tgt ** 2).mean()
-                info['endpoint_action_baseline_mse']    = baseline_mse.item()
-                info['endpoint_action_normalized_mse']  = float(
+                info['endpoint_action_baseline_mse']   = baseline_mse.item()
+                info['endpoint_action_normalized_mse'] = float(
                     ep_act_loss / (baseline_mse + 1e-12))
-                # Per-step MSE: error profile along the reconstructed sequence
+                # Per-step MSE along the reconstructed window (dim 0 = batch, dim 2 = action_dim)
                 step_mse = ((action_hat - act_tgt) ** 2).mean(dim=(0, 2))  # (H_act,)
                 for _k in range(H_act):
                     info[f'action_mse_step_{_k}'] = step_mse[_k].item()
@@ -623,10 +645,16 @@ class Trainer:
             # Trained jointly so val loss tracks a meaningful ceiling each epoch.
             if 'states' in batch and self.phys_endpoint_decoder is not None:
                 states_b = batch['states'].to(self.device, non_blocking=True).float()  # (B, H+1, 4)
-                s_s = states_b[:, _start]   # (B, 4)
-                s_e = states_b[:, _end]     # (B, 4)
-                phys_hat = self.phys_endpoint_decoder(s_s, s_e)     # (B, H_act, 1)
-                phys_ep_loss = F.mse_loss(phys_hat, act_tgt)
+                if mode == 'fixed_stride':
+                    s_s = torch.cat([states_b[:, t]     for t in range(n_pairs)], dim=0)
+                    s_e = torch.cat([states_b[:, t + T] for t in range(n_pairs)], dim=0)
+                    phys_act_tgt = act_tgt          # (B*n_pairs, T, 1) — already computed
+                else:
+                    s_s = states_b[:, _start]       # (B, 4)
+                    s_e = states_b[:, _end]         # (B, 4)
+                    phys_act_tgt = act_tgt          # (B, H_act, 1)
+                phys_hat     = self.phys_endpoint_decoder(s_s, s_e)
+                phys_ep_loss = F.mse_loss(phys_hat, phys_act_tgt)
                 total_loss   = total_loss + self.lambda_action_reconstruction * phys_ep_loss
                 info['endpoint_phys_action_loss'] = phys_ep_loss.item()
 
