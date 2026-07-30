@@ -55,14 +55,17 @@ training:
   action_reconstruction_hidden_dim: 256
   action_reconstruction_n_layers: 3
   action_reconstruction_use_delta: true
+  # ── VICReg collapse prevention ───────────────────────────────────────────
+  # SIGreg gradient vanishes at z≈0; VICReg variance term does not.
+  # Without state supervision, VICReg is the primary anti-collapse guard.
+  use_vicreg: true
+  vicreg_lambda: 25.0       # variance term weight (standard I-JEPA value)
+  vicreg_nu: 1.0            # covariance decorrelation term
+  lambda_pred_vicreg: 1.0   # same on predictor outputs — prevents predictor collapse
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  use_vicreg: false
-  vicreg_lambda: 5.0
-  vicreg_nu: 1.0
-  lambda_pred_vicreg: 0.0
   lambda_mirror: 0.0
   lambda_spec: 0.0
   lambda_spec_marginal: 0.0
