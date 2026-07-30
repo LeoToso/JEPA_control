@@ -29,21 +29,36 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 
-# ── Ground-truth rho for CartPole at frame_skip=5 ────────────────────────────
-def _gt_rho(mass_cart=1.0, mass_pole=0.1, pole_length=0.5,
-            gravity=9.8, dt=0.02, frame_skip=5):
-    """Spectral radius of the GT discrete-time linearisation at upright pos."""
-    m_c, m_p, l, g = mass_cart, mass_pole, pole_length, gravity
-    total_m = m_c + m_p
-    Ac = np.array([
-        [0, 1,              0,             0],
-        [0, 0, -m_p*g/m_c,              0],
-        [0, 0,              0,             1],
-        [0, 0,  total_m*g/(m_c*l),        0],
-    ], dtype=float)
-    dt_eff = dt * frame_skip
-    Ad = sla.expm(Ac * dt_eff)
-    return float(np.max(np.abs(np.linalg.eigvals(Ad))))
+# ── Ground-truth rho via finite-difference Jacobian from actual environment ───
+def _gt_rho_from_env(env_cfg: dict) -> float:
+    """Spectral radius from numerical Jacobian of the real environment at x*=0.
+
+    Uses finite differences on the actual env step so it matches whatever
+    integration scheme (Euler, RK4, …) the environment uses — unlike the
+    analytical matrix-exponential which ignores coupling and exact integration.
+    """
+    from envs.cartpole_visual import ContinuousCartpoleVisual
+    env = ContinuousCartpoleVisual(
+        frame_skip=int(env_cfg.get('frame_skip', 5)),
+        image_size=int(env_cfg.get('image_size', 64)),
+        mass_cart=float(env_cfg.get('mass_cart', 1.0)),
+        mass_pole=float(env_cfg.get('mass_pole', 0.1)),
+        pole_length=float(env_cfg.get('pole_length', 0.5)),
+        gravity=float(env_cfg.get('gravity', 9.8)),
+        dt=float(env_cfg.get('dt', 0.02)),
+        seed=0)
+    x_star = np.zeros(4, dtype=np.float64)
+    eps = 1e-5
+    n = 4
+    A_fd = np.zeros((n, n))
+    for j in range(n):
+        xp = x_star.copy(); xp[j] += eps
+        xm = x_star.copy(); xm[j] -= eps
+        env.reset_to_state(xp); _, sp, _, _, _ = env.step(0.0)
+        env.reset_to_state(xm); _, sm, _, _, _ = env.step(0.0)
+        A_fd[:, j] = (np.array(sp) - np.array(sm)) / (2 * eps)
+    env.close()
+    return float(np.max(np.abs(np.linalg.eigvals(A_fd))))
 
 
 def _find_near_eq_obs_hdf5(data_dir):
@@ -146,9 +161,8 @@ def main():
 
     eigs      = np.linalg.eigvals(A_aug)
     rho_learn = float(np.max(np.abs(eigs)))
-    rho_gt    = _gt_rho(**{k: yaml_cfg['environment'][k]
-                            for k in ('mass_cart','mass_pole','pole_length',
-                                      'gravity','dt','frame_skip')})
+    print('Computing GT rho from actual environment (finite-difference Jacobian) ...')
+    rho_gt    = _gt_rho_from_env(yaml_cfg['environment'])
     print(f'rho(A_aug) learned = {rho_learn:.4f}   GT = {rho_gt:.4f}')
     print(f'||B_aug|| = {float(np.linalg.norm(B_aug)):.4f}')
 
