@@ -1173,7 +1173,7 @@ class Trainer:
             return None
 
     def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10,
-            resume_from=None):
+            resume_from=None, on_epoch_start=None):
         if epochs is None:
             epochs = int(self.cfg.get('epochs', 100))
         history = {'train': [], 'val': []}
@@ -1313,6 +1313,9 @@ class Trainer:
                       f' → {new_rho_max:.4f}  (n={len(self._rho_buffer)})')
                 self.rho_max_estimate = new_rho_max
                 self._rho_buffer = []
+
+            if on_epoch_start is not None:
+                on_epoch_start(epoch, self)
 
             t0 = time.time()
             tr  = self.train_epoch(train_loader)

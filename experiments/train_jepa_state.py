@@ -184,6 +184,7 @@ def main():
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     use_fd = model_cfg.get('use_frame_diff', False)
+    lambda_B_align = float(train_cfg.get('lambda_B_align', 0.0))
     print(f'[model] JEPA  {n_params:,} params  '
           f'latent={model_cfg["latent_dim"]}  '
           f'encoder={model_cfg["encoder_type"]}(depth={model_cfg["vit_depth"]} '
@@ -194,7 +195,8 @@ def main():
           f'λ_pred={train_cfg.get("lambda_pred",1.0)}  '
           f'λ_state={train_cfg.get("lambda_state",0.0)}  '
           f'λ_sigreg={train_cfg.get("lambda_sigreg",0.0)}  '
-          f'λ_fp={train_cfg.get("lambda_fp",0.0)}')
+          f'λ_fp={train_cfg.get("lambda_fp",0.0)}  '
+          f'λ_B={lambda_B_align}')
 
     # ── Trainer ───────────────────────────────────────────────────────────────
     from training.trainer import Trainer
@@ -207,10 +209,69 @@ def main():
     # Provide exact equilibrium image so fp_loss has a reliable z* from epoch 1.
     trainer.set_obs_eq(obs_eq_np)
 
+    # ── B_target updater (for lambda_B_align) ────────────────────────────────
+    # Recomputes the physical B direction in encoder space every few epochs using
+    # finite differences on the real environment.  Correct prev-frame handling for
+    # use_frame_diff: encode_obs(obs_after_force, obs_before_force).
+    on_epoch_start = None
+    if lambda_B_align > 0:
+        from envs.cartpole_visual import ContinuousCartpoleVisual
+        env_cfg = cfg['environment']
+        _b_env = ContinuousCartpoleVisual(
+            frame_skip=int(env_cfg.get('frame_skip', 1)),
+            image_size=int(env_cfg['image_size']),
+            mass_cart=float(env_cfg['mass_cart']),
+            mass_pole=float(env_cfg['mass_pole']),
+            pole_length=float(env_cfg['pole_length']),
+            gravity=float(env_cfg['gravity']),
+            dt=float(env_cfg['dt']),
+            seed=0)
+        _action_scale = max(abs(float(env_cfg['action_range'][0])),
+                            abs(float(env_cfg['action_range'][1])))
+        _b_update_every = int(train_cfg.get('b_target_update_every', 1))
+        _b_n_states     = int(train_cfg.get('b_target_n_states', 50))
+        _b_init_scale   = 0.02
+        _b_du_raw       = 2.0       # 2 N physical — same as check_action_sensitivity
+
+        def _to_dev(obs_np):
+            return (torch.from_numpy(obs_np).float().permute(2, 0, 1)
+                    .unsqueeze(0).to(device) / 255.0)
+
+        def _update_B_target(epoch, _trainer):
+            if epoch % _b_update_every != 0:
+                return
+            rng = np.random.RandomState(epoch)
+            model.eval()
+            B_list = []
+            with torch.no_grad():
+                for _ in range(_b_n_states):
+                    x0 = rng.uniform(-_b_init_scale, _b_init_scale, 4).astype(np.float32)
+                    obs_prev, state, _ = _b_env.reset_to_state(x0)
+                    # One passive step so there is actual motion in the diff channel
+                    obs_cur, state, _, _, _ = _b_env.step(0.0)
+                    # Apply +du and -du from the same state, keeping obs_cur as prev
+                    _b_env.reset_to_state(state)
+                    obs_plus,  _, _, _, _ = _b_env.step( _b_du_raw)
+                    _b_env.reset_to_state(state)
+                    obs_minus, _, _, _, _ = _b_env.step(-_b_du_raw)
+                    obs_cur_t = _to_dev(obs_cur)
+                    zp = model.encode_obs(_to_dev(obs_plus),  obs_cur_t).squeeze(0).cpu().numpy()
+                    zm = model.encode_obs(_to_dev(obs_minus), obs_cur_t).squeeze(0).cpu().numpy()
+                    B_list.append((zp - zm) / (2.0 * _b_du_raw / _action_scale))
+            model.train()
+            B_target = np.mean(B_list, axis=0)
+            _trainer.set_B_target(B_target)
+            print(f'[B_align] epoch {epoch+1}: updated B_target  '
+                  f'||B||={np.linalg.norm(B_target):.4f}')
+
+        on_epoch_start = _update_B_target
+        print(f'[B_align] enabled  λ={lambda_B_align}  '
+              f'update_every={_b_update_every}  n_states={_b_n_states}')
+
     print(f'[train] training for {epochs} epochs ...')
     trainer.fit(loaders['train'], loaders['val'], epochs=epochs,
                 checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),
-                resume_from=args.resume)
+                resume_from=args.resume, on_epoch_start=on_epoch_start)
 
     torch.save(trainer.final_state, save_dir / 'model_final.pt')
     print(f'[done] saved -> {save_dir / "model_final.pt"}')
