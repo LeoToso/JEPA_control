@@ -41,30 +41,31 @@ training:
   lambda_state: 2.0
   state_loss_weights: [2.0, 20.0, 100.0, 20.0]   # [x, ẋ, θ, θ̇]
   state_encoder_grad_scale: 1.0
-  # ── SIGreg ────────────────────────────────────────────────────────────────
-  lambda_sigreg: 1.0
+  # ── SIGreg (off — state supervision prevents collapse) ───────────────────
+  lambda_sigreg: 0.0
   sigreg_num_slices: 64
   sigreg_num_points: 9
   sigreg_all_steps: true
   # ── Fixed-point loss ──────────────────────────────────────────────────────
-  lambda_fp: 5.0
+  lambda_fp: 2.0
   # ── Endpoint action reconstruction (fixed stride T=5) ────────────────────
   # Decoder: φ(z_t, z_{t+5}) → [u_t, …, u_{t+4}]
   # All 6 pairs in the H=10 horizon contribute each step (dense supervision).
-  lambda_action_reconstruction: 1.0
+  lambda_action_reconstruction: 2.0
   action_reconstruction_mode: fixed_stride
   action_reconstruction_stride: 5       # T — gap between endpoint frames
   action_reconstruction_hidden_dim: 256
   action_reconstruction_n_layers: 3
   action_reconstruction_use_delta: true  # input: concat(z_s, z_e, z_e−z_s)
+  # ── VICReg collapse prevention ───────────────────────────────────────────
+  use_vicreg: true
+  vicreg_lambda: 5.0
+  vicreg_nu: 1.0
+  lambda_pred_vicreg: 0.5
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   lambda_anchor: 0.0
   lambda_enc_anchor: 0.0
-  use_vicreg: false
-  vicreg_lambda: 5.0
-  vicreg_nu: 1.0
-  lambda_pred_vicreg: 0.0
   lambda_mirror: 0.0
   lambda_spec: 0.0
   lambda_spec_marginal: 0.0

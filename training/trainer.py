@@ -589,9 +589,15 @@ class Trainer:
                     [obs_seq[:, t]     for t in range(n_pairs)], dim=0)  # (B*n_pairs, C, h, w)
                 obs_ends   = torch.cat(
                     [obs_seq[:, t + T] for t in range(n_pairs)], dim=0)  # (B*n_pairs, C, h, w)
+                # For frame_diff: use actual previous frame (not the frame itself)
+                obs_starts_prev = torch.cat(
+                    [obs_seq[:, t - 1] if t > 0 else obs_seq[:, 0]
+                     for t in range(n_pairs)], dim=0)
+                obs_ends_prev = torch.cat(
+                    [obs_seq[:, t + T - 1] for t in range(n_pairs)], dim=0)
                 # grad enabled on both endpoints → flows into online encoder
-                z_s = self.model.encode_obs(obs_starts, obs_starts)      # (B*n_pairs, d)
-                z_e = self.model.encode_obs(obs_ends,   obs_ends)        # (B*n_pairs, d)
+                z_s = self.model.encode_obs(obs_starts, obs_starts_prev)  # (B*n_pairs, d)
+                z_e = self.model.encode_obs(obs_ends,   obs_ends_prev)    # (B*n_pairs, d)
                 act_tgt = torch.cat(
                     [actions[:, t:t + T] for t in range(n_pairs)], dim=0
                 ) / self.ar_action_scale                                  # (B*n_pairs, T, 1)
@@ -605,8 +611,9 @@ class Trainer:
                 obs_e   = obs_seq[:, k + 1]
                 act_tgt = actions[:, k:k+1] / self.ar_action_scale   # (B, 1, 1)
                 _start, _end = k, k + 1
-                z_s = self.model.encode_obs(obs_s, obs_s)             # (B, d)
-                z_e = self.model.encode_obs(obs_e, obs_e)             # (B, d)
+                obs_s_prev = obs_seq[:, k - 1] if k > 0 else obs_s
+                z_s = self.model.encode_obs(obs_s, obs_s_prev)        # (B, d)
+                z_e = self.model.encode_obs(obs_e, obs_s)             # (B, d)
                 action_hat  = self.endpoint_action_decoder(z_s, z_e)  # (B, 1, 1)
                 ep_act_loss = F.mse_loss(action_hat, act_tgt)
 
@@ -618,8 +625,9 @@ class Trainer:
                 obs_s   = obs_seq[:, _start]
                 obs_e   = obs_seq[:, _end]
                 act_tgt = actions[:, _start:_end] / self.ar_action_scale  # (B, H_act, 1)
-                z_s = self.model.encode_obs(obs_s, obs_s)                  # (B, d)
-                z_e = self.model.encode_obs(obs_e, obs_e)                  # (B, d)
+                obs_s_prev = obs_seq[:, _start - 1] if _start > 0 else obs_s
+                z_s = self.model.encode_obs(obs_s, obs_s_prev)             # (B, d)
+                z_e = self.model.encode_obs(obs_e, obs_seq[:, _end - 1])   # (B, d)
                 action_hat  = self.endpoint_action_decoder(z_s, z_e)       # (B, H_act, 1)
                 ep_act_loss = F.mse_loss(action_hat, act_tgt)
 
