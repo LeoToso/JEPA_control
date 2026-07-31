@@ -148,6 +148,7 @@ class Trainer:
         # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
             self.lambda_state > 0
+            or self.lambda_state_pred > 0
             or float(self.cfg.get('warmup_lambda_state', 0.0)) > 0
             or self.lambda_anchor > 0
         )
