@@ -191,6 +191,8 @@ class Trainer:
         # Gradient flows through both encoder calls (z_start and z_end) into the online encoder.
         self.lambda_action_reconstruction = float(
             self.cfg.get('lambda_action_reconstruction', 0.0))
+        self.lambda_action_reconstruction_pred = float(
+            self.cfg.get('lambda_action_reconstruction_pred', 0.0))
         self.action_reconstruction_mode = str(
             self.cfg.get('action_reconstruction_mode', 'endpoint_sequence'))
         self.action_reconstruction_horizon = int(
@@ -200,7 +202,7 @@ class Trainer:
         self.ar_action_scale = float(
             self.cfg.get('action_reconstruction_action_scale', 1.0))
 
-        if self.lambda_action_reconstruction > 0:
+        if self.lambda_action_reconstruction > 0 or self.lambda_action_reconstruction_pred > 0:
             from models.endpoint_action_decoder import EndpointActionDecoder
             d_lat = model.config.latent_dim
             # local_pair → 1 action; fixed_stride → T actions; others → configured horizon
@@ -423,7 +425,9 @@ class Trainer:
         u_win_buf = [torch.zeros(B, 1, device=self.device)] * (W - 1)    # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)
-        _collect_z_hats = self.lambda_pred_vicreg > 0 or self.lambda_state_pred > 0
+        _collect_z_hats = (self.lambda_pred_vicreg > 0
+                            or self.lambda_state_pred > 0
+                            or self.lambda_action_reconstruction_pred > 0)
         _pred_z_hats = [] if _collect_z_hats else None
         for k in range(H):
             u_k = actions[:, k]                                # (B, 1)
@@ -668,6 +672,28 @@ class Trainer:
                 phys_ep_loss = F.mse_loss(phys_hat, phys_act_tgt)
                 total_loss   = total_loss + self.lambda_action_reconstruction * phys_ep_loss
                 info['endpoint_phys_action_loss'] = phys_ep_loss.item()
+
+        # Predictor-based endpoint action reconstruction (fixed_stride only).
+        # φ(z_hat_t, z_hat_{t+T}) → [u_t … u_{t+T-1}] where z_hat comes from
+        # the predictor rollout — gradient flows through predictor's B column directly.
+        if (self.lambda_action_reconstruction_pred > 0
+                and self.endpoint_action_decoder is not None
+                and _pred_z_hats is not None
+                and self.action_reconstruction_mode == 'fixed_stride'):
+            T_p       = self.action_reconstruction_stride
+            n_pairs_p = H - T_p + 1
+            z_pred_traj = [z_0] + _pred_z_hats           # H+1 tensors, each (B, d)
+            zs_pred = torch.cat(
+                [z_pred_traj[t]       for t in range(n_pairs_p)], dim=0)
+            ze_pred = torch.cat(
+                [z_pred_traj[t + T_p] for t in range(n_pairs_p)], dim=0)
+            act_tgt_p = torch.cat(
+                [actions[:, t:t + T_p] for t in range(n_pairs_p)], dim=0
+            ) / self.ar_action_scale                      # (B*n_pairs, T_p, 1)
+            action_hat_pred = self.endpoint_action_decoder(zs_pred, ze_pred)
+            ep_act_pred_loss = F.mse_loss(action_hat_pred, act_tgt_p)
+            total_loss = total_loss + self.lambda_action_reconstruction_pred * ep_act_pred_loss
+            info['endpoint_action_pred_loss'] = ep_act_pred_loss.item()
 
         # Encoder anchor: push encoder(obs_eq) toward the origin.
         # During warmup (encoder trainable) gradients flow into encoder params,
@@ -1447,11 +1473,13 @@ class Trainer:
                             + (f" nMSE={tr.get('endpoint_action_normalized_mse', 0):.3f}"
                                if 'endpoint_action_normalized_mse' in tr else '')
                             ) if 'endpoint_action_loss' in tr else ''
+            ep_act_pred_str = (f"  ep_act_pred={tr.get('endpoint_action_pred_loss', 0):.4f}"
+                               ) if 'endpoint_action_pred_loss' in tr else ''
             print(f'[Epoch {epoch+1:3d}/{epochs}]'
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{zmove_str}'
+                  f'{state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{ep_act_pred_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 

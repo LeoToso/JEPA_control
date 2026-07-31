@@ -49,7 +49,11 @@ training:
   # ── Fixed-point loss ──────────────────────────────────────────────────────
   lambda_fp: 5.0
   # ── Endpoint action reconstruction (fixed stride T=5) ────────────────────
+  # Encoder-based: φ(encoder(obs_t), encoder(obs_{t+T})) → [u_t…u_{t+T-1}]
   lambda_action_reconstruction: 2.0
+  # Predictor-based: φ(z_hat_t, z_hat_{t+T}) → [u_t…u_{t+T-1}]  (predictor rollout)
+  # Flows gradient through predictor's B column directly — constrains action sensitivity.
+  lambda_action_reconstruction_pred: 2.0
   action_reconstruction_mode: fixed_stride
   action_reconstruction_stride: 5
   action_reconstruction_hidden_dim: 256
