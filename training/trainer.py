@@ -68,6 +68,7 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
+        self.lambda_state_pred = float(self.cfg.get('lambda_state_pred', 0.0))
         self.lambda_B_align = float(self.cfg.get('lambda_B_align', 0.0))
         self._B_target: Optional[torch.Tensor] = None   # set via set_B_target()
         self.lambda_anchor     = float(self.cfg.get('lambda_anchor',     0.0))
@@ -421,7 +422,8 @@ class Trainer:
         u_win_buf = [torch.zeros(B, 1, device=self.device)] * (W - 1)    # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)
-        _pred_z_hats = [] if self.lambda_pred_vicreg > 0 else None
+        _collect_z_hats = self.lambda_pred_vicreg > 0 or self.lambda_state_pred > 0
+        _pred_z_hats = [] if _collect_z_hats else None
         for k in range(H):
             u_k = actions[:, k]                                # (B, 1)
             u_win_buf.append(u_k)                              # current action into window first
@@ -711,6 +713,29 @@ class Trainer:
                 state_loss = state_loss + (w * sh_eq.pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
+
+        # Unrolled state prediction loss: state_head(predictor(z_t, u_t)) ≈ s_{t+1}
+        # Unlike the state loss above (which only supervises encoder outputs), this
+        # flows gradient through the predictor's B column — directly constraining the
+        # action sensitivity direction in latent space.
+        if (self.lambda_state_pred > 0 and self.state_head is not None
+                and 'states' in batch and _pred_z_hats):
+            _states_sp = batch['states'].to(self.device, non_blocking=True).float()
+            _states_sp = _states_sp.clone()
+            _states_sp[:, :, 2] = torch.atan2(
+                _states_sp[:, :, 2].sin(), _states_sp[:, :, 2].cos())
+            _w_sp = torch.tensor(
+                self.cfg.get('state_loss_weights', [50., 0.1, 100., 1.]),
+                dtype=torch.float32, device=self.device)
+            sp_loss = torch.zeros(1, device=self.device)
+            for _k, _zh in enumerate(_pred_z_hats):
+                _zh_n = F.normalize(_zh, dim=-1)
+                sp_loss = sp_loss + (
+                    _w_sp * (self.state_head(_zh_n) - _states_sp[:, _k + 1]).pow(2)
+                ).mean()
+            sp_loss = sp_loss / len(_pred_z_hats)
+            total_loss = total_loss + self.lambda_state_pred * sp_loss
+            info['state_pred_loss'] = sp_loss.item()
 
         # Equilibrium anchor: state_head(z*) must decode to the zero physical state.
         # Only the single equilibrium point is supervised — no trajectory labels needed.
@@ -1060,72 +1085,118 @@ class Trainer:
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
     def _eval_checkpoint_diagnostics(self, val_loader, epoch: int) -> None:
-        """Print ρ(A_aug), ||B||, and R² state probes. Called every checkpoint_every epochs."""
+        """Print ρ(A_aug), cos(B), z_ss, R²_pred, and per-state R². Called every checkpoint_every epochs."""
         if self._z_star_ema is None:
             return
         was_train = self.model.training
         self.model.eval()
 
-        # ── Jacobian ──────────────────────────────────────────────────────────
-        rho = B_norm = float('nan')
+        # ── Jacobian: ρ(A_aug), B_eff, cos(B) ───────────────────────────────
+        rho = B_norm = cos_B = float('nan')
         try:
             from control.jacobian import compute_augmented_jacobian_np
             z_np = self._z_star_ema.cpu().numpy()
             A_aug, B_aug = compute_augmented_jacobian_np(self.model, z_np, self.device)
             if hasattr(self.model.action_encoder, 'W'):
                 W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()
-                B_aug = B_aug @ W_enc
+                B_eff = (B_aug @ W_enc)[:len(z_np)].flatten()
+            else:
+                B_eff = B_aug[:len(z_np), 0].flatten()
             rho    = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
-            B_norm = float(np.linalg.norm(B_aug))
+            B_norm = float(np.linalg.norm(B_eff))
+            # cos(B): compare predictor Jacobian against stored physical B_target
+            if self._B_target is not None:
+                B_tgt_np = self._B_target.cpu().numpy()
+                denom = (np.linalg.norm(B_eff) * np.linalg.norm(B_tgt_np) + 1e-12)
+                cos_B = float(np.dot(B_eff, B_tgt_np) / denom)
         except Exception:
             pass
 
-        # ── R² state probes (first 5 val batches) ─────────────────────────────
+        # ── z_ss: LQR steady-state drift ────────────────────────────────────
+        z_ss = float('nan')
+        try:
+            z_ss_val = self._eval_z_ss_delta()
+            if z_ss_val is not None:
+                z_ss = z_ss_val
+        except Exception:
+            pass
+
+        # ── Val batches: per-state R² and prediction R² ──────────────────────
         r2 = [float('nan')] * 4
-        if self.state_head is not None:
-            import torch.nn.functional as F_
-            z_list, s_list = [], []
-            n_done = 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    if n_done >= 5:
-                        break
-                    if 'states' not in batch:
-                        break
-                    obs_seq = batch['obs_seq'].to(self.device).float().div_(255.0)
-                    states  = batch['states'].to(self.device).float()
-                    Bv, H1v, Cv, hv, wv = obs_seq.shape
-                    Hv = H1v - 1
-                    if self.model.config.use_frame_diff:
-                        o0 = obs_seq[:, 0]
-                        inp0 = torch.cat([o0, o0, torch.zeros_like(o0)], dim=1)
-                        z0   = self.model.encoder(inp0)
-                        cr   = obs_seq[:, 1:].contiguous().view(Bv*Hv, Cv, hv, wv)
-                        pr   = obs_seq[:, :-1].contiguous().view(Bv*Hv, Cv, hv, wv)
-                        zr   = self.model.encoder(
-                            torch.cat([pr, cr, cr - pr], dim=1)).view(Bv, Hv, -1)
-                        z_traj = torch.cat([z0.unsqueeze(1), zr], dim=1)
-                    else:
-                        flat = obs_seq.view(Bv*(Hv+1), Cv, hv, wv)
-                        z_traj = self.model.encoder(flat).view(Bv, Hv+1, -1)
-                    z_flat = F_.normalize(z_traj.view(Bv*(Hv+1), -1), dim=-1)
-                    s_flat = states.view(Bv*(Hv+1), 4)
-                    z_list.append(z_flat); s_list.append(s_flat)
-                    n_done += 1
-            if z_list:
-                Z = torch.cat(z_list); S = torch.cat(s_list)
-                S_pred = self.state_head(Z)
-                for i in range(4):
-                    ss_res = ((S_pred[:, i] - S[:, i]) ** 2).sum()
-                    ss_tot = ((S[:, i] - S[:, i].mean()) ** 2).sum() + 1e-12
-                    r2[i] = float(1.0 - ss_res / ss_tot)
+        pred_r2 = float('nan')
+        n_done = 0
+        z_list, s_list = [], []
+        pred_ss_res = pred_ss_tot = 0.0
+        W_pred = self.predictor_window
+        with torch.no_grad():
+            for batch in val_loader:
+                if n_done >= 5:
+                    break
+                if 'states' not in batch:
+                    break
+                obs_seq = batch['obs_seq'].to(self.device).float().div_(255.0)
+                states  = batch['states'].to(self.device).float()
+                acts    = batch['actions'].to(self.device).float()
+                Bv, H1v, Cv, hv, wv = obs_seq.shape
+                Hv = H1v - 1
+                if self.model.config.use_frame_diff:
+                    o0   = obs_seq[:, 0]
+                    inp0 = torch.cat([o0, o0, torch.zeros_like(o0)], dim=1)
+                    z0   = self.model.encoder(inp0)
+                    cr   = obs_seq[:, 1:].contiguous().view(Bv * Hv, Cv, hv, wv)
+                    pr   = obs_seq[:, :-1].contiguous().view(Bv * Hv, Cv, hv, wv)
+                    zr   = self.model.encoder(
+                        torch.cat([pr, cr, cr - pr], dim=1)).view(Bv, Hv, -1)
+                    z_traj = torch.cat([z0.unsqueeze(1), zr], dim=1)   # (Bv, Hv+1, d)
+                else:
+                    flat   = obs_seq.view(Bv * (Hv + 1), Cv, hv, wv)
+                    z_traj = self.model.encoder(flat).view(Bv, Hv + 1, -1)
+
+                # Per-state R² (encoder outputs vs ground-truth states)
+                if self.state_head is not None:
+                    z_flat = F.normalize(z_traj.view(Bv * (Hv + 1), -1), dim=-1)
+                    z_list.append(z_flat)
+                    s_list.append(states.view(Bv * (Hv + 1), 4))
+
+                # Prediction R²: unroll predictor, measure explained variance in z-space
+                z_enc_targets = z_traj[:, 1:].detach()   # (Bv, Hv, d) — encoder targets
+                z_win_buf = [z_traj[:, 0]] * W_pred
+                u_win_buf = [torch.zeros(Bv, 1, device=self.device)] * (W_pred - 1)
+                for k in range(Hv):
+                    u_k = acts[:, k]
+                    u_win_buf.append(u_k)
+                    z_stk = torch.stack(z_win_buf[-W_pred:], dim=1)
+                    u_stk = torch.stack(u_win_buf[-W_pred:], dim=1)
+                    z_hat = self.model.predict(z_stk, u_stk)
+                    z_tgt = z_enc_targets[:, k]
+                    pred_ss_res += ((z_hat - z_tgt) ** 2).sum().item()
+                    pred_ss_tot += ((z_tgt - z_tgt.mean(0, keepdim=True)) ** 2).sum().item()
+                    z_win_buf.append(z_hat)
+
+                n_done += 1
+
+        if z_list and self.state_head is not None:
+            Z = torch.cat(z_list); S = torch.cat(s_list)
+            S_pred = self.state_head(Z)
+            for i in range(4):
+                ss_res = ((S_pred[:, i] - S[:, i]) ** 2).sum()
+                ss_tot = ((S[:, i] - S[:, i].mean()) ** 2).sum() + 1e-12
+                r2[i] = float(1.0 - ss_res / ss_tot)
+        if pred_ss_tot > 0:
+            pred_r2 = float(1.0 - pred_ss_res / (pred_ss_tot + 1e-12))
 
         if was_train:
             self.model.train()
 
-        names = ['x', 'ẋ', 'θ', 'θ̇']
+        names  = ['x', 'ẋ', 'θ', 'θ̇']
         r2_str = '  '.join(f'r({n})={v:.3f}' for n, v in zip(names, r2))
-        print(f'[Diag ep{epoch+1:03d}]  ρ(A)={rho:.4f}  ||B||={B_norm:.4f}  {r2_str}')
+        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else '  nan'
+        z_ss_str = f'{z_ss:.3f}'   if not np.isnan(z_ss)  else '  nan'
+        pr2_str  = f'{pred_r2:.3f}' if not np.isnan(pred_r2) else '  nan'
+        print(f'[Diag ep{epoch+1:03d}]'
+              f'  ρ(A)={rho:.4f}  ||B||={B_norm:.4f}'
+              f'  cos(B)={cos_str}  z_ss={z_ss_str}  R²_pred={pr2_str}'
+              f'  {r2_str}')
 
     def _eval_z_ss_delta(self):
         """Once-per-epoch diagnostic: ||(I-A_cl)^{-1} c_aug|| via DARE.
@@ -1340,7 +1411,10 @@ class Trainer:
                 self._eval_checkpoint_diagnostics(val_loader, epoch)
                 self.save_checkpoint(tag=f'epoch{epoch+1:04d}')
             dt = time.time() - t0
-            state_str  = f"  state={tr.get('state_loss',     0):.4f}" if 'state_loss'     in tr else ''
+            state_str  = (f"  state={tr.get('state_loss', 0):.4f}"
+                          + (f"+sp{tr.get('state_pred_loss', 0):.4f}"
+                             if 'state_pred_loss' in tr else '')
+                          ) if ('state_loss' in tr or 'state_pred_loss' in tr) else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
