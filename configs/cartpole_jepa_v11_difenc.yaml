@@ -51,13 +51,6 @@ training:
   lambda_state_pred: 1.0
   # ── Fixed-point loss ──────────────────────────────────────────────────────
   lambda_fp: 1.0
-  # ── B-alignment loss ──────────────────────────────────────────────────────
-  # Direct supervision: predictor's B at z* must match empirical encoder FD.
-  # B_target is recomputed from the current encoder every b_target_update_every
-  # epochs using ±2N FD in the real environment (near-equilibrium states).
-  lambda_B_align: 2.0
-  b_target_update_every: 1
-  b_target_n_states: 50
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   inv_frames: 5
