@@ -48,9 +48,9 @@ training:
   sigreg_all_steps: true
   # ── Unrolled state prediction loss ───────────────────────────────────────
   # state_head(predictor(z_t, u_t)) ≈ s_{t+1}: flows gradient through B column
-  lambda_state_pred: 1.0
+  lambda_state_pred: 2.0
   # ── Fixed-point loss ──────────────────────────────────────────────────────
-  lambda_fp: 1.0
+  lambda_fp: 2.0
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   inv_frames: 5
