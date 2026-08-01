@@ -245,7 +245,12 @@ def report_action_balance(episodes: List[Dict], split: str,
 # ── Continuous-action histogram ───────────────────────────────────────────────
 
 def plot_action_distribution(episodes: List[Dict], out_dir: Path) -> None:
-    """Histogram of continuous force values; one series per policy type."""
+    """Histogram of continuous force values; one series per policy type.
+
+    Produces two panels:
+      - Top: all actions (shows the full picture including passive zeros)
+      - Bottom: non-zero actions only (so random/active policies are visible)
+    """
     by_policy: Dict[str, np.ndarray] = {}
     for ep in episodes:
         key = f"{ep['policy_type']}_eps{ep['epsilon']:.2f}"
@@ -254,15 +259,33 @@ def plot_action_distribution(episodes: List[Dict], out_dir: Path) -> None:
         by_policy[key].append(arr)
     by_policy = {k: np.concatenate(v) for k, v in by_policy.items()}
 
-    fig, ax = plt.subplots(figsize=(9, 3))
-    bins = np.linspace(-11, 11, 80)
+    bins_all    = np.linspace(-11, 11, 80)
+    bins_nonzero = np.linspace(-11, 11, 80)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6))
+
+    # Panel 1: all actions
+    ax = axes[0]
     for key, vals in sorted(by_policy.items()):
         color = POLICY_COLORS.get(key, '#888888')
-        ax.hist(vals, bins=bins, alpha=0.45, label=key, color=color, edgecolor='none')
+        ax.hist(vals, bins=bins_all, alpha=0.55, label=key, color=color, edgecolor='none')
+    ax.set_ylabel('Count')
+    ax.set_title('All actions (force) by policy type')
+    ax.legend(fontsize=8)
+
+    # Panel 2: non-zero actions only (passive zeros excluded)
+    ax = axes[1]
+    for key, vals in sorted(by_policy.items()):
+        nonzero = vals[vals != 0.0]
+        if len(nonzero) == 0:
+            continue
+        color = POLICY_COLORS.get(key, '#888888')
+        ax.hist(nonzero, bins=bins_nonzero, alpha=0.55, label=key, color=color, edgecolor='none')
     ax.set_xlabel('Force (N)')
     ax.set_ylabel('Count')
-    ax.set_title('Continuous action (force) distribution by policy type')
+    ax.set_title('Non-zero actions only (passive u=0 excluded)')
     ax.legend(fontsize=8)
+
     plt.tight_layout()
     fig.savefig(out_dir / 'action_distribution.png', dpi=130)
     plt.close(fig)
