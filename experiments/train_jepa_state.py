@@ -85,7 +85,7 @@ def main():
         _peek = torch.load(args.resume, map_location='cpu')
         _ckpt_cfg = _peek.get('config', {})
         if _ckpt_cfg:
-            _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
+            _arch_keys = ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
                           'encoder_type', 'patch_size', 'frame_stack', 'use_frame_diff',
                           'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                           'predictor_type', 'predictor_window',
@@ -160,6 +160,7 @@ def main():
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg.get('latent_dim', 8)),
+        action_dim=int(model_cfg.get('action_dim', 1)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 8)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
