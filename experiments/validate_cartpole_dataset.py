@@ -100,7 +100,15 @@ def check_transition_alignment(episodes: List[Dict], split: str,
             T        = ep['length'] if 'length' in ep else len(ep['actions'])
             step_sel = np.random.choice(T, size=min(n_steps_per_ep, T), replace=False)
 
+            # Load terminated flags to skip soft-reset boundaries
+            term_arr = ep.get('terminated', np.zeros(T, dtype=bool))
+
             for t in sorted(step_sel):
+                # Skip soft-reset boundaries: stored state is the new reset state,
+                # not the physics continuation — alignment check would always fail here.
+                if term_arr[t]:
+                    continue
+
                 s_t    = ep['states'][t].astype(np.float64)
                 act_t  = ep['actions'][t]
                 # multi-action: act_t is (frame_skip,); scalar: convert to float
@@ -238,7 +246,7 @@ def plot_action_distribution(episodes: List[Dict], out_dir: Path) -> None:
     by_policy: Dict[str, np.ndarray] = {}
     for ep in episodes:
         key = f"{ep['policy_type']}_eps{ep['epsilon']:.2f}"
-        arr = ep['actions'].astype(np.float32)
+        arr = ep['actions'].astype(np.float32).flatten()  # flatten multi-action (T,fs) → (T*fs,)
         by_policy.setdefault(key, [])
         by_policy[key].append(arr)
     by_policy = {k: np.concatenate(v) for k, v in by_policy.items()}
