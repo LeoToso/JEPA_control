@@ -108,6 +108,14 @@ class DatasetConfig:
     # for longer passive episodes that show the full instability trajectory.
     theta_threshold:    float = None
 
+    # No-done mode: when True, the episode never terminates early.
+    # When the physics triggers done (cart hits wall or pole falls past threshold),
+    # the environment is soft-reset to a new random state in-place and collection
+    # continues for max_episode_steps total macro-steps.  The reset boundary is
+    # recorded by terminated[t]=True so the dataset never samples a window crossing it.
+    no_done:           bool = False
+    max_episode_steps: int  = 200
+
     # Burst-noise parameters
     burst_start_prob: float = 0.03
     burst_min_len:    int   = 1
@@ -438,9 +446,10 @@ def _collect_episode_continuous(
     burst_remaining = 0
     burst_action    = 0.0
 
-    t    = 0
-    done = False
-    MAX_STEPS = 500
+    t         = 0
+    done      = False
+    no_done   = cfg.no_done
+    MAX_STEPS = cfg.max_episode_steps if no_done else 500
 
     while not done and t < MAX_STEPS:
         u_lqr = float(np.clip(np.dot(gain, state), env.action_low, env.action_high))
@@ -507,9 +516,29 @@ def _collect_episode_continuous(
         obs_list.append(next_obs)
         state_list.append(next_state)
 
+        if terminated and no_done and not truncated:
+            # Soft-reset: sample a new initial state and keep running.
+            # The terminal obs/state are already stored (terminated[t]=True marks the
+            # boundary so the dataset never samples a window crossing here).
+            # Overwrite the last entries with the fresh reset obs/state so that
+            # frame_diff at the next step doesn't see a discontinuous diff channel.
+            rng_sr = np.random.default_rng(ep_seed + t)
+            ar_sr  = cfg.lqr_near_eq_angle_range if policy_type in ('lqr_near_eq', 'passive') else cfg.pole_angle_range
+            new_state0 = np.array([
+                float(rng_sr.uniform(-cfg.cart_pos_range, cfg.cart_pos_range)),
+                float(rng_sr.uniform(-cfg.cart_vel_range, cfg.cart_vel_range)),
+                float(rng_sr.uniform(-ar_sr,              ar_sr)),
+                float(rng_sr.uniform(-cfg.pole_vel_range, cfg.pole_vel_range)),
+            ], dtype=np.float32)
+            reset_obs, reset_state, _ = env.reset_to_state(new_state0)
+            obs_list[-1]   = reset_obs
+            state_list[-1] = reset_state
+            next_state     = reset_state
+            burst_remaining = 0  # cancel any in-progress burst
+
         state = next_state
         t    += 1
-        done  = terminated or truncated
+        done  = (not no_done and terminated) or truncated
 
     T = len(action_list)
     return {
@@ -764,7 +793,8 @@ def generate_dataset(cfg: DatasetConfig) -> None:
         _collect = _collect_episode
 
     # Pre-generate a large pool of (policy_type, epsilon) assignments and seeds
-    pool_size   = max(500, cfg.num_transitions // 50)
+    avg_ep_len  = cfg.max_episode_steps if cfg.no_done else 50
+    pool_size   = max(500, cfg.num_transitions // avg_ep_len)
     assignments = _assign_policies(pool_size, cfg, rng)
     ep_seeds    = rng.integers(0, 2**31, size=pool_size).tolist()
 

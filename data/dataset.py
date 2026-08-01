@@ -421,6 +421,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
         all_states, all_nstates = [], []
         all_actions, all_ep_ids = [], []
+        all_terminated = []
         ep_keys_list, local_offsets_list = [], []
         obs_chunks       = [] if preload_obs else None
         ep_obs_starts    = [] if preload_obs else None
@@ -446,6 +447,13 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
                 ep_keys_list.extend([ep_key] * T)
                 local_offsets_list.extend(range(T))
 
+                # Load terminated flags (present in no_done datasets to mark
+                # soft-reset boundaries; absent in standard datasets → all False).
+                if 'terminated' in ep:
+                    all_terminated.append(ep['terminated'][:T].astype(bool))
+                else:
+                    all_terminated.append(np.zeros(T, dtype=bool))
+
                 if preload_obs:
                     obs_ep = ep['observations'][:]          # (T+1, h, w, C) uint8
                     if target_image_size is not None:
@@ -462,13 +470,15 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
         if not all_states:
             self.states = self.next_states = np.zeros((0, 4), dtype=np.float32)
-            self.actions  = np.zeros((0, 1), dtype=np.float32)
-            self.ep_ids   = np.zeros(0, dtype=np.int32)
+            self.actions    = np.zeros((0, 1), dtype=np.float32)
+            self.ep_ids     = np.zeros(0, dtype=np.int32)
+            self.terminated = np.zeros(0, dtype=bool)
         else:
-            self.states      = np.concatenate(all_states,  axis=0)
-            self.next_states = np.concatenate(all_nstates, axis=0)
-            self.actions     = np.concatenate(all_actions, axis=0)  # (N, action_dim)
-            self.ep_ids      = np.concatenate(all_ep_ids,  axis=0)
+            self.states      = np.concatenate(all_states,      axis=0)
+            self.next_states = np.concatenate(all_nstates,     axis=0)
+            self.actions     = np.concatenate(all_actions,     axis=0)  # (N, action_dim)
+            self.ep_ids      = np.concatenate(all_ep_ids,      axis=0)
+            self.terminated  = np.concatenate(all_terminated,  axis=0)  # (N,) bool
         self.ep_keys     = np.array(ep_keys_list)
         self.local_offs  = np.array(local_offsets_list, dtype=np.int32)
         self.valid_starts = self._find_valid_starts()
@@ -489,6 +499,11 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
             return np.array([], dtype=np.int64)
         windows = np.lib.stride_tricks.sliding_window_view(ep[:N + H], H)  # (N, H)
         mask = np.all(windows == windows[:, :1], axis=1)
+        # Also exclude windows that contain a soft-reset boundary (terminated=True).
+        if hasattr(self, 'terminated') and self.terminated.any():
+            term_win = np.lib.stride_tricks.sliding_window_view(
+                self.terminated[:N + H], H)                              # (N, H)
+            mask &= ~term_win.any(axis=1)
         return np.where(mask)[0].astype(np.int64)
 
     def _file(self) -> 'h5py.File':

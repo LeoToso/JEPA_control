@@ -89,6 +89,12 @@ def _parse() -> argparse.Namespace:
                       help='Store frame_skip independent sub-actions per macro-step '
                            '(DINO-WM style). Requires --use-continuous-env. '
                            'Actions shape: (T, frame_skip) instead of (T,).')
+    cont.add_argument('--no-done', action='store_true', default=False,
+                      help='Never terminate episodes early. When the physics triggers done '
+                           '(cart hits wall or pole falls), soft-reset to a new initial state '
+                           'and keep collecting. Use --max-episode-steps to set episode length.')
+    cont.add_argument('--max-episode-steps', type=int, default=None,
+                      help='Episode length when --no-done is active (default: 200).')
 
     # Reset range overrides
     rst = p.add_argument_group('custom reset ranges')
@@ -146,6 +152,10 @@ def main() -> None:
             setattr(cfg, attr, val)
     if args.multi_action:
         cfg.multi_action = True
+    if args.no_done:
+        cfg.no_done = True
+    if args.max_episode_steps is not None:
+        cfg.max_episode_steps = args.max_episode_steps
 
     # Optional reset range overrides
     for attr, val in [
