@@ -433,9 +433,12 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
             n_keep = max(1, int(len(all_ep_keys) * data_fraction))
             for ep_key in all_ep_keys[:n_keep]:
                 ep        = ep_grp[ep_key]
-                acts_ep   = ep['actions'][:]    # (T,)
+                acts_ep   = ep['actions'][:]    # (T,) or (T, frame_skip)
                 states_ep = ep['states'][:]     # (T+1, 4)
                 T = len(acts_ep)
+                # Normalise to 2-D: (T, action_dim)
+                if acts_ep.ndim == 1:
+                    acts_ep = acts_ep[:, np.newaxis]
                 all_states.append(states_ep[:-1].astype(np.float32))
                 all_nstates.append(states_ep[1:].astype(np.float32))
                 all_actions.append(acts_ep.astype(np.float32))
@@ -464,7 +467,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         else:
             self.states      = np.concatenate(all_states,  axis=0)
             self.next_states = np.concatenate(all_nstates, axis=0)
-            self.actions     = np.concatenate(all_actions, axis=0)[:, None]
+            self.actions     = np.concatenate(all_actions, axis=0)  # (N, action_dim)
             self.ep_ids      = np.concatenate(all_ep_ids,  axis=0)
         self.ep_keys     = np.array(ep_keys_list)
         self.local_offs  = np.array(local_offsets_list, dtype=np.int32)

@@ -58,8 +58,10 @@ class CEMLatentPlanner:
         action_lb: float = -10.0,
         action_ub: float = 10.0,
         action_scale: float = 1.0,
+        action_dim: int = 1,
         device=None,
     ):
+        self._action_dim      = int(action_dim)
         self.horizon          = horizon
         self.chunk_size       = min(chunk_size, horizon)
         self.n_samples        = n_samples
@@ -76,7 +78,7 @@ class CEMLatentPlanner:
         self._predictor_window = predictor_window
         # History for nonlinear windowed mode (reset on reset())
         self._z_hist = None   # list of W tensors (1, d)
-        self._u_hist = None   # list of W-1 tensors (1, 1) -- past chosen actions
+        self._u_hist = None   # list of W-1 tensors (1, action_dim) -- past chosen actions
 
         # Resolve device
         if device is None:
@@ -102,7 +104,7 @@ class CEMLatentPlanner:
             self.action_encoder = action_encoder
             d = predictor.latent_dim
             self._A_np = np.eye(d)
-            self._B_np = np.zeros((d, 1))
+            self._B_np = np.zeros((d, self._action_dim))
 
         if Q is None:
             Q = np.eye(d)
@@ -147,7 +149,7 @@ class CEMLatentPlanner:
             else:
                 # Raw MLPPredictor: encode actions then call predictor
                 N, W, d = z_win.shape
-                u_flat = u_norm.reshape(N * W, 1)
+                u_flat = u_norm.reshape(N * W, -1)   # (N*W, action_dim)
                 a_flat = self.action_encoder(u_flat)
                 d_a = a_flat.shape[-1]
                 a_win = a_flat.reshape(N, W, d_a)
@@ -184,17 +186,17 @@ class CEMLatentPlanner:
                 z_win_list = [z] * W  # cold start: all z0
 
             if self._u_hist is not None:
-                # _u_hist is a list of W-1 tensors each (1, 1)
+                # _u_hist is a list of W-1 tensors each (1, action_dim)
                 u_win_list = [h.expand(N, -1) for h in self._u_hist]
             else:
-                u_win_list = [torch.zeros(N, 1, device=self.device)] * (W - 1)
+                u_win_list = [torch.zeros(N, self._action_dim, device=self.device)] * (W - 1)
 
         costs = torch.zeros(N, device=self.device)
         for t in range(self.horizon):
-            u_t = U[:, t:t+1]               # (N, 1)
+            u_t = U[:, t]                   # (N, action_dim)
             dz  = z - zs
             costs += ((dz @ self._Q) * dz).sum(-1)          # stage state cost
-            costs += self._R_scalar * (u_t * u_t).squeeze(-1)  # control cost
+            costs += self._R_scalar * (u_t * u_t).sum(-1)   # control cost (sum over action_dim)
 
             if self._linear_mode:
                 z = self._step(z, u_t, zs)
@@ -238,17 +240,18 @@ class CEMLatentPlanner:
         # Warm-start: shift previous optimal sequence by one step.
         # Without warm-starting, every step starts from mu=0 σ=3 and converges
         # to bang-bang solutions; warm-starting gives smoother, more consistent plans.
+        _adim = self._action_dim
         if self._prev_mu is not None:
             mu    = torch.cat([self._prev_mu[1:],
-                               torch.zeros(1, device=self.device)])
-            sigma = torch.full((self.horizon,), self.warm_start_sigma,
+                               torch.zeros(1, _adim, device=self.device)])
+            sigma = torch.full((self.horizon, _adim), self.warm_start_sigma,
                                device=self.device)
         else:
-            mu    = torch.zeros(self.horizon, device=self.device)
-            sigma = torch.full((self.horizon,), self.init_std, device=self.device)
+            mu    = torch.zeros(self.horizon, _adim, device=self.device)
+            sigma = torch.full((self.horizon, _adim), self.init_std, device=self.device)
 
         for _ in range(self.n_iter):
-            eps = torch.randn(self.n_samples, self.horizon, device=self.device)
+            eps = torch.randn(self.n_samples, self.horizon, _adim, device=self.device)
             U   = (mu + sigma * eps).clamp(self.action_lb, self.action_ub)
 
             costs     = self._rollout_cost(z0, zs, U)
@@ -277,16 +280,16 @@ class CEMLatentPlanner:
                 if self._u_hist is not None:
                     u_win_list = [h.clone() for h in self._u_hist]
                 else:
-                    u_win_list = [torch.zeros(1, 1, device=self.device)] * (W - 1)
+                    u_win_list = [torch.zeros(1, _adim, device=self.device)] * (W - 1)
             for t in range(self.horizon):
-                u_t = u_out[t:t+1].unsqueeze(-1)   # (1, 1)
+                u_t = u_out[t:t+1]             # (1, action_dim)
                 if self._linear_mode:
                     z = self._step(z, u_t, zs)
                 elif W > 1:
-                    z_win_tensor = torch.stack(z_win_list[-W:], dim=1)      # (1, W, d)
+                    z_win_tensor = torch.stack(z_win_list[-W:], dim=1)       # (1, W, d)
                     u_full_list = u_win_list[-(W-1):] + [u_t]
-                    u_win_tensor = torch.stack(u_full_list, dim=1)          # (1, W, 1)
-                    z = self._step_windowed(z_win_tensor, u_win_tensor)     # (1, d)
+                    u_win_tensor = torch.stack(u_full_list, dim=1)           # (1, W, action_dim)
+                    z = self._step_windowed(z_win_tensor, u_win_tensor)      # (1, d)
                     z_win_list.append(z)
                     u_win_list.append(u_t)
                 else:
@@ -295,18 +298,19 @@ class CEMLatentPlanner:
 
         # Update history with current z_t and chosen first action (nonlinear W>1 only)
         if not self._linear_mode and W > 1:
-            u_chosen = u_out[0:1].unsqueeze(-1)   # (1, 1)
+            u_chosen = u_out[0:1]   # (1, action_dim)
             if self._z_hist is None:
                 # Initialize: W copies of z0
                 self._z_hist = [z0.clone()] * W
             else:
                 self._z_hist = (self._z_hist + [z0.clone()])[-W:]
             if self._u_hist is None:
-                self._u_hist = [torch.zeros(1, 1, device=self.device)] * (W - 1)
+                self._u_hist = [torch.zeros(1, _adim, device=self.device)] * (W - 1)
             else:
-                self._u_hist = (self._u_hist + [u_chosen.clone()])[-( W - 1):]
+                self._u_hist = (self._u_hist + [u_chosen.clone()])[-(W - 1):]
 
-        actions = [np.array([float(u_out[k].cpu())]) for k in range(self.chunk_size)]
+        # Return chunk_size action arrays, each shape (action_dim,)
+        actions = [u_out[k].cpu().numpy() for k in range(self.chunk_size)]
         return actions, np.array(traj)
 
     # ── compatibility shims for rollout.py ───────────────────────────────────

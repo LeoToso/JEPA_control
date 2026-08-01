@@ -47,10 +47,15 @@ class ContinuousCartpoleVisual:
         return self._render_obs(), state.astype(np.float32), {}
 
     def step(self, action):
-        action=float(np.clip(action,self.action_low,self.action_high))
+        # Accept scalar or array of shape (frame_skip,) — one sub-action per physics step.
+        # Scalar (or 1-element array) → ZOH: same action for all frame_skip steps.
+        action_arr = np.atleast_1d(np.asarray(action, dtype=np.float64)).flatten()
+        if action_arr.size == 1:
+            action_arr = np.repeat(action_arr, self.frame_skip)
+        action_arr = np.clip(action_arr, self.action_low, self.action_high)
         total_reward=0.0; done=False
-        for _ in range(self.frame_skip):
-            state,done=self._physics_step(action)
+        for i in range(self.frame_skip):
+            state,done=self._physics_step(float(action_arr[i]))
             pos,vel,ang,ang_vel=state
             reward=-(pos**2+0.1*vel**2+10.0*ang**2+0.1*ang_vel**2)
             total_reward+=reward

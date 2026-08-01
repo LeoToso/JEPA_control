@@ -148,8 +148,8 @@ class JEPAModel(nn.Module):
         """
         B, W, d = z_win.shape
         # Encode each action in the window separately, then concatenate
-        # u_win: (B, W, 1) -> reshape to (B*W, 1), encode, reshape back
-        u_flat = u_win.reshape(B * W, 1)                   # (B*W, 1)
+        # u_win: (B, W, action_dim) -> reshape to (B*W, action_dim), encode, reshape back
+        u_flat = u_win.reshape(B * W, -1)                  # (B*W, action_dim)
         a_flat = self.action_encoder(u_flat)                # (B*W, d_a)
         d_a = a_flat.shape[-1]
         a_win = a_flat.reshape(B, W, d_a)                  # (B, W, d_a)

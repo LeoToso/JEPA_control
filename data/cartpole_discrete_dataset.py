@@ -94,6 +94,11 @@ class DatasetConfig:
     # Passive (u=0) free-fall episodes from near-equilibrium: teaches rho(A) > 1
     frac_passive:             float = 0.0
 
+    # Multi-action: store frame_skip independent sub-actions per macro-step (DINO-WM style).
+    # When True, each macro-step has frame_skip independently sampled sub-actions;
+    # action arrays are (T, frame_skip) instead of (T,).
+    multi_action: bool = False
+
     # Physics: continuous env with viscous friction (replaces CartPole-v1 when enabled)
     use_continuous_env: bool  = False
     friction_cart:      float = 0.0   # viscous cart friction  [N·s/m]
@@ -466,10 +471,34 @@ def _collect_episode_continuous(
             action = float(rng.uniform(env.action_low, env.action_high))
             src    = SRC_RANDOM
 
-        next_obs, next_state, reward, terminated, _ = env.step(action)
+        # Multi-action: for random policy sample frame_skip independent sub-actions;
+        # for structured policies repeat the nominal action for all sub-steps.
+        if cfg.multi_action and cfg.frame_skip > 1:
+            fs = cfg.frame_skip
+            if policy_type == 'passive':
+                sub_actions = np.zeros(fs, dtype=np.float32)
+            elif policy_type == 'random':
+                sub_actions = rng.uniform(
+                    env.action_low, env.action_high, size=fs).astype(np.float32)
+            elif policy_type in ('noisy', 'lqr_near_eq'):
+                # Each sub-action independently flipped with prob epsilon
+                sub_actions = np.array([
+                    float(rng.uniform(env.action_low, env.action_high))
+                    if rng.random() < epsilon else u_lqr
+                    for _ in range(fs)], dtype=np.float32)
+                sub_actions = np.clip(sub_actions, env.action_low, env.action_high)
+            else:
+                sub_actions = np.full(fs, action, dtype=np.float32)
+            stored_action = sub_actions
+            step_input = sub_actions
+        else:
+            stored_action = float(action)
+            step_input = action
+
+        next_obs, next_state, reward, terminated, _ = env.step(step_input)
         truncated = (t + 1 >= MAX_STEPS) and not terminated
 
-        action_list.append(float(action))
+        action_list.append(stored_action)
         reward_list.append(float(reward))
         term_list.append(bool(terminated))
         trunc_list.append(bool(truncated))
@@ -485,7 +514,7 @@ def _collect_episode_continuous(
     T = len(action_list)
     return {
         'observations':  np.stack(obs_list).astype(np.uint8),
-        'actions':       np.array(action_list, dtype=np.float32),   # float32, not uint8
+        'actions':       np.stack(action_list).astype(np.float32),  # (T,) or (T, frame_skip)
         'states':        np.stack(state_list).astype(np.float32),
         'rewards':       np.array(reward_list, dtype=np.float32),
         'terminated':    np.array(term_list,   dtype=np.bool_),

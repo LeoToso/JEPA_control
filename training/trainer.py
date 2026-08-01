@@ -213,8 +213,9 @@ class Trainer:
             _ar_hidden = int(self.cfg.get('action_reconstruction_hidden_dim', 256))
             _ar_layers = int(self.cfg.get('action_reconstruction_n_layers', 3))
             _ar_delta  = bool(self.cfg.get('action_reconstruction_use_delta', True))
+            _model_action_dim = model.config.action_dim
             self.endpoint_action_decoder = EndpointActionDecoder(
-                latent_dim=d_lat, action_dim=1, H_act=_H_act,
+                latent_dim=d_lat, action_dim=_model_action_dim, H_act=_H_act,
                 hidden_dim=_ar_hidden, n_layers=_ar_layers, use_delta=_ar_delta,
             ).to(self.device)
             self.optimizer.add_param_group(
@@ -225,7 +226,7 @@ class Trainer:
             # than latents.  Its gradient never reaches the encoder.
             self.phys_endpoint_decoder = EndpointActionDecoder(
                 latent_dim=4,   # cartpole physical state dim
-                action_dim=1, H_act=_H_act,
+                action_dim=_model_action_dim, H_act=_H_act,
                 hidden_dim=_ar_hidden, n_layers=_ar_layers, use_delta=_ar_delta,
             ).to(self.device)
             self.optimizer.add_param_group(
@@ -421,8 +422,9 @@ class Trainer:
         # Convention (matches CEM): window = [z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]
         # where u_t is the action APPLIED at z_t to produce z_{t+1}.
         W = self.predictor_window
-        z_win_buf = [z_0] * W                                             # W copies of z_0
-        u_win_buf = [torch.zeros(B, 1, device=self.device)] * (W - 1)    # W-1 padding zeros
+        z_win_buf = [z_0] * W                                                         # W copies of z_0
+        _adim = self.model.config.action_dim
+        u_win_buf = [torch.zeros(B, _adim, device=self.device)] * (W - 1)  # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)
         _collect_z_hats = (self.lambda_pred_vicreg > 0

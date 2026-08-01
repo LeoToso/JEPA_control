@@ -85,6 +85,10 @@ def _parse() -> argparse.Namespace:
                       help='Pole angle at which episode terminates (rad). '
                            'Default: 12 deg (0.2094). Raise to e.g. 1.5708 (90 deg) '
                            'for longer passive episodes.')
+    cont.add_argument('--multi-action', action='store_true', default=False,
+                      help='Store frame_skip independent sub-actions per macro-step '
+                           '(DINO-WM style). Requires --use-continuous-env. '
+                           'Actions shape: (T, frame_skip) instead of (T,).')
 
     # Reset range overrides
     rst = p.add_argument_group('custom reset ranges')
@@ -140,6 +144,8 @@ def main() -> None:
     ]:
         if val is not None:
             setattr(cfg, attr, val)
+    if args.multi_action:
+        cfg.multi_action = True
 
     # Optional reset range overrides
     for attr, val in [
