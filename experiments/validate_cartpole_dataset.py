@@ -102,7 +102,9 @@ def check_transition_alignment(episodes: List[Dict], split: str,
 
             for t in sorted(step_sel):
                 s_t    = ep['states'][t].astype(np.float64)
-                action = float(ep['actions'][t])
+                act_t  = ep['actions'][t]
+                # multi-action: act_t is (frame_skip,); scalar: convert to float
+                action = act_t if act_t.ndim > 0 and act_t.size > 1 else float(act_t)
                 s_next = ep['states'][t + 1].astype(np.float64)
 
                 sim_env.reset_to_state(s_t)
