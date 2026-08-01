@@ -1437,7 +1437,10 @@ class Trainer:
             tr  = self.train_epoch(train_loader)
             val = self.val_epoch(val_loader)
             _z_ss_delta = self._eval_z_ss_delta()
-            self.scheduler.step()
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.simplefilter('ignore', UserWarning)
+                self.scheduler.step()
             history['train'].append(tr)
             history['val'].append(val)
             val_loss = val.get('total_loss', float('inf'))
