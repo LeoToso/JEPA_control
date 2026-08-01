@@ -426,7 +426,7 @@ class Trainer:
         # where u_t is the action APPLIED at z_t to produce z_{t+1}.
         W = self.predictor_window
         z_win_buf = [z_0] * W                                                         # W copies of z_0
-        _adim = self.model.config.action_dim
+        _adim = self.model.action_encoder.action_dim
         u_win_buf = [torch.zeros(B, _adim, device=self.device)] * (W - 1)  # W-1 padding zeros
 
         pred_loss = torch.zeros(1, device=self.device)

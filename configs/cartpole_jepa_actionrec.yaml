@@ -11,6 +11,7 @@ environment:
 
 model:
   latent_dim: 8
+  action_dim: 5
   action_latent_dim: 8
   action_encoder: linear
   encoder_type: vit
