@@ -1143,10 +1143,12 @@ class Trainer:
             else:
                 B_raw = B_jac           # identity encoder: m == act_dim
             B_norm = float(np.linalg.norm(B_raw))
-            # cos(B): only meaningful for scalar action (act_dim == 1)
-            if self._B_target is not None and B_raw.shape[1] == 1:
-                B_eff_1d = B_raw[:, 0]
+            # cos(B): for scalar action use the single column; for multi-action
+            # average columns (all sub-actions are the same force type, so their
+            # Jacobian columns should point in the same direction as B_target).
+            if self._B_target is not None:
                 B_tgt_np = self._B_target.cpu().numpy()
+                B_eff_1d = B_raw.mean(axis=1) if B_raw.shape[1] > 1 else B_raw[:, 0]
                 denom = (np.linalg.norm(B_eff_1d) * np.linalg.norm(B_tgt_np) + 1e-12)
                 cos_B = float(np.dot(B_eff_1d, B_tgt_np) / denom)
         except Exception:
@@ -1231,8 +1233,7 @@ class Trainer:
 
         names  = ['x', 'ẋ', 'θ', 'θ̇']
         r2_str = '  '.join(f'r({n})={v:.3f}' for n, v in zip(names, r2))
-        act_dim  = self.model.action_encoder.action_dim
-        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else ('N/A' if act_dim > 1 else 'nan')
+        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else '  nan'
         z_ss_str = f'{z_ss:.3f}'   if not np.isnan(z_ss)  else '  nan'
         pr2_str  = f'{pred_r2:.3f}' if not np.isnan(pred_r2) else '  nan'
         print(f'[Diag ep{epoch+1:03d}]'
