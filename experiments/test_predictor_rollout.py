@@ -213,6 +213,9 @@ def generate_rollout(cfg: dict, n_steps: int, seed: int,
     from data.dataset import load_discrete_dataset_meta
 
     env_cfg = cfg['environment']
+    # Always use theta_threshold=90° for rollout so the episode never terminates
+    # due to the pole falling — only a hard cart-position wall can stop it, and
+    # with the soft-reset below even that is handled gracefully.
     env = ContinuousCartpoleVisual(
         frame_skip=int(env_cfg.get('frame_skip', 1)),
         image_size=int(env_cfg['image_size']),
@@ -221,6 +224,7 @@ def generate_rollout(cfg: dict, n_steps: int, seed: int,
         pole_length=float(env_cfg['pole_length']),
         gravity=float(env_cfg['gravity']),
         dt=float(env_cfg['dt']),
+        theta_threshold=float(np.pi / 2),   # 90° — never cut off a falling pole
         seed=seed,
     )
     action_range = env_cfg.get('action_range', [-10, 10])
@@ -230,21 +234,27 @@ def generate_rollout(cfg: dict, n_steps: int, seed: int,
 
     rng  = np.random.RandomState(seed)
     x0   = rng.uniform(-0.05, 0.05, 4).astype(np.float32)
-    obs0, _, _ = env.reset_to_state(x0)
+    obs0, state, _ = env.reset_to_state(x0)
     frames  = [_resize_np(obs0, target_size)]
     actions = []   # raw physical actions
 
-    for _ in range(n_steps - 1):
+    for step in range(n_steps - 1):
         if action_std > 0:
             if action_dim > 1:
-                # multi-action: one independent sub-action per frame_skip step
                 u_raw = rng.uniform(-action_std, action_std, frame_skip).astype(np.float32)
             else:
                 u_raw = float(rng.uniform(-action_std, action_std))
         else:
             u_raw = np.zeros(frame_skip, dtype=np.float32) if action_dim > 1 else 0.0
 
-        obs, _, _, done, _ = env.step(u_raw)
+        obs, state, _, done, _ = env.step(u_raw)
+
+        if done:
+            # Soft-reset: sample a new initial state near equilibrium and keep going.
+            # This prevents early termination from biasing the rollout with padding.
+            x0_new = rng.uniform(-0.05, 0.05, 4).astype(np.float32)
+            obs, state, _ = env.reset_to_state(x0_new)
+
         frames.append(_resize_np(obs, target_size))
 
         # Normalize and store
@@ -252,14 +262,6 @@ def generate_rollout(cfg: dict, n_steps: int, seed: int,
         if action_dim == 1:
             u_norm = u_norm[:1]  # scalar → (1,)
         actions.append(u_norm)
-
-        if done:
-            # Episode ended early; pad remaining steps at rest
-            for _ in range(n_steps - 1 - len(actions)):
-                obs0_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
-                frames.append(_resize_np(obs0_eq, target_size))
-                actions.append(np.zeros(action_dim, dtype=np.float32))
-            break
 
     actions = np.stack(actions, axis=0)  # (n_steps-1, action_dim)
     return frames, actions, action_scale
