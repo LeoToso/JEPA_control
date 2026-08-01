@@ -780,8 +780,9 @@ class Trainer:
         # Fixed-point loss (legacy, kept for backward compat — subsumed by L_local).
         if is_train and self.lambda_fp > 0 and self._z_star_ema is not None:
             W = self.predictor_window
+            act_dim = self.model.action_encoder.action_dim
             z_star_win = self._z_star_ema.unsqueeze(0).unsqueeze(0).expand(1, W, -1)  # (1, W, d)
-            u_zero_win = torch.zeros(1, W, 1, device=self.device)
+            u_zero_win = torch.zeros(1, W, act_dim, device=self.device)
             z_star_pred = self.model.predict(z_star_win, u_zero_win)
             fp_loss = F.mse_loss(z_star_pred, self._z_star_ema.unsqueeze(0).detach())
             total_loss = total_loss + self.lambda_fp * fp_loss
@@ -791,8 +792,10 @@ class Trainer:
         # fp_err diagnostic: track ||f(z*,0)-z*|| even when lambda_fp=0 or during val
         if self._z_star_ema is not None and 'fp_err' not in info:
             with torch.no_grad():
+                W = self.predictor_window
+                act_dim = self.model.action_encoder.action_dim
                 _zw = self._z_star_ema.unsqueeze(0).unsqueeze(0).expand(1, W, -1)
-                _uw = torch.zeros(1, W, 1, device=self.device)
+                _uw = torch.zeros(1, W, act_dim, device=self.device)
                 _zp = self.model.predict(_zw, _uw)
                 info['fp_err'] = torch.norm(_zp.squeeze(0) - self._z_star_ema).item()
 
@@ -802,11 +805,12 @@ class Trainer:
         if is_train and self.lambda_B_align > 0 and self._B_target is not None and self._z_star_ema is not None:
             W = self.predictor_window
             B_tgt = self._B_target.to(self.device)          # (d,)
+            act_dim = self.model.action_encoder.action_dim
             z_star_win = self._z_star_ema.detach().unsqueeze(0).unsqueeze(0).expand(1, W, -1)
-            u_zero_win = torch.zeros(1, W, 1, device=self.device)
+            u_zero_win = torch.zeros(1, W, act_dim, device=self.device)
             u_test_win = u_zero_win.clone()
             u_test_norm = 0.2   # normalized = 2N raw (accurate regime from per-action check)
-            u_test_win[0, -1, 0] = u_test_norm
+            u_test_win[0, -1, :] = u_test_norm
             z_pred_zero = self.model.predict(z_star_win, u_zero_win)
             z_pred_plus = self.model.predict(z_star_win, u_test_win)
             B_pred = (z_pred_plus - z_pred_zero) / u_test_norm          # (1, d)
