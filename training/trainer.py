@@ -1267,8 +1267,10 @@ class Trainer:
                 _W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
                 _B_aug = _B_aug @ _W_enc   # (Wd, act_dim)
             # c_aug: affine drift at z* in augmented coordinates
+            # Cast to float32 — _z_star_ema may be float16 (AMP), but predict()
+            # is called here outside the autocast context.
             with torch.no_grad():
-                _z_t   = self._z_star_ema.unsqueeze(0)
+                _z_t   = self._z_star_ema.float().unsqueeze(0)
                 _z_win = _z_t.unsqueeze(1).expand(1, _W, -1)
                 _u_win = torch.zeros(1, _W, _act_dim, device=self.device)
                 _z_pred = self.model.predict(_z_win, _u_win)   # (1, d)
@@ -1283,10 +1285,7 @@ class Trainer:
             _A_cl = _A_aug - _B_aug @ _K
             _z_ss = np.linalg.solve(np.eye(_Wd) - _A_cl, _c_aug)
             return float(np.linalg.norm(_z_ss))
-        except Exception as e:
-            import traceback as _tb
-            print(f'[z_ss] failed: {e}')
-            _tb.print_exc()
+        except Exception:
             return None
 
     def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10,
