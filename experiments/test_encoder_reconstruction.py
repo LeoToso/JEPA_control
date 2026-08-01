@@ -126,29 +126,49 @@ def _resize_np(img: np.ndarray, size: int) -> np.ndarray:
 
 def collect_z_obs_pairs(model, data_dir: str, device,
                         use_frame_diff: bool, max_pairs: int = 50_000,
-                        target_size: int = 64):
-    """Scan train.hdf5, encode every frame, return (Z, OBS) arrays."""
+                        target_size: int = 64, encode_batch: int = 512):
+    """Scan train.hdf5, encode frames in batches, return (Z, OBS) arrays."""
     train_h5 = Path(data_dir) / 'train.hdf5'
-    Z_list, O_list = [], []
+
+    # Gather raw (curr, prev) numpy pairs first
+    curr_buf, prev_buf, obs_buf = [], [], []
     with h5py.File(train_h5, 'r') as f:
         for ep_key in f['episodes']:
-            ep   = f['episodes'][ep_key]
-            obs  = ep['observations'][:]    # (T, H, W, 3) uint8
-            T    = len(obs)
+            ep  = f['episodes'][ep_key]
+            obs = ep['observations'][:]   # (T, H, W, 3) uint8
+            T   = len(obs)
             for t in range(T):
-                curr = _resize_np(obs[t], target_size)
+                curr = _resize_np(obs[t],             target_size)
                 prev = _resize_np(obs[t-1] if t > 0 else obs[t], target_size)
-                z = encode_frame(model, curr, prev, device)
-                Z_list.append(z)
-                O_list.append(curr)
-                if len(Z_list) >= max_pairs:
+                curr_buf.append(curr)
+                prev_buf.append(prev)
+                obs_buf.append(curr)
+                if len(curr_buf) >= max_pairs:
                     break
-            if len(Z_list) >= max_pairs:
+            if len(curr_buf) >= max_pairs:
                 break
-    Z = np.stack(Z_list).astype(np.float32)            # (N, d)
-    O = np.stack(O_list).astype(np.float32) / 255.0    # (N, H, W, 3) in [0,1]
-    O = np.transpose(O, (0, 3, 1, 2))                  # (N, 3, H, W)
-    print(f'[data] collected {len(Z):,} (z, obs) pairs')
+
+    N = len(curr_buf)
+    print(f'[data] encoding {N:,} frames in batches of {encode_batch} ...')
+
+    # Batch-encode
+    def to_batch(frames):
+        arr = np.stack(frames).astype(np.float32) / 255.0   # (B, H, W, 3)
+        return torch.from_numpy(arr).permute(0, 3, 1, 2).to(device)  # (B, 3, H, W)
+
+    Z_list = []
+    with torch.no_grad():
+        for start in tqdm(range(0, N, encode_batch), desc='encoding'):
+            end   = min(start + encode_batch, N)
+            c_t   = to_batch(curr_buf[start:end])
+            p_t   = to_batch(prev_buf[start:end])
+            z_b   = model.encode_obs(c_t, p_t)   # (B, d)
+            Z_list.append(z_b.cpu().numpy())
+
+    Z = np.concatenate(Z_list, axis=0).astype(np.float32)   # (N, d)
+    O = np.stack(obs_buf).astype(np.float32) / 255.0         # (N, H, W, 3)
+    O = np.transpose(O, (0, 3, 1, 2))                        # (N, 3, H, W)
+    print(f'[data] collected {N:,} (z, obs) pairs')
     return Z, O
 
 
