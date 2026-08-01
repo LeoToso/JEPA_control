@@ -50,7 +50,7 @@ training:
   # ── Unrolled state prediction loss ───────────────────────────────────────
   lambda_state_pred: 2.0
   # ── Fixed-point loss ──────────────────────────────────────────────────────
-  lambda_fp: 2.0
+  lambda_fp: 5.0
   # ── All other losses off ─────────────────────────────────────────────────
   lambda_inv: 0.0
   inv_frames: 5
