@@ -1231,7 +1231,8 @@ class Trainer:
 
         names  = ['x', 'ẋ', 'θ', 'θ̇']
         r2_str = '  '.join(f'r({n})={v:.3f}' for n, v in zip(names, r2))
-        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else '  nan'
+        act_dim  = self.model.action_encoder.action_dim
+        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else ('N/A' if act_dim > 1 else 'nan')
         z_ss_str = f'{z_ss:.3f}'   if not np.isnan(z_ss)  else '  nan'
         pr2_str  = f'{pred_r2:.3f}' if not np.isnan(pred_r2) else '  nan'
         print(f'[Diag ep{epoch+1:03d}]'
@@ -1282,7 +1283,10 @@ class Trainer:
             _A_cl = _A_aug - _B_aug @ _K
             _z_ss = np.linalg.solve(np.eye(_Wd) - _A_cl, _c_aug)
             return float(np.linalg.norm(_z_ss))
-        except Exception:
+        except Exception as e:
+            import traceback as _tb
+            print(f'[z_ss] failed: {e}')
+            _tb.print_exc()
             return None
 
     def fit(self, train_loader, val_loader, epochs=None, checkpoint_every=10,
