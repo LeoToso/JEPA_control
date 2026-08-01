@@ -32,8 +32,9 @@ def compute_jacobian_np(model, z_star: np.ndarray, device) -> tuple:
     else:
         z_win = z_last_unsq                                            # (1, 1, d)
 
-    # u_win: all zeros, shape (1, W, 1)
-    u_win = torch.zeros(1, W, 1, device=device)
+    # u_win: all zeros, shape (1, W, act_dim)
+    act_dim = model.action_encoder.action_dim
+    u_win = torch.zeros(1, W, act_dim, device=device)
 
     z_out = model.predict(z_win, u_win)   # (1, d)
 
@@ -105,7 +106,8 @@ def compute_augmented_jacobian_np(model, z_star: np.ndarray, device) -> tuple:
 
     z_win = torch.cat([e.unsqueeze(1) for e in z_entries], dim=1) if W > 1 \
             else z_entries[0].unsqueeze(1)                          # (1, W, d)
-    u_win = torch.zeros(1, W, 1, device=device)
+    act_dim = model.action_encoder.action_dim
+    u_win = torch.zeros(1, W, act_dim, device=device)
     z_out = model.predict(z_win, u_win)                             # (1, d)
 
     # Partial Jacobians: partial_blocks[k] = ∂f/∂z_{t-k}  (d×d)
@@ -180,7 +182,8 @@ def compute_jacobian_torch(model, z_star_t: torch.Tensor, device) -> tuple:
     else:
         z_win = z_last_unsq                                        # (1, 1, d)
 
-    u_win = torch.zeros(1, W, 1, device=device)
+    act_dim = model.action_encoder.action_dim
+    u_win = torch.zeros(1, W, act_dim, device=device)
     z_out = model.predict(z_win, u_win)   # (1, d)
 
     A_rows = []

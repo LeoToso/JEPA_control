@@ -1133,18 +1133,22 @@ class Trainer:
             from control.jacobian import compute_augmented_jacobian_np
             z_np = self._z_star_ema.cpu().numpy()
             A_aug, B_aug = compute_augmented_jacobian_np(self.model, z_np, self.device)
+            rho = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
+            # B_aug rows 0:d are ∂f/∂c (latent action Jacobian, shape d×m).
+            # Project back to raw action space: B_raw = B_jac @ W_enc (d × act_dim).
+            B_jac = B_aug[:len(z_np)]   # (d, m)
             if hasattr(self.model.action_encoder, 'W'):
-                W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()
-                B_eff = (B_aug @ W_enc)[:len(z_np)].flatten()
+                W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
+                B_raw = B_jac @ W_enc   # (d, act_dim)
             else:
-                B_eff = B_aug[:len(z_np), 0].flatten()
-            rho    = float(np.max(np.abs(np.linalg.eigvals(A_aug))))
-            B_norm = float(np.linalg.norm(B_eff))
-            # cos(B): compare predictor Jacobian against stored physical B_target
-            if self._B_target is not None:
+                B_raw = B_jac           # identity encoder: m == act_dim
+            B_norm = float(np.linalg.norm(B_raw))
+            # cos(B): only meaningful for scalar action (act_dim == 1)
+            if self._B_target is not None and B_raw.shape[1] == 1:
+                B_eff_1d = B_raw[:, 0]
                 B_tgt_np = self._B_target.cpu().numpy()
-                denom = (np.linalg.norm(B_eff) * np.linalg.norm(B_tgt_np) + 1e-12)
-                cos_B = float(np.dot(B_eff, B_tgt_np) / denom)
+                denom = (np.linalg.norm(B_eff_1d) * np.linalg.norm(B_tgt_np) + 1e-12)
+                cos_B = float(np.dot(B_eff_1d, B_tgt_np) / denom)
         except Exception:
             pass
 
@@ -1256,24 +1260,25 @@ class Trainer:
             _A_aug, _B_aug = compute_augmented_jacobian_np(self.model, _z_np, self.device)
             if _was_train:
                 self.model.train()
-            # Project B_aug through scalar action encoder (c = W_enc @ u)
+            # Project B_aug (Wd × m) to raw action space (Wd × act_dim)
+            _act_dim = self.model.action_encoder.action_dim
             if hasattr(self.model.action_encoder, 'W'):
-                _W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()  # (m,1)
-                _B_aug = _B_aug @ _W_enc   # (Wd, 1)
+                _W_enc = self.model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
+                _B_aug = _B_aug @ _W_enc   # (Wd, act_dim)
             # c_aug: affine drift at z* in augmented coordinates
             with torch.no_grad():
                 _z_t   = self._z_star_ema.unsqueeze(0)
                 _z_win = _z_t.unsqueeze(1).expand(1, _W, -1)
-                _u_win = torch.zeros(1, _W, 1, device=self.device)
+                _u_win = torch.zeros(1, _W, _act_dim, device=self.device)
                 _z_pred = self.model.predict(_z_win, _u_win)   # (1, d)
             _c_p   = (_z_pred.squeeze(0) - self._z_star_ema).cpu().numpy()   # (d,)
             _c_aug = np.concatenate([_c_p, np.zeros((_W - 1) * _d)])         # (Wd,)
             # DARE → K → A_cl → steady-state offset
             _Q = np.eye(_Wd)
-            _R = np.array([[0.01]])
+            _R = 0.01 * np.eye(_act_dim)
             _P = sla.solve_discrete_are(_A_aug, _B_aug, _Q, _R)
             _K = np.linalg.solve(_R + _B_aug.T @ _P @ _B_aug,
-                                 _B_aug.T @ _P @ _A_aug)     # (1, Wd)
+                                 _B_aug.T @ _P @ _A_aug)     # (act_dim, Wd)
             _A_cl = _A_aug - _B_aug @ _K
             _z_ss = np.linalg.solve(np.eye(_Wd) - _A_cl, _c_aug)
             return float(np.linalg.norm(_z_ss))
