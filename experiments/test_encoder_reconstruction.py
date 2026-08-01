@@ -116,11 +116,18 @@ def encode_frame(model, curr_np: np.ndarray, prev_np: np.ndarray, device) -> np.
 
 
 # ── Dataset loading ────────────────────────────────────────────────────────────
+def _resize_np(img: np.ndarray, size: int) -> np.ndarray:
+    """Resize (H,W,3) uint8 using PIL — no cv2 required."""
+    from PIL import Image
+    if img.shape[0] == size and img.shape[1] == size:
+        return img
+    return np.array(Image.fromarray(img).resize((size, size), Image.BILINEAR))
+
+
 def collect_z_obs_pairs(model, data_dir: str, device,
                         use_frame_diff: bool, max_pairs: int = 50_000,
                         target_size: int = 64):
     """Scan train.hdf5, encode every frame, return (Z, OBS) arrays."""
-    import cv2
     train_h5 = Path(data_dir) / 'train.hdf5'
     Z_list, O_list = [], []
     with h5py.File(train_h5, 'r') as f:
@@ -129,12 +136,8 @@ def collect_z_obs_pairs(model, data_dir: str, device,
             obs  = ep['observations'][:]    # (T, H, W, 3) uint8
             T    = len(obs)
             for t in range(T):
-                curr = obs[t]
-                prev = obs[t-1] if t > 0 else obs[t]
-                # Resize if needed
-                if curr.shape[0] != target_size or curr.shape[1] != target_size:
-                    curr = cv2.resize(curr, (target_size, target_size))
-                    prev = cv2.resize(prev, (target_size, target_size))
+                curr = _resize_np(obs[t], target_size)
+                prev = _resize_np(obs[t-1] if t > 0 else obs[t], target_size)
                 z = encode_frame(model, curr, prev, device)
                 Z_list.append(z)
                 O_list.append(curr)
@@ -189,7 +192,6 @@ def train_decoder(Z: np.ndarray, O: np.ndarray, device,
 # ── Rollout generation ─────────────────────────────────────────────────────────
 def generate_rollout(cfg: dict, n_steps: int = 30, seed: int = 0, target_size: int = 64):
     """Generate a cartpole rollout starting near equilibrium. Returns list of uint8 obs."""
-    import cv2
     from envs.cartpole_visual import ContinuousCartpoleVisual
     env_cfg = cfg['environment']
     env = ContinuousCartpoleVisual(
@@ -205,14 +207,10 @@ def generate_rollout(cfg: dict, n_steps: int = 30, seed: int = 0, target_size: i
     rng = np.random.RandomState(seed)
     x0  = rng.uniform(-0.05, 0.05, 4).astype(np.float32)
     obs0, _, _ = env.reset_to_state(x0)
-    if obs0.shape[0] != target_size:
-        obs0 = cv2.resize(obs0, (target_size, target_size))
-    frames = [obs0]
+    frames = [_resize_np(obs0, target_size)]
     for _ in range(n_steps - 1):
         obs, _, _, _, _ = env.step(0.0)   # passive — no control
-        if obs.shape[0] != target_size:
-            obs = cv2.resize(obs, (target_size, target_size))
-        frames.append(obs)
+        frames.append(_resize_np(obs, target_size))
     return frames   # list of (H, W, 3) uint8
 
 
