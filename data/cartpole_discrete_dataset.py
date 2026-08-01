@@ -749,6 +749,7 @@ def _build_metadata(
             'max_episode_steps': 500,
             'friction_cart':     cfg.friction_cart,
             'friction_pole':     cfg.friction_pole,
+            'theta_threshold':   cfg.theta_threshold,
             'frac_lqr_near_eq':        cfg.frac_lqr_near_eq,
             'lqr_near_eq_angle_range': cfg.lqr_near_eq_angle_range,
         },

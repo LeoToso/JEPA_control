@@ -89,11 +89,14 @@ def check_transition_alignment(episodes: List[Dict], split: str,
     if continuous_env:
         from envs.cartpole_visual import ContinuousCartpoleVisual
         env_meta = (meta or {}).get('environment', {})
-        sim_env = ContinuousCartpoleVisual(
+        sim_env_kwargs = dict(
             frame_skip=env_meta.get('frame_skip', 1),
             friction_cart=env_meta.get('friction_cart', 0.0),
             friction_pole=env_meta.get('friction_pole', 0.0),
         )
+        if 'theta_threshold' in env_meta and env_meta['theta_threshold'] is not None:
+            sim_env_kwargs['theta_threshold'] = env_meta['theta_threshold']
+        sim_env = ContinuousCartpoleVisual(**sim_env_kwargs)
 
         for ep_idx in idxs:
             ep       = episodes[ep_idx]
@@ -433,6 +436,22 @@ def main() -> None:
             meta = json.load(f)
     else:
         logger.warning('metadata.json not found — skipping summary table.')
+
+    # Supplement metadata from generation_config.yaml if available (older datasets)
+    gen_cfg_path = dataset_dir / 'generation_config.yaml'
+    if gen_cfg_path.exists():
+        try:
+            import yaml
+            with open(gen_cfg_path) as f:
+                gen_cfg = yaml.safe_load(f)
+            env_meta = meta.setdefault('environment', {})
+            for key in ('theta_threshold', 'frame_skip', 'friction_cart', 'friction_pole'):
+                if key not in env_meta and key in gen_cfg:
+                    env_meta[key] = gen_cfg[key]
+            if 'id' not in env_meta and gen_cfg.get('use_continuous_env'):
+                env_meta['id'] = 'ContinuousCartpoleVisual'
+        except Exception as e:
+            logger.warning('Could not load generation_config.yaml: %s', e)
 
     # Auto-detect continuous env from metadata; CLI flag overrides
     continuous_env = args.continuous_env or (
