@@ -235,11 +235,14 @@ class Trainer:
             self.endpoint_action_decoder = None
             self.phys_endpoint_decoder   = None
 
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=int(self.cfg.get('epochs', 100)),
-            eta_min=lr * 0.1,
-        )
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('ignore', UserWarning)
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=int(self.cfg.get('epochs', 100)),
+                eta_min=lr * 0.1,
+            )
 
         self.true_unstable_eigs  = gt.unstable_eigenvalues  if gt is not None else None
         self.true_marginal_eigs  = gt.marginal_eigenvalues  if gt is not None else np.array([])
@@ -1193,8 +1196,9 @@ class Trainer:
 
                 # Prediction R²: unroll predictor, measure explained variance in z-space
                 z_enc_targets = z_traj[:, 1:].detach()   # (Bv, Hv, d) — encoder targets
+                act_dim   = self.model.action_encoder.action_dim
                 z_win_buf = [z_traj[:, 0]] * W_pred
-                u_win_buf = [torch.zeros(Bv, 1, device=self.device)] * (W_pred - 1)
+                u_win_buf = [torch.zeros(Bv, act_dim, device=self.device)] * (W_pred - 1)
                 for k in range(Hv):
                     u_k = acts[:, k]
                     u_win_buf.append(u_k)
