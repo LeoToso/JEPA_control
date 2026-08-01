@@ -120,7 +120,7 @@ def main():
     # changes to the yaml after training don't cause size mismatches.
     if isinstance(raw, dict) and 'config' in raw:
         _ckpt_cfg = raw['config']
-        _arch_keys = ('latent_dim', 'action_latent_dim', 'action_encoder',
+        _arch_keys = ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
                       'encoder_type', 'patch_size', 'frame_stack', 'use_frame_diff',
                       'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                       'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
@@ -136,6 +136,7 @@ def main():
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg['latent_dim']),
+        action_dim=int(model_cfg.get('action_dim', 1)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
@@ -224,10 +225,11 @@ def main():
           f'||B_aug||={np.linalg.norm(B_aug):.4f}')
 
     # Fixed-point drift using windowed predict
+    act_dim = model.action_encoder.action_dim
     with torch.no_grad():
         z_star_t  = torch.tensor(z_star, dtype=torch.float32, device=device).unsqueeze(0)
         z_win_eq  = z_star_t.unsqueeze(1).expand(1, W, -1)
-        u_win_eq  = torch.zeros(1, W, 1, device=device)
+        u_win_eq  = torch.zeros(1, W, act_dim, device=device)
         z_pred_eq = model.predict(z_win_eq, u_win_eq)
         fp_err    = float(torch.norm(z_pred_eq - z_star_t).item())
     # Drift in partial (d) and augmented (W*d) spaces
@@ -236,14 +238,17 @@ def main():
                                       np.zeros((W - 1) * d)])           # (W*d,)
     print(f'[control] fp_err={fp_err:.4f}')
 
-    # Project B through the action encoder so CEM receives scalar (1-D) actions.
-    # B_jac / B_aug have shape (d, action_latent_dim) or (W*d, action_latent_dim).
-    # W_enc maps scalar action → latent action: shape (action_latent_dim, 1).
+    # Project B through the action encoder so linear CEM receives scalar (1-D) actions.
+    # For multi-action (act_dim>1) assume uniform force across sub-steps: collapse
+    # B @ W_enc (shape d×act_dim) to d×1 by summing sub-action columns.
     if hasattr(model.action_encoder, 'W'):
-        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
-        B_jac = B_jac @ W_enc   # (d, 1)
-        B_aug = B_aug @ W_enc   # (W*d, 1)
-        print(f'[control] projected B through action encoder: B_jac {B_jac.shape}  B_aug {B_aug.shape}')
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
+        ones_col = np.ones((act_dim, 1))
+        B_jac = B_jac @ W_enc @ ones_col   # (d, 1)  — uniform sub-action collapse
+        B_aug = B_aug @ W_enc @ ones_col   # (W*d, 1)
+        print(f'[control] projected B through action encoder '
+              f'(act_dim={act_dim}, uniform collapse): '
+              f'B_jac {B_jac.shape}  B_aug {B_aug.shape}')
 
     # Controllability diagnostic: how much does action affect each decoded state dimension?
     if state_head is not None:
@@ -397,6 +402,7 @@ def main():
             action_lb=action_lb,
             action_ub=action_ub,
             action_scale=action_scale,
+            action_dim=act_dim,
             device=device,
         )
     else:
