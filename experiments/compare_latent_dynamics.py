@@ -47,9 +47,10 @@ sys.path.insert(0, ROOT)
 def _build_jepa_config(d: dict):
     from models.jepa import JEPAConfig
     cfg = JEPAConfig()
-    for k in ('latent_dim', 'action_latent_dim', 'action_encoder', 'image_size',
-              'patch_size', 'frame_stack', 'use_frame_diff', 'vit_embed_dim', 'vit_depth',
-              'vit_num_heads', 'predictor_type', 'predictor_window',
+    for k in ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
+              'image_size', 'patch_size', 'frame_stack', 'use_frame_diff',
+              'vit_embed_dim', 'vit_depth', 'vit_num_heads',
+              'predictor_type', 'predictor_window',
               'predictor_hidden_dim', 'predictor_n_layers',
               'predictor_embed_dim', 'predictor_depth', 'predictor_num_heads',
               'predictor_mlp_ratio', 'variant'):
@@ -100,6 +101,7 @@ def load_model(ckpt_path: str, cfg_yaml: str, device):
             actual_fs = yaml_fs
         arch = {
             'latent_dim':            int(model_cfg_yaml.get('latent_dim', 32)),
+            'action_dim':            int(model_cfg_yaml.get('action_dim', 1)),
             'action_latent_dim':     int(model_cfg_yaml.get('action_latent_dim', 4)),
             'action_encoder':        model_cfg_yaml.get('action_encoder', 'linear'),
             'encoder_type':          model_cfg_yaml.get('encoder_type', 'vit'),
@@ -242,12 +244,12 @@ def compute_gramian_eigenvalues(model, z_star: np.ndarray, device,
     from control.jacobian import compute_augmented_jacobian_np
     A_aug, B_aug = compute_augmented_jacobian_np(model, z_star, device)
 
-    # B_eff_aug: project encoded-action columns through W_enc → scalar action
+    # B_eff_aug: project encoded-action columns through W_enc → (W*d, act_dim)
     if hasattr(model.action_encoder, 'W'):
-        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
-        B_eff = B_aug @ W_enc   # (W*d, 1)
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
+        B_eff = B_aug @ W_enc   # (W*d, act_dim)
     else:
-        B_eff = B_aug            # (W*d, 1) already
+        B_eff = B_aug            # (W*d, m) already
 
     # Gramian accumulation in augmented space
     Wd = A_aug.shape[0]
@@ -341,7 +343,7 @@ def plot_phase_portrait(ax, model, frame_stack: int, device, env,
             with torch.no_grad():
                 z = model.encode_obs(obs_t, obs_t)
                 z_win = z.unsqueeze(1).expand(1, W_pred, -1)
-                u_win = torch.zeros(1, W_pred, 1, device=device)
+                u_win = torch.zeros(1, W_pred, model.action_encoder.action_dim, device=device)
                 z_next = model.predict(z_win, u_win)
                 dz = (z_next - z).cpu().numpy()[0]
 

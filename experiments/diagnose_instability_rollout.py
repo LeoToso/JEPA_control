@@ -48,7 +48,7 @@ def _load_model(ckpt_path, cfg, device):
     raw   = torch.load(ckpt_path, map_location=device, weights_only=False)
     state = raw.get('model_state', raw.get('model_state_dict', raw))
     if isinstance(raw, dict) and 'config' in raw:
-        for k in ('latent_dim', 'action_latent_dim', 'action_encoder',
+        for k in ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
                   'encoder_type', 'patch_size', 'frame_stack',
                   'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                   'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
@@ -60,6 +60,7 @@ def _load_model(ckpt_path, cfg, device):
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg['latent_dim']),
+        action_dim=int(model_cfg.get('action_dim', 1)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
@@ -110,19 +111,13 @@ def _encode(model, obs, device, frame_stack, prev_obs=None):
 
 
 def _predict(model, z_history, device):
-    """z_history: list of (1,d) tensors, oldest first, len=W. Returns (1,d).
-
-    Predictor signature: forward(z, a)
-        z: (B, W*latent_dim)  — flattened window
-        a: (B, W*action_dim)  — flattened action embeddings
-    """
+    """z_history: list of (1,d) tensors, oldest first, len=W. Returns (1,d)."""
     with torch.no_grad():
-        W      = len(z_history)
-        z_flat = torch.cat(z_history, dim=1)            # (1, W*d)
-        a_zero = torch.zeros(1, 1, device=device)
-        a_emb  = model.action_encoder(a_zero)           # (1, d_a) for u=0
-        a_flat = a_emb.repeat(1, W)                     # (1, W*d_a)
-        return model.predictor(z_flat, a_flat)          # (1, d)
+        W       = len(z_history)
+        act_dim = model.action_encoder.action_dim
+        z_win   = torch.cat([z.unsqueeze(1) for z in z_history], dim=1)  # (1, W, d)
+        u_win   = torch.zeros(1, W, act_dim, device=device)
+        return model.predict(z_win, u_win)              # (1, d)
 
 
 def _decode(state_head, z, state_mean, state_std):

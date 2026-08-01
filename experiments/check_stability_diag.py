@@ -106,6 +106,7 @@ def main():
     model = make_jepa(
         variant=model_cfg_dict.get('variant', 'E-full'),
         latent_dim=int(model_cfg_dict.get('latent_dim', 8)),
+        action_dim=int(model_cfg_dict.get('action_dim', 1)),
         action_latent_dim=int(model_cfg_dict.get('action_latent_dim', 8)),
         action_encoder=model_cfg_dict.get('action_encoder', 'linear'),
         encoder_type=model_cfg_dict.get('encoder_type', 'vit'),
@@ -141,9 +142,10 @@ def main():
     # ── fp_err ────────────────────────────────────────────────────────────────
     W = model.config.predictor_window
     d = model.config.latent_dim
+    act_dim = model.action_encoder.action_dim
     with torch.no_grad():
         z_win = z_star.unsqueeze(0).unsqueeze(0).expand(1, W, -1)
-        u_win = torch.zeros(1, W, 1, device=device)
+        u_win = torch.zeros(1, W, act_dim, device=device)
         z_pred = model.predict(z_win, u_win).squeeze(0)
     fp_err = float(torch.norm(z_pred - z_star).item())
     c_drift = (z_pred - z_star).cpu().numpy()   # affine offset in latent space
@@ -154,10 +156,10 @@ def main():
     from control.jacobian import compute_augmented_jacobian_np
     A_aug, B_aug = compute_augmented_jacobian_np(model, z_np, device)
 
-    # Project B through scalar action encoder weight
+    # Project B through action encoder weight: (Wd, m) @ (m, act_dim) → (Wd, act_dim)
     if hasattr(model.action_encoder, 'W'):
-        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()   # (m, 1)
-        B_aug = B_aug @ W_enc    # (Wd, 1)
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()   # (m, act_dim)
+        B_aug = B_aug @ W_enc    # (Wd, act_dim)
 
     eigs      = np.linalg.eigvals(A_aug)
     rho_learn = float(np.max(np.abs(eigs)))
@@ -168,7 +170,7 @@ def main():
 
     # ── z_ss via DARE ─────────────────────────────────────────────────────────
     Wd   = W * d
-    R_lqr = np.array([[args.R_lqr]])
+    R_lqr = args.R_lqr * np.eye(act_dim)
     Q_lqr = np.eye(Wd)
     c_aug = np.concatenate([c_drift, np.zeros((W-1)*d)])   # (Wd,)
 
@@ -177,7 +179,7 @@ def main():
     try:
         P     = sla.solve_discrete_are(A_aug, B_aug, Q_lqr, R_lqr)
         K     = np.linalg.solve(R_lqr + B_aug.T @ P @ B_aug,
-                                B_aug.T @ P @ A_aug)          # (1, Wd)
+                                B_aug.T @ P @ A_aug)          # (act_dim, Wd)
         A_cl  = A_aug - B_aug @ K
         eigs_cl = np.linalg.eigvals(A_cl)
         rho_cl  = float(np.max(np.abs(eigs_cl)))

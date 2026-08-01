@@ -49,7 +49,7 @@ def main():
                 pass
             model_cfg[k] = model_cfg.get(k, v)
         _ckpt_cfg = raw['config']
-        for k in ('latent_dim', 'action_latent_dim', 'action_encoder',
+        for k in ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
                   'encoder_type', 'patch_size', 'frame_stack',
                   'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                   'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
@@ -62,6 +62,7 @@ def main():
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg['latent_dim']),
+        action_dim=int(model_cfg.get('action_dim', 1)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
@@ -86,6 +87,7 @@ def main():
 
     frame_stack = int(model_cfg.get('frame_stack', 1))
     W = getattr(model.config, 'predictor_window', 1)
+    act_dim = model.action_encoder.action_dim
 
     from envs.cartpole_visual import ContinuousCartpoleVisual
     env = ContinuousCartpoleVisual(
@@ -123,14 +125,14 @@ def main():
     # CEM-style window buffer for predictor
     z0 = encode(obs, None)
     z_win_buf = [torch.tensor(z0, device=device).unsqueeze(0)] * W  # W copies of z0
-    u_win_buf = [torch.zeros(1, 1, device=device)] * (W - 1)  # W-1 zero actions
+    u_win_buf = [torch.zeros(1, act_dim, device=device)] * (W - 1)  # W-1 zero actions
 
     real_z.append(z0.copy())
     real_phys.append(state_phys.copy())
 
     # First pred: from z_star repeated (cold start reflects equilibrium)
     z_win_eq = torch.tensor(z_star, device=device).float().unsqueeze(0).unsqueeze(1).expand(1, W, -1)
-    u_win_eq = torch.zeros(1, W, 1, device=device)
+    u_win_eq = torch.zeros(1, W, act_dim, device=device)
     with torch.no_grad():
         z_pred_init = model.predict(z_win_eq, u_win_eq).cpu().numpy()[0]
     pred_z.append(z0.copy())  # at t=0 prediction = initial state
@@ -156,7 +158,7 @@ def main():
         z_win_real = torch.stack(
             [torch.tensor(zz, device=device).float().unsqueeze(0)
              for zz in win_entries], dim=1)  # (1, W, d)
-        u_win_zero = torch.zeros(1, W, 1, device=device)
+        u_win_zero = torch.zeros(1, W, act_dim, device=device)
         with torch.no_grad():
             z_pred_next = model.predict(z_win_real, u_win_zero).cpu().numpy()[0]
 

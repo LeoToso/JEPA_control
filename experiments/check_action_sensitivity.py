@@ -45,11 +45,12 @@ def _get_z(model, obs_np, device):
 def _predict_step(model, z_win_np, u_raw, action_scale, device):
     """Run one predictor step from numpy arrays. Returns z_next as numpy."""
     W, d = z_win_np.shape
+    act_dim = model.action_encoder.action_dim
     z_t = torch.tensor(z_win_np, dtype=torch.float32, device=device).unsqueeze(0)  # (1,W,d)
     u_norm = u_raw / action_scale
-    # u_win shape must be (1, W, 1): zeros for history, u_norm at last (current) slot
-    u_t = torch.zeros(1, W, 1, dtype=torch.float32, device=device)
-    u_t[0, -1, 0] = u_norm
+    # u_win: zeros for history slots, u_norm at last (current) slot (all sub-actions)
+    u_t = torch.zeros(1, W, act_dim, dtype=torch.float32, device=device)
+    u_t[0, -1, :] = u_norm
     with torch.no_grad():
         z_next = model.predict(z_t, u_t).cpu().numpy()[0]
     return z_next
@@ -88,8 +89,9 @@ def main():
     state = (raw['model_state'] if isinstance(raw, dict) and 'model_state' in raw
              else raw.get('model_state_dict', raw))
     if isinstance(raw, dict) and 'config' in raw:
-        for k in ('latent_dim', 'action_latent_dim', 'action_encoder', 'encoder_type',
-                  'patch_size', 'frame_stack', 'vit_embed_dim', 'vit_depth', 'vit_num_heads',
+        for k in ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder',
+                  'encoder_type', 'patch_size', 'frame_stack', 'vit_embed_dim',
+                  'vit_depth', 'vit_num_heads',
                   'predictor_type', 'predictor_hidden_dim', 'predictor_n_layers',
                   'predictor_window', 'predictor_embed_dim', 'predictor_depth',
                   'predictor_num_heads', 'predictor_mlp_ratio'):
@@ -100,6 +102,7 @@ def main():
     model = make_jepa(
         variant='E-full',
         latent_dim=int(model_cfg['latent_dim']),
+        action_dim=int(model_cfg.get('action_dim', 1)),
         action_latent_dim=int(model_cfg.get('action_latent_dim', 1)),
         action_encoder=model_cfg.get('action_encoder', 'linear'),
         encoder_type=model_cfg.get('encoder_type', 'vit'),
@@ -220,10 +223,12 @@ def main():
     z_star = _get_z(model, obs_eq, device)
     A_aug, B_aug = compute_augmented_jacobian_np(model, z_star, device)
     if hasattr(model.action_encoder, 'W'):
-        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, 1)
-        B_eff = (B_aug @ W_enc)[:d].flatten()   # only first d dims (current step)
+        W_enc = model.action_encoder.W.weight.detach().cpu().numpy()  # (m, act_dim)
+        B_raw = (B_aug @ W_enc)[:d]   # (d, act_dim) — current step only
     else:
-        B_eff = B_aug[:d, 0].flatten()
+        B_raw = B_aug[:d]             # (d, m)
+    # Collapse multi-action to 1D for cosine comparison with empirical (scalar) B
+    B_eff = B_raw.mean(axis=1) if B_raw.shape[1] > 1 else B_raw[:, 0]
 
     # Average empirical B across states
     B_emp_mean = np.mean(all_B_empirical, axis=0)   # (d,)
