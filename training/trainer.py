@@ -323,7 +323,7 @@ class Trainer:
         if self._obs_eq is None:
             return None
         with torch.no_grad():
-            return self.model.encode_obs(self._obs_eq, self._obs_eq).squeeze(0)
+            return self.model.encoder(self._obs_eq).squeeze(0)
 
     # ── CSV logging ──────────────────────────────────────────────────────────
     def _init_csv_log(self):
@@ -705,7 +705,7 @@ class Trainer:
         # initialising z* near 0 so all downstream controllers have a known
         # target. After encoder freeze the gradient is zero — completely inert.
         if is_train and self.lambda_enc_anchor > 0 and self._obs_eq is not None:
-            z_eq_grad = self.model.encode_obs(self._obs_eq, self._obs_eq).squeeze(0)  # grad enabled
+            z_eq_grad = self.model.encoder(self._obs_eq).squeeze(0)  # grad enabled; _obs_eq is pre-stacked
             enc_anchor_loss = z_eq_grad.pow(2).mean()
             total_loss = total_loss + self.lambda_enc_anchor * enc_anchor_loss
             info['enc_anchor_loss'] = enc_anchor_loss.item()
