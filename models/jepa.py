@@ -123,18 +123,23 @@ class JEPAModel(nn.Module):
 
     def encode_obs(self, obs: torch.Tensor,
                    prev_obs: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Encode obs, optionally with previous frame for frame-diff input.
+        """Encode obs, optionally with previous frame.
 
-        When use_frame_diff=True the encoder receives [prev, obs, obs-prev]
-        concatenated channel-wise.  If prev_obs is None or use_frame_diff=False
-        the call falls through to the plain encoder.
+        use_frame_diff=True : encoder receives [prev, obs, obs-prev]  (3×3ch = 9ch)
+        use_frame_diff=False, frame_stack=2 : encoder receives [prev, obs]  (2×3ch = 6ch)
+        otherwise : encoder receives obs as-is  (3ch)
         """
-        if not self.config.use_frame_diff:
-            return self.encoder(obs)
-        if prev_obs is None:
-            prev_obs = obs
-        inp = torch.cat([prev_obs, obs, obs - prev_obs], dim=1)
-        return self.encoder(inp)
+        if self.config.use_frame_diff:
+            if prev_obs is None:
+                prev_obs = obs
+            inp = torch.cat([prev_obs, obs, obs - prev_obs], dim=1)
+            return self.encoder(inp)
+        if self.config.frame_stack > 1:
+            if prev_obs is None:
+                prev_obs = obs
+            inp = torch.cat([prev_obs, obs], dim=1)
+            return self.encoder(inp)
+        return self.encoder(obs)
 
     def predict(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
         """Windowed prediction: z_{t+1} = f([z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]).
