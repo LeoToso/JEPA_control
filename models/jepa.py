@@ -33,7 +33,8 @@ class JEPAConfig:
     predictor_window: int = 1            # window size W (both predictor types)
     # MLP predictor
     predictor_hidden_dim: int = 256
-    predictor_n_layers: int = 2
+    predictor_n_layers: int = 2          # number of hidden layers
+    predictor_activation: str = 'elu'   # 'elu' | 'relu'
     # Transformer predictor
     predictor_embed_dim: int = 128
     predictor_depth: int = 4
@@ -100,6 +101,7 @@ class JEPAModel(nn.Module):
                 hidden_dim=config.predictor_hidden_dim,
                 n_layers=config.predictor_n_layers,
                 window=config.predictor_window,
+                activation=config.predictor_activation,
             )
 
         # EMA target encoder: same architecture as online encoder, not in optimizer.
@@ -199,6 +201,7 @@ class JEPAModel(nn.Module):
             'predictor_window': c.predictor_window,
             'predictor_hidden_dim': c.predictor_hidden_dim,
             'predictor_n_layers': c.predictor_n_layers,
+            'predictor_activation': c.predictor_activation,
             'predictor_embed_dim': c.predictor_embed_dim,
             'predictor_depth': c.predictor_depth,
             'predictor_num_heads': c.predictor_num_heads,

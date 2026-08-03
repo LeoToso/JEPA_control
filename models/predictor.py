@@ -5,21 +5,26 @@ import torch.nn as nn
 
 
 class MLPPredictor(nn.Module):
-    """N-layer MLP predictor.
+    """MLP predictor with n_layers hidden layers.
 
     window=1: input = [z_t, a_t]  (standard Markov)
     window>1: input = [z_{t-W+1},...,z_t, a_{t-W+1},...,a_t]  (pre-flattened by caller)
+
+    n_layers : number of hidden layers (output layer is always added on top)
+    activation: 'relu' | 'elu'
     """
-    def __init__(self, latent_dim=32, action_dim=1, hidden_dim=256, n_layers=2, window=1):
+    def __init__(self, latent_dim=32, action_dim=1, hidden_dim=256, n_layers=2, window=1,
+                 activation='elu'):
         super().__init__()
         self.latent_dim = latent_dim
         self.action_dim = action_dim
         self.window = window
+        act_fn = nn.ReLU() if activation == 'relu' else nn.ELU()
         in_dim = window * (latent_dim + action_dim)
         layers = []
-        for i in range(n_layers - 1):
-            layers += [nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim), nn.ELU()]
-        layers.append(nn.Linear(hidden_dim, latent_dim))
+        for i in range(n_layers):
+            layers += [nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim), act_fn]
+        layers.append(nn.Linear(hidden_dim if n_layers > 0 else in_dim, latent_dim))
         self.net = nn.Sequential(*layers)
         self._init_weights()
 
