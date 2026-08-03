@@ -71,17 +71,19 @@ def load_model(checkpoint_path: str, cfg: dict, device):
     state   = raw['model_state'] if 'model_state' in raw else raw
     ckpt_cfg = raw.get('config', {})
     mc = cfg['model']
-    for k in ('latent_dim', 'action_latent_dim', 'action_encoder', 'encoder_type',
+    for k in ('latent_dim', 'action_dim', 'action_latent_dim', 'action_encoder', 'encoder_type',
               'patch_size', 'frame_stack', 'use_frame_diff',
               'vit_embed_dim', 'vit_depth', 'vit_num_heads',
               'predictor_type', 'predictor_window',
               'predictor_embed_dim', 'predictor_depth',
-              'predictor_num_heads', 'predictor_mlp_ratio'):
+              'predictor_num_heads', 'predictor_mlp_ratio',
+              'predictor_hidden_dim', 'predictor_n_layers', 'predictor_activation'):
         if k in ckpt_cfg:
             mc[k] = ckpt_cfg[k]
     model = make_jepa(
         variant='E-full',
         latent_dim=int(mc.get('latent_dim', 8)),
+        action_dim=int(mc.get('action_dim', 1)),
         action_latent_dim=int(mc.get('action_latent_dim', 8)),
         action_encoder=mc.get('action_encoder', 'linear'),
         encoder_type=mc.get('encoder_type', 'vit'),
@@ -100,6 +102,7 @@ def load_model(checkpoint_path: str, cfg: dict, device):
         predictor_mlp_ratio=float(mc.get('predictor_mlp_ratio', 4.0)),
         predictor_hidden_dim=int(mc.get('predictor_hidden_dim', 256)),
         predictor_n_layers=int(mc.get('predictor_n_layers', 2)),
+        predictor_activation=mc.get('predictor_activation', 'elu'),
     )
     model.load_state_dict(state)
     model.to(device).eval()
