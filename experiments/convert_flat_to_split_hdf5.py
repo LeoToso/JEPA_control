@@ -46,6 +46,24 @@ def convert(src_path: str, out_dir: str) -> None:
           f'episodes={len(set(episode_ids.tolist()))}  '
           f'obs_shape={obs.shape[1:]}')
 
+    # If all episodes landed in one split, re-split by episode (80/10/10)
+    all_ep_ids = sorted(set(episode_ids.tolist()))
+    if sum(1 for s in splits.values() if len(s) == 0) >= 2:
+        print('[convert] stored splits are degenerate — re-splitting episodes 80/10/10')
+        rng = np.random.RandomState(42)
+        shuffled = np.array(all_ep_ids)
+        rng.shuffle(shuffled)
+        n = len(shuffled)
+        n_tr  = int(0.8 * n)
+        n_val = int(0.1 * n)
+        splits = {
+            'train': set(shuffled[:n_tr].tolist()),
+            'val':   set(shuffled[n_tr:n_tr + n_val].tolist()),
+            'test':  set(shuffled[n_tr + n_val:].tolist()),
+        }
+        print(f'[convert] re-split: train={len(splits["train"])}  '
+              f'val={len(splits["val"])}  test={len(splits["test"])} episodes')
+
     for split_name, ep_id_set in splits.items():
         mask = np.array([eid in ep_id_set for eid in episode_ids])
         if not mask.any():
