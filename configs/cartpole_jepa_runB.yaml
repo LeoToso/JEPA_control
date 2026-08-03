@@ -1,6 +1,6 @@
 environment:
   name: cartpole
-  frame_skip: 5
+  frame_skip: 1
   image_size: 64
   mass_cart: 1.0
   mass_pole: 0.1
@@ -95,8 +95,8 @@ training:
   rho_max_init: 1.5
   local_state_threshold: 0.05
   unstable_eta: 0.05
-  normalize_actions: true
-  normalize_states: true
+  normalize_actions: false
+  normalize_states: false
 
 probes:
   epsilon_lambda: 0.05
