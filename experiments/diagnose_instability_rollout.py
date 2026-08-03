@@ -102,12 +102,10 @@ def _load_model(ckpt_path, cfg, device):
 
 def _encode(model, obs, device, frame_stack, prev_obs=None):
     t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
-    if frame_stack > 1:
-        t = torch.cat([t, t], dim=1)
     with torch.no_grad():
         prev_t = (t if prev_obs is None else
                   torch.from_numpy(prev_obs).float().permute(2, 0, 1)[None].to(device) / 255.0)
-        return model.encode_obs(t, prev_t)   # (1, d)
+        return model.encode_obs(t, prev_t)   # (1, d); encode_obs handles frame_stack stacking
 
 
 def _predict(model, z_history, device):

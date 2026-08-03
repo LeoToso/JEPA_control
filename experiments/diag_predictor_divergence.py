@@ -101,11 +101,8 @@ def main():
         curr = torch.from_numpy(obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0
         prev = (curr if prev_obs_np is None else
                 torch.from_numpy(prev_obs_np).float().permute(2, 0, 1)[None].to(device) / 255.0)
-        if frame_stack > 1:
-            curr = torch.cat([prev, curr], dim=1)
-            prev = curr
         with torch.no_grad():
-            return model.encode_obs(curr, prev).cpu().numpy()[0]
+            return model.encode_obs(curr, prev).cpu().numpy()[0]  # encode_obs handles frame_stack
 
     # Equilibrium z_star
     obs_eq, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))

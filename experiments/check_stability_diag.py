@@ -124,6 +124,9 @@ def main():
         predictor_depth=int(model_cfg_dict.get('predictor_depth', 3)),
         predictor_num_heads=int(model_cfg_dict.get('predictor_num_heads', 4)),
         predictor_mlp_ratio=float(model_cfg_dict.get('predictor_mlp_ratio', 4.0)),
+        predictor_hidden_dim=int(model_cfg_dict.get('predictor_hidden_dim', 64)),
+        predictor_n_layers=int(model_cfg_dict.get('predictor_n_layers', 2)),
+        predictor_activation=model_cfg_dict.get('predictor_activation', 'relu'),
     )
     model.load_state_dict(ckpt['model_state'])
     model.to(device).eval()

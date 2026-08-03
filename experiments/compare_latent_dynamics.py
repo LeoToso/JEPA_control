@@ -171,9 +171,10 @@ def collect_rollouts(env, model, frame_stack: int, device,
         prev_z = None
 
         for _ in range(rollout_len):
-            obs_t = _stack_obs(obs, prev_obs, frame_stack, device)
+            obs_t_raw  = _to_tensor(obs, device)
+            prev_t_raw = _to_tensor(prev_obs, device)
             with torch.no_grad():
-                z = model.encode_obs(obs_t, obs_t).cpu().numpy()[0]
+                z = model.encode_obs(obs_t_raw, prev_t_raw).cpu().numpy()[0]
 
             zs.append(z)
             states.append(state.copy())
@@ -337,11 +338,9 @@ def plot_phase_portrait(ax, model, frame_stack: int, device, env,
 
             obs, _, _ = env.reset_to_state(x0)
             obs_t = _to_tensor(obs, device)
-            if frame_stack > 1:
-                obs_t = torch.cat([obs_t, obs_t], dim=1)
 
             with torch.no_grad():
-                z = model.encode_obs(obs_t, obs_t)
+                z = model.encode_obs(obs_t, obs_t)  # encode_obs handles frame_stack stacking
                 z_win = z.unsqueeze(1).expand(1, W_pred, -1)
                 u_win = torch.zeros(1, W_pred, model.action_encoder.action_dim, device=device)
                 z_next = model.predict(z_win, u_win)
