@@ -694,6 +694,10 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
         return {
             'obs_seq': obs_seq,
+            # Preserve the real frame immediately preceding obs_seq[0].
+            # The temporal-difference encoder needs this at arbitrary sampled
+            # window starts; duplicating obs_seq[0] would erase its motion cue.
+            'prev_obs': _t(prev0_np),
             'actions': actions,
             'states': states,
             'trajectory_type': str(self.trajectory_types[start]),
