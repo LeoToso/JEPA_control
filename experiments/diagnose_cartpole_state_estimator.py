@@ -128,9 +128,21 @@ def main():
     print(f'[model] checkpoint={Path(args.checkpoint).name}  '
           f'rho(A-BK)={np.max(np.abs(poles)):.4f}  K={fmt_vec(K.ravel())}')
 
+    eq_obs, _, _ = env.reset_to_state(np.zeros(4, dtype=np.float32))
+    eq_t = to_tensor(eq_obs, device)
+    with torch.no_grad():
+        eq_norm = head(model.encode_obs(eq_t, eq_t)).cpu().numpy()[0]
+    decoded_eq = eq_norm * state_std + state_mean
+    decoded_eq[2] = np.arctan2(np.sin(decoded_eq[2]), np.cos(decoded_eq[2]))
+    print(f'[equilibrium decoder] D(z*)={fmt_vec(decoded_eq)}')
+
     rng = np.random.RandomState(args.seed)
-    true_rows, pred_rows, uo_rows, ud_rows, time_rows = [], [], [], [], []
     bounds = cfg['environment'].get('action_range', [-10., 10.])
+    # Reprint the equilibrium force now that controller bounds are available.
+    print(f'[equilibrium action] raw={float(np.clip((-K @ decoded_eq).item(), bounds[0], bounds[1])):+.4f}  '
+          f'centered=+0.0000')
+    true_rows, raw_pred_rows, pred_rows = [], [], []
+    uo_rows, raw_ud_rows, ud_rows, time_rows = [], [], [], []
     init_scale = float(cfg.get('control', {}).get('init_scale', .05))
 
     for _ in range(args.trials):
@@ -145,11 +157,14 @@ def main():
             pred_state = pred_norm * state_std + state_mean
             # Keep theta on the same principal branch used during training.
             pred_state[2] = np.arctan2(np.sin(pred_state[2]), np.cos(pred_state[2]))
+            centered_state = pred_state - decoded_eq
             u_oracle = float(np.clip((-K @ state).item(), bounds[0], bounds[1]))
-            u_decoded = float(np.clip((-K @ pred_state).item(), bounds[0], bounds[1]))
+            raw_u_decoded = float(np.clip((-K @ pred_state).item(), bounds[0], bounds[1]))
+            u_decoded = float(np.clip((-K @ centered_state).item(), bounds[0], bounds[1]))
 
-            true_rows.append(state.copy()); pred_rows.append(pred_state.copy())
-            uo_rows.append(u_oracle); ud_rows.append(u_decoded); time_rows.append(t)
+            true_rows.append(state.copy()); raw_pred_rows.append(pred_state.copy())
+            pred_rows.append(centered_state.copy()); uo_rows.append(u_oracle)
+            raw_ud_rows.append(raw_u_decoded); ud_rows.append(u_decoded); time_rows.append(t)
 
             old_obs = obs
             obs, state, _, done, _ = env.step(u_oracle)
@@ -158,8 +173,9 @@ def main():
                 break
     env.close()
 
-    truth = np.asarray(true_rows); pred = np.asarray(pred_rows)
-    uo = np.asarray(uo_rows); ud = np.asarray(ud_rows); times = np.asarray(time_rows)
+    truth = np.asarray(true_rows); raw_pred = np.asarray(raw_pred_rows)
+    pred = np.asarray(pred_rows); uo = np.asarray(uo_rows)
+    raw_ud = np.asarray(raw_ud_rows); ud = np.asarray(ud_rows); times = np.asarray(time_rows)
     abs_theta = np.abs(truth[:, 2])
     masks = {
         'all': np.ones(len(truth), dtype=bool),
@@ -173,9 +189,14 @@ def main():
         'checkpoint': args.checkpoint,
         'state_names': STATE_NAMES,
         'K': K.ravel().tolist(),
+        'decoded_equilibrium': decoded_eq.tolist(),
         'rho_closed_loop': float(np.max(np.abs(poles))),
         'groups': {},
     }
+    raw_all = summarize(masks['all'], truth, raw_pred, uo, raw_ud, K)
+    result['raw_uncentered_all'] = raw_all
+    print_summary('raw_uncentered_all', raw_all)
+    print('[centered decoder: D(z)-D(z*)]')
     for label, mask in masks.items():
         row = summarize(mask, truth, pred, uo, ud, K)
         result['groups'][label] = row
