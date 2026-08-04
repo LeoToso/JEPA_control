@@ -1194,13 +1194,11 @@ class Trainer:
         r2 = [float('nan')] * 4
         pred_r2 = float('nan')
         n_done = 0
-        z_list, s_list = [], []
+        z_list, s_list, trajectory_type_list = [], [], []
         pred_ss_res = pred_ss_tot = 0.0
         W_pred = self.predictor_window
         with torch.no_grad():
             for batch in val_loader:
-                if n_done >= 5:
-                    break
                 if 'states' not in batch:
                     break
                 obs_seq = batch['obs_seq'].to(self.device).float().div_(255.0)
@@ -1226,6 +1224,10 @@ class Trainer:
                     z_flat = z_traj.view(Bv * (Hv + 1), -1)
                     z_list.append(z_flat)
                     s_list.append(states.view(Bv * (Hv + 1), 4))
+                    batch_types = batch.get('trajectory_type', ['unknown'] * Bv)
+                    for trajectory_type in batch_types:
+                        trajectory_type_list.extend(
+                            [str(trajectory_type)] * (Hv + 1))
 
                 # Prediction R²: unroll predictor, measure explained variance in z-space
                 z_enc_targets = z_traj[:, 1:].detach()   # (Bv, Hv, d) — encoder targets
@@ -1245,13 +1247,34 @@ class Trainer:
 
                 n_done += 1
 
+        state_mse = [float('nan')] * 4
+        target_std = [float('nan')] * 4
+        pred_std = [float('nan')] * 4
+        by_type_theta_r2 = {}
         if z_list and self.state_head is not None:
             Z = torch.cat(z_list); S = torch.cat(s_list)
             S_pred = self.state_head(Z)
             for i in range(4):
-                ss_res = ((S_pred[:, i] - S[:, i]) ** 2).sum()
+                err = S_pred[:, i] - S[:, i]
+                ss_res = (err ** 2).sum()
                 ss_tot = ((S[:, i] - S[:, i].mean()) ** 2).sum() + 1e-12
                 r2[i] = float(1.0 - ss_res / ss_tot)
+                state_mse[i] = float((err ** 2).mean())
+                target_std[i] = float(S[:, i].std(unbiased=False))
+                pred_std[i] = float(S_pred[:, i].std(unbiased=False))
+            if len(trajectory_type_list) == len(S):
+                type_arr = np.asarray(trajectory_type_list)
+                for trajectory_type in sorted(set(trajectory_type_list)):
+                    idx_np = np.flatnonzero(type_arr == trajectory_type)
+                    if len(idx_np) < 2:
+                        continue
+                    idx = torch.as_tensor(idx_np, device=S.device)
+                    target = S[idx, 2]
+                    pred = S_pred[idx, 2]
+                    ss_res = ((pred - target) ** 2).sum()
+                    ss_tot = ((target - target.mean()) ** 2).sum() + 1e-12
+                    by_type_theta_r2[trajectory_type] = (
+                        float(1.0 - ss_res / ss_tot), len(idx_np))
         if pred_ss_tot > 0:
             pred_r2 = float(1.0 - pred_ss_res / (pred_ss_tot + 1e-12))
 
@@ -1259,7 +1282,10 @@ class Trainer:
             self.model.train()
 
         names  = ['x', 'ẋ', 'θ', 'θ̇']
-        r2_str = '  '.join(f'r({n})={v:.3f}' for n, v in zip(names, r2))
+        r2_str = '  '.join(f'R²({n})={v:.3f}' for n, v in zip(names, r2))
+        detail_str = '  '.join(
+            f'{n}:mse={m:.3f},σ={sy:.3f},σhat={sp:.3f}'
+            for n, m, sy, sp in zip(names, state_mse, target_std, pred_std))
         cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else '  nan'
         z_ss_str = f'{z_ss:.3f}'   if not np.isnan(z_ss)  else '  nan'
         pr2_str  = f'{pred_r2:.3f}' if not np.isnan(pred_r2) else '  nan'
@@ -1267,6 +1293,13 @@ class Trainer:
               f'  ρ(A)={rho:.4f}  ||B||={B_norm:.4f}'
               f'  cos(B)={cos_str}  z_ss={z_ss_str}  R²_pred={pr2_str}'
               f'  {r2_str}')
+        if self.state_head is not None:
+            print(f'[StateDiag ep{epoch+1:03d}]  {detail_str}')
+        if by_type_theta_r2:
+            type_str = '  '.join(
+                f'{name}:R²θ={value:.3f}(n={count})'
+                for name, (value, count) in by_type_theta_r2.items())
+            print(f'[ThetaByType ep{epoch+1:03d}]  {type_str}')
 
     def _eval_z_ss_delta(self):
         """Once-per-epoch diagnostic: ||(I-A_cl)^{-1} c_aug|| via DARE.
