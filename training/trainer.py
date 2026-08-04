@@ -87,6 +87,7 @@ class Trainer:
         # vanishes at z=0 (sin(ωy)→0), so having H+1 gradient paths instead of 1
         # provides enough signal to bootstrap encoder diversity before pred collapses.
         self.sigreg_all_steps   = bool(self.cfg.get('sigreg_all_steps', False))
+        self.sigreg_sampling    = str(self.cfg.get('sigreg_sampling', 'first'))
         # ── Dynamics-aware regularization ─────────────────────────────────────
         self.lambda_dynSIG  = float(self.cfg.get('lambda_dynSIG', 0.0))
         self.dynSIG_T_g     = int(  self.cfg.get('dynSIG_T_g',    5))
@@ -120,6 +121,9 @@ class Trainer:
             self.cfg.get('target_encoder_momentum', self.ema_momentum))
         self.state_encoder_grad_scale = float(
             self.cfg.get('state_encoder_grad_scale', 1.0))
+        self.equilibrium_state_target = torch.tensor(
+            self.cfg.get('equilibrium_state_target', [0., 0., 0., 0.]),
+            dtype=torch.float32, device=self.device)
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
         self.predictor_window = int(self.cfg.get('predictor_window', 1))
 
@@ -487,7 +491,13 @@ class Trainer:
         # Prevents collapse without stop-gradient or teacher networks.
         if self.lambda_sigreg > 0:
             from losses.sigreg import sigreg_loss
-            z_sig = z_all.reshape(-1, d) if self.sigreg_all_steps else z_all[:, 0]
+            if self.sigreg_sampling == 'random_step':
+                # One state per trajectory avoids treating the strongly correlated,
+                # overlapping rollout positions as independent SIGreg samples.
+                k_sig = torch.randint(0, H + 1, (B,), device=self.device)
+                z_sig = z_all[torch.arange(B, device=self.device), k_sig]
+            else:
+                z_sig = z_all.reshape(-1, d) if self.sigreg_all_steps else z_all[:, 0]
             sig_loss = sigreg_loss(
                 z_sig,
                 num_slices=self.sigreg_num_slices,
@@ -732,17 +742,17 @@ class Trainer:
             state_loss = torch.zeros(1, device=self.device)
             for k in range(H + 1):
                 z_mix = alpha * z_all[:, k] + (1 - alpha) * z_all[:, k].detach()
-                z_mix_n = F.normalize(z_mix, dim=-1)  # unit sphere — fixes scale mismatch
                 state_loss = state_loss + (
-                    w * (self.state_head(z_mix_n) - states[:, k]).pow(2)
+                    w * (self.state_head(z_mix) - states[:, k]).pow(2)
                 ).mean()
             state_loss = state_loss / (H + 1)
             # Anchor: state_head(z*) must decode to zero — equilibrium latent = zero state.
             # Prevents the drifted fixed-point issue where state_head(z*) shows theta != 0.
             if self._z_star_ema is not None:
                 z_eq_mix = alpha * self._z_star_ema + (1 - alpha) * self._z_star_ema.detach()
-                sh_eq = self.state_head(F.normalize(z_eq_mix.unsqueeze(0), dim=-1))  # (1, 4)
-                state_loss = state_loss + (w * sh_eq.pow(2)).mean()
+                sh_eq = self.state_head(z_eq_mix.unsqueeze(0))  # (1, 4)
+                eq_target = self.equilibrium_state_target.unsqueeze(0)
+                state_loss = state_loss + (w * (sh_eq - eq_target).pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
 
@@ -761,9 +771,8 @@ class Trainer:
                 dtype=torch.float32, device=self.device)
             sp_loss = torch.zeros(1, device=self.device)
             for _k, _zh in enumerate(_pred_z_hats):
-                _zh_n = F.normalize(_zh, dim=-1)
                 sp_loss = sp_loss + (
-                    _w_sp * (self.state_head(_zh_n) - _states_sp[:, _k + 1]).pow(2)
+                    _w_sp * (self.state_head(_zh) - _states_sp[:, _k + 1]).pow(2)
                 ).mean()
             sp_loss = sp_loss / len(_pred_z_hats)
             total_loss = total_loss + self.lambda_state_pred * sp_loss
@@ -776,7 +785,8 @@ class Trainer:
         if self.lambda_anchor > 0 and self.state_head is not None and self._z_star_ema is not None:
             w_anchor = torch.tensor([50., 0.1, 100., 1.], device=self.device)
             sh_at_zstar = self.state_head(self._z_star_ema.unsqueeze(0))  # (1, 4)
-            anchor_loss = (w_anchor * sh_at_zstar.pow(2)).mean()
+            eq_target = self.equilibrium_state_target.unsqueeze(0)
+            anchor_loss = (w_anchor * (sh_at_zstar - eq_target).pow(2)).mean()
             total_loss = total_loss + self.lambda_anchor * anchor_loss
             info['anchor_loss'] = anchor_loss.item()
 
@@ -1196,7 +1206,7 @@ class Trainer:
 
                 # Per-state R² (encoder outputs vs ground-truth states)
                 if self.state_head is not None:
-                    z_flat = F.normalize(z_traj.view(Bv * (Hv + 1), -1), dim=-1)
+                    z_flat = z_traj.view(Bv * (Hv + 1), -1)
                     z_list.append(z_flat)
                     s_list.append(states.view(Bv * (Hv + 1), 4))
 
@@ -1341,8 +1351,9 @@ class Trainer:
             _predictor_frozen = True
             print('[train] predictor frozen before epoch 0 (freeze_predictor_at_epoch=0)')
         _saved_lambdas = (
-            self.lambda_pred, self.lambda_state, self.lambda_spec,
-            self.lambda_PBH, self.lambda_fp, self.state_encoder_grad_scale,
+            self.lambda_pred, self.lambda_state, self.lambda_state_pred,
+            self.lambda_sigreg, self.lambda_spec, self.lambda_PBH,
+            self.lambda_fp, self.state_encoder_grad_scale,
         )
 
         for epoch in range(start_epoch, epochs):
@@ -1364,13 +1375,17 @@ class Trainer:
                               f'(pred disabled)')
                     self.lambda_pred  = 0.0
                     self.lambda_state = float(self.cfg.get('warmup_lambda_state', 1.0))
+                    self.lambda_state_pred = float(
+                        self.cfg.get('warmup_lambda_state_pred', 0.0))
+                    self.lambda_sigreg = float(
+                        self.cfg.get('warmup_lambda_sigreg', 0.0))
                     self.lambda_spec  = 0.0
                     self.lambda_PBH   = 0.0
                     self.lambda_fp    = 0.0
                     self.state_encoder_grad_scale = 1.0
                 elif epoch == warmup_epochs:
-                    (self.lambda_pred, self.lambda_state, self.lambda_spec,
-                     self.lambda_PBH, self.lambda_fp,
+                    (self.lambda_pred, self.lambda_state, self.lambda_state_pred,
+                     self.lambda_sigreg, self.lambda_spec, self.lambda_PBH, self.lambda_fp,
                      self.state_encoder_grad_scale) = _saved_lambdas
                     print(f'[train] Warm-up complete — switching to full loss at epoch {epoch+1}')
                     if freeze_enc_epochs > 0:
