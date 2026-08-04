@@ -148,7 +148,11 @@ def main():
         data_fraction=args.data_fraction,
         balanced_sampling=bool(train_cfg.get('balanced_sampling', False)),
         angle_bin_edges=tuple(
-            train_cfg.get('angle_bin_edges', [0.05, 0.2, 0.6])))
+            train_cfg.get('angle_bin_edges', [0.05, 0.2, 0.6])),
+        local_sampling_fraction=float(
+            train_cfg.get('local_sampling_fraction', 0.0)),
+        local_sampling_region=tuple(
+            train_cfg.get('local_sampling_region', [0.10, 0.25, 0.05, 0.50])))
 
     if args.extra_data:
         extra_ds = []
