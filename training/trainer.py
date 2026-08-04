@@ -72,6 +72,8 @@ class Trainer:
         self.lambda_B_align = float(self.cfg.get('lambda_B_align', 0.0))
         self._B_target: Optional[torch.Tensor] = None   # set via set_B_target()
         self.lambda_anchor     = float(self.cfg.get('lambda_anchor',     0.0))
+        self.state_equilibrium_anchor_weight = float(
+            self.cfg.get('state_equilibrium_anchor_weight', 0.0))
         self.lambda_enc_anchor = float(self.cfg.get('lambda_enc_anchor', 0.0))
         self.lambda_inv   = float(self.cfg.get('lambda_inv',   0.0))
         self.inv_action_scale = float(self.cfg.get('inv_action_scale', 1.0))
@@ -746,13 +748,16 @@ class Trainer:
                     w * (self.state_head(z_mix) - states[:, k]).pow(2)
                 ).mean()
             state_loss = state_loss / (H + 1)
-            # Anchor: state_head(z*) must decode to zero — equilibrium latent = zero state.
-            # Prevents the drifted fixed-point issue where state_head(z*) shows theta != 0.
-            if self._z_star_ema is not None:
+            # Optional in-loss equilibrium anchor. Disabled by default: silently adding
+            # a full-strength single-point term here can dominate the trajectory-average
+            # reconstruction objective. Prefer the explicit lambda_anchor term below.
+            if (self.state_equilibrium_anchor_weight > 0
+                    and self._z_star_ema is not None):
                 z_eq_mix = alpha * self._z_star_ema + (1 - alpha) * self._z_star_ema.detach()
                 sh_eq = self.state_head(z_eq_mix.unsqueeze(0))  # (1, 4)
                 eq_target = self.equilibrium_state_target.unsqueeze(0)
-                state_loss = state_loss + (w * (sh_eq - eq_target).pow(2)).mean()
+                state_loss = state_loss + self.state_equilibrium_anchor_weight * (
+                    w * (sh_eq - eq_target).pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
 
@@ -783,7 +788,9 @@ class Trainer:
         # During the predictor phase (encoder frozen) this is the only gradient signal
         # for state_head, ensuring the observer stays calibrated at the fixed point.
         if self.lambda_anchor > 0 and self.state_head is not None and self._z_star_ema is not None:
-            w_anchor = torch.tensor([50., 0.1, 100., 1.], device=self.device)
+            w_anchor = torch.tensor(
+                self.cfg.get('state_loss_weights', [1., 1., 1., 1.]),
+                dtype=torch.float32, device=self.device)
             sh_at_zstar = self.state_head(self._z_star_ema.unsqueeze(0))  # (1, 4)
             eq_target = self.equilibrium_state_target.unsqueeze(0)
             anchor_loss = (w_anchor * (sh_at_zstar - eq_target).pow(2)).mean()
