@@ -74,6 +74,10 @@ class Trainer:
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
+        # Keep the legacy fixed-point diagnostic independently configurable.
+        # This permits clean ablations that neither optimize nor evaluate z*.
+        self.compute_fp_diagnostic = bool(
+            self.cfg.get('compute_fp_diagnostic', True))
         self.lambda_state_pred = float(self.cfg.get('lambda_state_pred', 0.0))
         self.lambda_B_align = float(self.cfg.get('lambda_B_align', 0.0))
         self.B_align_start_epoch = int(self.cfg.get('b_align_start_epoch', 0))
@@ -1003,7 +1007,9 @@ class Trainer:
             info['fp_err'] = torch.norm(z_star_pred.squeeze(0) - self._z_star_ema.detach()).item()
 
         # fp_err diagnostic: track ||f(z*,0)-z*|| even when lambda_fp=0 or during val
-        if self._z_star_ema is not None and 'fp_err' not in info:
+        if (self.compute_fp_diagnostic
+                and self._z_star_ema is not None
+                and 'fp_err' not in info):
             with torch.no_grad():
                 W = self.predictor_window
                 act_dim = self.model.action_encoder.action_dim
