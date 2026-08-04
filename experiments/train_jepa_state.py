@@ -249,7 +249,8 @@ def main():
         _b_update_every = int(train_cfg.get('b_target_update_every', 1))
         _b_n_states     = int(train_cfg.get('b_target_n_states', 50))
         _b_init_scale   = 0.02
-        _b_du_raw       = 2.0       # 2 N physical — same as check_action_sensitivity
+        _b_force_levels = [float(v) for v in train_cfg.get(
+            'b_target_force_levels', [1.0, 2.0, 3.0])]
 
         def _to_dev(obs_np):
             return (torch.from_numpy(obs_np).float().permute(2, 0, 1)
@@ -267,15 +268,18 @@ def main():
                     obs_prev, state, _ = _b_env.reset_to_state(x0)
                     # One passive step so there is actual motion in the diff channel
                     obs_cur, state, _, _, _ = _b_env.step(0.0)
-                    # Apply +du and -du from the same state, keeping obs_cur as prev
-                    _b_env.reset_to_state(state)
-                    obs_plus,  _, _, _, _ = _b_env.step( _b_du_raw)
-                    _b_env.reset_to_state(state)
-                    obs_minus, _, _, _, _ = _b_env.step(-_b_du_raw)
+                    # Average symmetric derivatives across several raw-force
+                    # magnitudes. This reduces rendering quantization at tiny forces
+                    # and avoids calibrating B to a single nonlinear operating point.
                     obs_cur_t = _to_dev(obs_cur)
-                    zp = model.encode_obs(_to_dev(obs_plus),  obs_cur_t).squeeze(0).cpu().numpy()
-                    zm = model.encode_obs(_to_dev(obs_minus), obs_cur_t).squeeze(0).cpu().numpy()
-                    B_list.append((zp - zm) / (2.0 * _b_du_raw / _action_scale))
+                    for _b_du_raw in _b_force_levels:
+                        _b_env.reset_to_state(state)
+                        obs_plus,  _, _, _, _ = _b_env.step( _b_du_raw)
+                        _b_env.reset_to_state(state)
+                        obs_minus, _, _, _, _ = _b_env.step(-_b_du_raw)
+                        zp = model.encode_obs(_to_dev(obs_plus),  obs_cur_t).squeeze(0).cpu().numpy()
+                        zm = model.encode_obs(_to_dev(obs_minus), obs_cur_t).squeeze(0).cpu().numpy()
+                        B_list.append((zp - zm) / (2.0 * _b_du_raw / _action_scale))
             model.train()
             B_target = np.mean(B_list, axis=0)
             _trainer.set_B_target(B_target)
@@ -285,7 +289,8 @@ def main():
         on_epoch_start = _update_B_target
         if lambda_B_align > 0:
             print(f'[B_align] enabled  λ={lambda_B_align}  '
-                  f'update_every={_b_update_every}  n_states={_b_n_states}')
+                  f'update_every={_b_update_every}  n_states={_b_n_states}  '
+                  f'forces={_b_force_levels}')
         elif compute_B_diagnostic:
             print(f'[B_align] diagnostic only (λ=0)  '
                   f'update_every={_b_update_every}  n_states={_b_n_states}')
