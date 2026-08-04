@@ -112,12 +112,21 @@ class GroundTruthCEM:
             sigma = torch.full_like(mu, self.warm_start_std)
         with torch.no_grad():
             for _ in range(self.n_iter):
-                actions = (mu + sigma * torch.randn(
-                    self.n_samples, self.horizon, device=self.device)).clamp(
-                        self.action_lb, self.action_ub)
+                # Antithetic samples reduce finite-sample bias and make the
+                # local, nearly quadratic CartPole problem much more reliable.
+                n_half = self.n_samples // 2
+                eps = torch.randn(n_half, self.horizon, device=self.device)
+                eps = torch.cat((eps, -eps), dim=0)
+                if eps.shape[0] < self.n_samples:
+                    eps = torch.cat((eps, torch.zeros(
+                        1, self.horizon, device=self.device)), dim=0)
+                actions = (mu + sigma * eps[:self.n_samples]).clamp(
+                    self.action_lb, self.action_ub)
+                # Always retain the current mean as a candidate.
+                actions[0] = mu.clamp(self.action_lb, self.action_ub)
                 elite = actions[torch.argsort(self._cost(x0, actions))[:self.n_elites]]
                 mu = elite.mean(0)
-                sigma = elite.std(0).clamp(min=.05)
+                sigma = elite.std(0).clamp(min=.01)
         self.prev_mu = mu.detach()
         return float(mu[0].clamp(self.action_lb, self.action_ub).item())
 
