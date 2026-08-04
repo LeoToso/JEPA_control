@@ -42,7 +42,8 @@ training:
   epochs: 150
   horizon: 3
 
-  # Matched ViT ablation: all settings except encoder_type match the CNN recovery run.\n  # Forty epochs establish a physically meaningful visual representation.
+  # Matched ViT ablation: all settings except encoder_type match the CNN recovery run.
+  # Forty epochs establish a physically meaningful visual representation.
   # Prediction, predictor-state supervision, and SIGreg are disabled in warmup.
   warmup_epochs: 40
   warmup_lambda_state: 1.0
