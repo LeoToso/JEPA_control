@@ -119,8 +119,14 @@ def main():
     if normalize_states:
         train_cfg['equilibrium_state_target'] = (
             (-state_mean / state_std).astype(np.float32).tolist())
+        train_cfg['state_normalization_mean'] = (
+            state_mean.astype(np.float32).tolist())
+        train_cfg['state_normalization_std'] = (
+            state_std.astype(np.float32).tolist())
     else:
         train_cfg['equilibrium_state_target'] = [0.0, 0.0, 0.0, 0.0]
+        train_cfg['state_normalization_mean'] = [0.0, 0.0, 0.0, 0.0]
+        train_cfg['state_normalization_std'] = [1.0, 1.0, 1.0, 1.0]
     if normalize_states:
         print(f'[data] state_mean={np.round(state_mean, 4)}  '
               f'state_std={np.round(state_std, 4)}')
