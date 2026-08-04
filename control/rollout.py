@@ -101,15 +101,19 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
     lat_arr     = np.array(latent_states)
     actions_arr = np.array(actions)
     n_real      = t
+    # states_arr[k] is before action k; state is after the final action.
+    # Include that true terminal state in terminal and hold metrics.
     errors = np.linalg.norm(states_arr[:n_real] - x_star, axis=1)
-    final_error = float(errors[-1])
-    frac_stable = float(np.mean(errors < settling_threshold))
+    metric_errors = np.concatenate(
+        [errors, [float(np.linalg.norm(state - x_star))]])
+    final_error = float(metric_errors[-1])
+    frac_stable = float(np.mean(metric_errors < settling_threshold))
     # Success must be sustained, not a single lucky final threshold crossing.
-    hold = min(max(int(success_hold_steps), 1), n_real)
+    hold = min(max(int(success_hold_steps), 1), len(metric_errors))
     stabilized = bool((not terminated)
-                      and np.all(errors[-hold:] < stabilization_threshold))
+                      and np.all(metric_errors[-hold:] < stabilization_threshold))
     # Settling time is the first sample after which the trajectory stays settled.
-    settled = errors < settling_threshold
+    settled = metric_errors < settling_threshold
     suffix_all = np.logical_and.accumulate(settled[::-1])[::-1]
     settled_idx = np.flatnonzero(suffix_all)
     if settled_idx.size:
