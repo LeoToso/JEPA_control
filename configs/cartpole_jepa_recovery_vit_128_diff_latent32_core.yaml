@@ -60,7 +60,8 @@ training:
   lambda_pred: 1.0
   lambda_state: 1.0
   lambda_state_pred: 0.0
-  # Core-loss ablation: local-delta supervision is disabled.\n  # Replace absolute local decoding with the exact equilibrium-centered
+  # Core-loss ablation: local-delta supervision is disabled.
+  # Replace absolute local decoding with the exact equilibrium-centered
   # deviation used by decoded LQR: (D(z)-D(z*)) * state_std.
   lambda_state_local: 0.0
   lambda_state_local_delta: 0.0
