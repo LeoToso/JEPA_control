@@ -292,8 +292,15 @@ def main():
                 checkpoint_every=int(train_cfg.get('checkpoint_every', 10)),
                 resume_from=args.resume, on_epoch_start=on_epoch_start)
 
+    # Preserve the historical name while making checkpoint semantics explicit.
     torch.save(trainer.final_state, save_dir / 'model_final.pt')
-    print(f'[done] saved -> {save_dir / "model_final.pt"}')
+    torch.save(trainer.final_state, save_dir / 'model_last.pt')
+    torch.save(model.state_dict(), save_dir / 'model_selected.pt')
+    if getattr(trainer, 'best_state', None) is not None:
+        torch.save(trainer.best_state, save_dir / 'model_best_selection.pt')
+    print(f'[done] saved last     -> {save_dir / "model_last.pt"}')
+    print(f'[done] saved selected -> {save_dir / "model_selected.pt"}')
+    print(f'[done] selection metric: {getattr(trainer, "selection_metric", "total_loss")}')
 
 
 if __name__ == '__main__':
