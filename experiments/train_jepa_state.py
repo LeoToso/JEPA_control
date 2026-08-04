@@ -93,6 +93,7 @@ def main():
                           'vit_embed_dim', 'vit_depth', 'vit_num_heads',
                           'predictor_type', 'predictor_window',
                           'predictor_hidden_dim', 'predictor_n_layers',
+                          'predictor_activation',
                           'predictor_embed_dim', 'predictor_depth',
                           'predictor_num_heads', 'predictor_mlp_ratio')
             for _k in _arch_keys:
@@ -115,6 +116,11 @@ def main():
     action_scale = float(meta.get('action_scale', 1.0)) if normalize_actions else 1.0
     state_mean   = meta['state_mean'] if normalize_states else None
     state_std    = meta['state_std']  if normalize_states else None
+    if normalize_states:
+        train_cfg['equilibrium_state_target'] = (
+            (-state_mean / state_std).astype(np.float32).tolist())
+    else:
+        train_cfg['equilibrium_state_target'] = [0.0, 0.0, 0.0, 0.0]
     if normalize_states:
         print(f'[data] state_mean={np.round(state_mean, 4)}  '
               f'state_std={np.round(state_std, 4)}')
@@ -183,6 +189,7 @@ def main():
         predictor_mlp_ratio=float(model_cfg.get('predictor_mlp_ratio', 4.0)),
         predictor_hidden_dim=int(model_cfg.get('predictor_hidden_dim', 256)),
         predictor_n_layers=int(model_cfg.get('predictor_n_layers', 2)),
+        predictor_activation=model_cfg.get('predictor_activation', 'elu'),
     )
     model.to(device)
 
