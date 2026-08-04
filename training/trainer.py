@@ -65,6 +65,10 @@ class Trainer:
         # Loss weights
         self.lambda_pred  = float(self.cfg.get('lambda_pred',  1.0))
         self.lambda_state = float(self.cfg.get('lambda_state', 1.0))
+        self.lambda_state_local = float(
+            self.cfg.get('lambda_state_local', 0.0))
+        self.local_state_anchor_weight = float(
+            self.cfg.get('local_state_anchor_weight', 0.0))
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
         self.lambda_PBH   = float(self.cfg.get('lambda_PBH',   1.0))
         self.lambda_fp    = float(self.cfg.get('lambda_fp',    0.0))
@@ -137,6 +141,15 @@ class Trainer:
         self.equilibrium_state_target = torch.tensor(
             self.cfg.get('equilibrium_state_target', [0., 0., 0., 0.]),
             dtype=torch.float32, device=self.device)
+        self.state_normalization_std = torch.tensor(
+            self.cfg.get('state_normalization_std', [1., 1., 1., 1.]),
+            dtype=torch.float32, device=self.device)
+        self.local_state_scales = torch.tensor(
+            self.cfg.get('local_state_scales', [0.05, 0.10, 0.02, 0.10]),
+            dtype=torch.float32, device=self.device)
+        self.local_state_region = torch.tensor(
+            self.cfg.get('local_state_region', [0.15, 0.50, 0.15, 1.00]),
+            dtype=torch.float32, device=self.device)
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
         self.predictor_window = int(self.cfg.get('predictor_window', 1))
 
@@ -165,6 +178,7 @@ class Trainer:
         # State head: needed for anchor loss (Option C) or state supervision.
         _needs_state_head = (
             self.lambda_state > 0
+            or self.lambda_state_local > 0
             or self.lambda_state_pred > 0
             or float(self.cfg.get('warmup_lambda_state', 0.0)) > 0
             or self.lambda_anchor > 0
@@ -789,6 +803,78 @@ class Trainer:
                     w * (sh_eq - eq_target).pow(2)).mean()
             total_loss = total_loss + self.lambda_state * state_loss
             info['state_loss'] = state_loss.item()
+
+        # Control-local reconstruction in physical units. Global dataset
+        # normalization makes small near-equilibrium angle errors almost free,
+        # even though they determine stabilization. Select samples in a physical
+        # control region and scale errors by control-relevant tolerances.
+        if (self.lambda_state_local > 0 and self.state_head is not None
+                and 'states' in batch):
+            local_states = batch['states'].to(
+                self.device, non_blocking=True).float().clone()
+            local_states[:, :, 2] = torch.atan2(
+                local_states[:, :, 2].sin(), local_states[:, :, 2].cos())
+            alpha = self.state_encoder_grad_scale
+            local_losses = []
+            local_errors_phys = []
+            for k in range(H + 1):
+                target_norm = local_states[:, k]
+                target_phys = (
+                    target_norm - self.equilibrium_state_target.unsqueeze(0)
+                ) * self.state_normalization_std.unsqueeze(0)
+                mask = (target_phys.abs()
+                        <= self.local_state_region.unsqueeze(0)).all(dim=-1)
+                if mask.any():
+                    z_mix = (alpha * z_all[mask, k]
+                             + (1 - alpha) * z_all[mask, k].detach())
+                    pred_norm = self.state_head(z_mix)
+                    error_phys = (
+                        pred_norm - target_norm[mask]
+                    ) * self.state_normalization_std.unsqueeze(0)
+                    scaled_error = (
+                        error_phys / self.local_state_scales.unsqueeze(0))
+                    local_losses.append(F.smooth_l1_loss(
+                        scaled_error, torch.zeros_like(scaled_error),
+                        beta=1.0, reduction='mean'))
+                    local_errors_phys.append(error_phys.detach())
+
+            if local_losses:
+                local_state_loss = torch.stack(local_losses).mean()
+                all_local_errors = torch.cat(local_errors_phys, dim=0)
+                local_rmse = all_local_errors.pow(2).mean(dim=0).sqrt()
+                local_count = int(all_local_errors.shape[0])
+            else:
+                local_state_loss = z_all.sum() * 0.0
+                local_rmse = torch.full(
+                    (4,), float('nan'), device=self.device)
+                local_count = 0
+
+            # Tight physical equilibrium anchor, using the same tolerances.
+            if (self.local_state_anchor_weight > 0
+                    and self._z_star_ema is not None):
+                z_eq_mix = (alpha * self._z_star_ema
+                            + (1 - alpha) * self._z_star_ema.detach())
+                eq_pred_norm = self.state_head(z_eq_mix.unsqueeze(0))
+                eq_error_phys = (
+                    eq_pred_norm - self.equilibrium_state_target.unsqueeze(0)
+                ) * self.state_normalization_std.unsqueeze(0)
+                eq_scaled = eq_error_phys / self.local_state_scales.unsqueeze(0)
+                eq_local_loss = F.smooth_l1_loss(
+                    eq_scaled, torch.zeros_like(eq_scaled),
+                    beta=1.0, reduction='mean')
+                local_state_loss = (
+                    local_state_loss
+                    + self.local_state_anchor_weight * eq_local_loss)
+                info['local_state_anchor_loss'] = eq_local_loss.item()
+
+            total_loss = (
+                total_loss + self.lambda_state_local * local_state_loss)
+            info['local_state_loss'] = local_state_loss.item()
+            info['local_state_count'] = local_count
+            _names = ('x', 'xdot', 'theta', 'thetadot')
+            for _j, _name in enumerate(_names):
+                if torch.isfinite(local_rmse[_j]):
+                    info[f'local_rmse_{_name}'] = local_rmse[_j].item()
 
         # Unrolled state prediction loss: state_head(predictor(z_t, u_t)) ≈ s_{t+1}
         # Unlike the state loss above (which only supervises encoder outputs), this
@@ -1623,6 +1709,12 @@ class Trainer:
                           + (f"+sp{tr.get('state_pred_loss', 0):.4f}"
                              if 'state_pred_loss' in tr else '')
                           ) if ('state_loss' in tr or 'state_pred_loss' in tr) else ''
+            local_state_str = (
+                f"  sloc={tr.get('local_state_loss', 0):.3f}"
+                f"(n={int(tr.get('local_state_count', 0))},"
+                f"th={tr.get('local_rmse_theta', float('nan')):.4f},"
+                f"dth={tr.get('local_rmse_thetadot', float('nan')):.4f})"
+                ) if 'local_state_loss' in tr else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
@@ -1663,7 +1755,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{ep_act_pred_str}{zmove_str}'
+                  f'{state_str}{local_state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{ep_act_pred_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
