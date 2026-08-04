@@ -46,22 +46,36 @@ def convert(src_path: str, out_dir: str) -> None:
           f'episodes={len(set(episode_ids.tolist()))}  '
           f'obs_shape={obs.shape[1:]}')
 
-    # Split whole episodes within each trajectory type (80/10/10). This avoids
-    # policy-distribution shift while keeping all frames from an episode together.
+    # Split whole episodes within each trajectory family while spreading the
+    # signed mean-theta distribution across all splits. For each angle-sorted
+    # block of ten episodes: one goes to val, one to test, and eight to train.
     rng = np.random.RandomState(42)
     splits = {'train': set(), 'val': set(), 'test': set()}
     for typ in np.unique(trajectory_types):
         type_eps = np.unique(episode_ids[trajectory_types == typ])
         rng.shuffle(type_eps)
-        n = len(type_eps)
-        n_tr = max(1, int(0.8 * n))
-        n_val = max(1, int(0.1 * n)) if n >= 3 else 0
-        n_tr = min(n_tr, n - n_val)
-        splits['train'].update(type_eps[:n_tr].tolist())
-        splits['val'].update(type_eps[n_tr:n_tr + n_val].tolist())
-        splits['test'].update(type_eps[n_tr + n_val:].tolist())
+        angle_score = {
+            int(ep): float(states[episode_ids == ep, 2].mean())
+            for ep in type_eps
+        }
+        type_eps = np.array(sorted(type_eps, key=lambda ep: angle_score[int(ep)]))
+        assigned = {'train': [], 'val': [], 'test': []}
+        for rank, ep in enumerate(type_eps):
+            slot = rank % 10
+            split_name = 'val' if slot == 0 else ('test' if slot == 5 else 'train')
+            assigned[split_name].append(int(ep))
+        # Tiny families still need all splits when at least three episodes exist.
+        if len(type_eps) >= 3:
+            for split_name in ('val', 'test'):
+                if not assigned[split_name]:
+                    assigned[split_name].append(assigned['train'].pop())
+        for split_name in splits:
+            splits[split_name].update(assigned[split_name])
         label = typ.decode() if isinstance(typ, bytes) else str(typ)
-        print(f'[convert] {label}: train={n_tr} val={n_val} test={n-n_tr-n_val}')
+        print(f'[convert] {label}: '
+              f'train={len(assigned["train"])} '
+              f'val={len(assigned["val"])} '
+              f'test={len(assigned["test"])}')
     print(f'[convert] episode split: train={len(splits["train"])}  '
           f'val={len(splits["val"])}  test={len(splits["test"])} episodes')
 
