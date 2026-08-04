@@ -745,7 +745,9 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               preload_obs: bool = True,
                               data_fraction: float = 1.0,
                               balanced_sampling: bool = False,
-                              angle_bin_edges=(0.05, 0.2, 0.6)) -> dict:
+                              angle_bin_edges=(0.05, 0.2, 0.6),
+                              local_sampling_fraction: float = 0.0,
+                              local_sampling_region=(0.10, 0.25, 0.05, 0.50)) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
     _PRELOAD_LIMIT_BYTES = 8 * 1024 ** 3  # 8 GB
     loaders = {}
@@ -770,29 +772,47 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
         if len(ds) == 0:
             continue
         sampler = None
-        if split == 'train' and balanced_sampling:
+        if split == 'train' and (balanced_sampling or local_sampling_fraction > 0):
             starts = ds.valid_starts
-            theta = ds.states[starts, 2]
-            magnitude_bin = np.digitize(np.abs(theta), angle_bin_edges)
-            sign_bin = (theta >= 0).astype(np.int64)
-            types = ds.trajectory_types[starts]
-            groups = [(str(typ), int(sign), int(mag))
-                      for typ, sign, mag in zip(types, sign_bin, magnitude_bin)]
-            group_counts = {}
-            bins_per_type = {}
-            for group in groups:
-                group_counts[group] = group_counts.get(group, 0) + 1
-                bins_per_type.setdefault(group[0], set()).add(group[1:])
-            weights = np.array([
-                1.0 / (len(bins_per_type[group[0]]) * group_counts[group])
-                for group in groups
-            ], dtype=np.float64)
+            weights = np.ones(len(starts), dtype=np.float64)
+            if balanced_sampling:
+                theta = ds.states[starts, 2]
+                magnitude_bin = np.digitize(np.abs(theta), angle_bin_edges)
+                sign_bin = (theta >= 0).astype(np.int64)
+                types = ds.trajectory_types[starts]
+                groups = [(str(typ), int(sign), int(mag))
+                          for typ, sign, mag in zip(types, sign_bin, magnitude_bin)]
+                group_counts = {}
+                bins_per_type = {}
+                for group in groups:
+                    group_counts[group] = group_counts.get(group, 0) + 1
+                    bins_per_type.setdefault(group[0], set()).add(group[1:])
+                weights = np.array([
+                    1.0 / (len(bins_per_type[group[0]]) * group_counts[group])
+                    for group in groups
+                ], dtype=np.float64)
+                summary = ', '.join(
+                    f'{typ}:{sum(str(g[0]) == str(typ) for g in groups)}'
+                    for typ in sorted(set(types.tolist())))
+                print(f'[dataset:train] balanced sampler  {summary}')
+
+            if local_sampling_fraction > 0:
+                frac = float(np.clip(local_sampling_fraction, 0.0, 0.99))
+                region = np.asarray(local_sampling_region, dtype=np.float64)
+                local = (np.abs(ds.states[starts]) <= region[None]).all(axis=1)
+                local_mass = weights[local].sum()
+                other_mass = weights[~local].sum()
+                if local_mass > 0 and other_mass > 0:
+                    boost = frac * other_mass / ((1.0 - frac) * local_mass)
+                    weights[local] *= boost
+                    expected = weights[local].sum() / weights.sum()
+                    print(f'[dataset:train] local sampler  raw={local.mean():.1%}  '
+                          f'target={frac:.1%}  expected={expected:.1%}  '
+                          f'region={region.tolist()}')
+                else:
+                    warnings.warn('Local sampling requested but local/nonlocal split is empty')
             sampler = WeightedRandomSampler(
                 torch.from_numpy(weights), num_samples=len(ds), replacement=True)
-            summary = ', '.join(
-                f'{typ}:{sum(str(g[0]) == str(typ) for g in groups)}'
-                for typ in sorted(set(types.tolist())))
-            print(f'[dataset:train] balanced sampler  {summary}')
         loaders[split] = DataLoader(
             ds, batch_size=batch_size,
             shuffle=(split == 'train' and sampler is None), sampler=sampler,
