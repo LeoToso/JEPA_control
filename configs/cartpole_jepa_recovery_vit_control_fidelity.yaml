@@ -113,6 +113,12 @@ training:
   b_target_update_every: 1
   b_target_n_states: 32
   b_target_force_levels: [1.0, 2.0, 3.0]
+  # Core JEPA losses still start at epoch 1. Delay only B alignment until
+  # the encoder has a meaningful visual action-response direction, then ramp.
+  b_align_start_epoch: 15
+  b_align_ramp_epochs: 10
+  b_align_min_target_norm: 0.05
+  b_align_mse_floor: 0.01
 
   predictor_window: 1
   num_workers: 2
