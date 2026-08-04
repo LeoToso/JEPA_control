@@ -1576,7 +1576,10 @@ class Trainer:
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
             fp_err_str   = f"  fp_err={tr.get('fp_err',      0):.4f}" if 'fp_err'          in tr else ''
-            B_align_str  = f"  Bal={tr.get('B_align_loss',   0):.4f}" if 'B_align_loss'    in tr else ''
+            B_align_str  = (f"  Bal={tr.get('B_align_loss', 0):.4f}"
+                            f"(w={tr.get('B_align_weight', 0):.2f},"
+                            f"|Bt|={tr.get('B_target_norm', 0):.3f})"
+                            ) if 'B_align_loss' in tr else ''
             z_ss_str     = f"  z_ss={_z_ss_delta:.1f}"                 if _z_ss_delta is not None else ''
             local_str    = f"  local={tr.get('local_loss',   0):.4f}" if 'local_loss'     in tr else ''
             unstable_str = f"  ρ={tr.get('unstable_loss',   0):.4f}" if 'unstable_loss'  in tr else ''
