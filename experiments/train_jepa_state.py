@@ -225,9 +225,11 @@ def main():
     # finite differences on the real environment.  Correct prev-frame handling for
     # use_frame_diff: encode_obs(obs_after_force, obs_before_force).
     on_epoch_start = None
-    # Always build B_target updater — used for cos(B) diagnostic even when
-    # lambda_B_align = 0. Only the training loss gate checks lambda_B_align.
-    if 'environment' in cfg and 'image_size' in cfg['environment']:
+    # Building B_target requires many extra environment rollouts. Run it only
+    # when it contributes to the loss or is explicitly requested as a diagnostic.
+    compute_B_diagnostic = bool(train_cfg.get('compute_B_diagnostic', False))
+    if ((lambda_B_align > 0 or compute_B_diagnostic)
+            and 'environment' in cfg and 'image_size' in cfg['environment']):
         from envs.cartpole_visual import ContinuousCartpoleVisual
         env_cfg = cfg['environment']
         _b_env = ContinuousCartpoleVisual(
@@ -281,7 +283,7 @@ def main():
         if lambda_B_align > 0:
             print(f'[B_align] enabled  λ={lambda_B_align}  '
                   f'update_every={_b_update_every}  n_states={_b_n_states}')
-        else:
+        elif compute_B_diagnostic:
             print(f'[B_align] diagnostic only (λ=0)  '
                   f'update_every={_b_update_every}  n_states={_b_n_states}')
 
