@@ -21,7 +21,7 @@ class JEPAConfig:
     # ViT hyperparameters
     image_size: int = 64
     patch_size: int = 8
-    in_chans: int = 3              # 3 * frame_stack (set by JEPAModel.__init__)
+    in_chans: int = 3              # set by JEPAModel.__init__
     frame_stack: int = 1           # number of consecutive frames stacked channel-wise
     use_frame_diff: bool = False   # encode [o_{t-1}, o_t, o_t - o_{t-1}] (9-ch when fs=1)
     vit_embed_dim: int = 128
@@ -59,7 +59,10 @@ class JEPAModel(nn.Module):
         super().__init__()
         self.config = config
         if config.use_frame_diff:
-            config.in_chans = config.frame_stack * 9  # [prev, curr, diff] × 3ch
+            # Temporal-difference input is exactly [prev, curr, curr-prev].
+            # frame_stack is intentionally not multiplied here: history is
+            # already represented explicitly by prev and curr.
+            config.in_chans = 9
         else:
             config.in_chans = config.frame_stack * 3
         if config.encoder_type == 'cnn':
