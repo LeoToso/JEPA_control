@@ -124,6 +124,9 @@ cem:
   n_trials: 50
 
 data:
+  # Keep all supervised states inside the observable rendering region.
+  max_abs_x: 2.2
+  max_abs_theta: 1.2
   train_frac: 0.8
   val_frac: 0.1
   n_random_episodes: 50
