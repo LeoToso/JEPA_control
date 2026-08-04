@@ -84,6 +84,8 @@ class Trainer:
         self.lambda_sigreg      = float(self.cfg.get('lambda_sigreg', 0.0))
         self.sigreg_num_slices  = int(self.cfg.get('sigreg_num_slices', 128))
         self.sigreg_num_points  = int(self.cfg.get('sigreg_num_points', 17))
+        self.sigreg_variance_floor_weight = float(
+            self.cfg.get('sigreg_variance_floor_weight', 0.0))
         # When True, SIGreg operates on the full trajectory (B*(H+1), d) rather than
         # z_0 only. Needed when use_target_encoder=False: the Epps-Pulley gradient
         # vanishes at z=0 (sin(ωy)→0), so having H+1 gradient paths instead of 1
@@ -511,6 +513,7 @@ class Trainer:
                 z_sig,
                 num_slices=self.sigreg_num_slices,
                 num_points=self.sigreg_num_points,
+                variance_floor_weight=self.sigreg_variance_floor_weight,
             )
             total_loss = total_loss + self.lambda_sigreg * sig_loss
             info['sigreg_loss'] = sig_loss.item()
