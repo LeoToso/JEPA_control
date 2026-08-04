@@ -20,7 +20,10 @@ import torch
 import yaml
 
 from data.dataset import load_discrete_dataset_meta
-from experiments.evaluate_cartpole_control import build_model, make_env
+from control.lqr import solve_discrete_lqr
+from experiments.evaluate_cartpole_control import (
+    build_model, make_env, physical_macro_jacobian,
+)
 from experiments.probe_cartpole_nonlinear_instability import (
     decode, encode_split, fit_ridge_probe, obs_tensor, probe_metrics,
 )
@@ -30,8 +33,8 @@ class GroundTruthCEM:
     """Batched CEM using the environment's exact nonlinear Euler dynamics."""
 
     def __init__(self, cfg, horizon, n_samples, n_elites, n_iter, init_std,
-                 warm_start_std, terminal_cost_mult, action_lb, action_ub,
-                 device):
+                 warm_start_std, terminal_cost_mult, terminal_Q,
+                 action_lb, action_ub, device):
         e = cfg['environment']
         self.M = float(e.get('mass_cart', 1.0))
         self.m = float(e.get('mass_pole', 0.1))
@@ -51,6 +54,9 @@ class GroundTruthCEM:
         self.action_lb, self.action_ub = float(action_lb), float(action_ub)
         self.device = device
         self.Q = torch.tensor([1., 1., 10., 1.], device=device)
+        self.terminal_Q = (None if terminal_Q is None else
+                           torch.as_tensor(terminal_Q, dtype=torch.float32,
+                                           device=device))
         self.R = .01
         self.prev_mu = None
 
@@ -86,7 +92,12 @@ class GroundTruthCEM:
             u = actions[:, t]
             cost += (state.square() * self.Q).sum(-1) + self.R * u.square()
             state = self._macro_step(state, u)
-        return cost + self.terminal_cost_mult * (state.square() * self.Q).sum(-1)
+        if self.terminal_Q is None:
+            terminal = (state.square() * self.Q).sum(-1)
+        else:
+            terminal = torch.einsum('bi,ij,bj->b',
+                                    state, self.terminal_Q, state)
+        return cost + self.terminal_cost_mult * terminal
 
     def plan_state(self, state):
         x0 = torch.as_tensor(state, dtype=torch.float32,
@@ -189,7 +200,9 @@ def main():
     p.add_argument('--cem-iters', type=int, default=5)
     p.add_argument('--cem-init-std', type=float, default=3.0)
     p.add_argument('--cem-warm-start-std', type=float, default=0.5)
-    p.add_argument('--cem-terminal-mult', type=float, default=10.0)
+    p.add_argument('--cem-terminal-mult', type=float, default=1.0)
+    p.add_argument('--cem-terminal-cost', choices=['lqr', 'scaled_q'],
+                   default='lqr')
     p.add_argument('--seed', type=int, default=123)
     p.add_argument('--device', default='cuda')
     p.add_argument('--output', required=True)
@@ -224,10 +237,21 @@ def main():
 
     bounds = cfg['environment'].get('action_range', [-10, 10])
     ctrl = cfg.get('control', {})
+    terminal_Q = None
+    terminal_rho = None
+    if args.cem_terminal_cost == 'lqr':
+        terminal_env = make_env(cfg, args.seed + 1000)
+        A_phys, B_phys = physical_macro_jacobian(terminal_env)
+        terminal_env.close()
+        _, terminal_Q, terminal_poles = solve_discrete_lqr(
+            A_phys, B_phys, np.diag([1., 1., 10., 1.]),
+            np.array([[.01]]))
+        terminal_rho = float(np.max(np.abs(terminal_poles)))
+        print(f'[terminal cost] Riccati P  rho(A-BK)={terminal_rho:.4f}')
     planner = GroundTruthCEM(
         cfg, args.cem_horizon, args.cem_samples, args.cem_elites,
         args.cem_iters, args.cem_init_std, args.cem_warm_start_std,
-        args.cem_terminal_mult, bounds[0], bounds[1], device)
+        args.cem_terminal_mult, terminal_Q, bounds[0], bounds[1], device)
     ridge_params = (w, b, state_mean, state_std)
     rng = np.random.RandomState(args.seed)
     initial_states = [rng.uniform(-float(ctrl.get('init_scale', .05)),
@@ -239,7 +263,9 @@ def main():
                        'iterations': args.cem_iters,
                        'init_std': args.cem_init_std,
                        'warm_start_std': args.cem_warm_start_std,
-                       'terminal_cost_multiplier': args.cem_terminal_mult},
+                       'terminal_cost': args.cem_terminal_cost,
+                       'terminal_cost_multiplier': args.cem_terminal_mult,
+                       'terminal_lqr_closed_loop_rho': terminal_rho},
                'controllers': {}}
     for mode in ('oracle_gt_cem', 'encoded_gt_cem'):
         env = make_env(cfg, args.seed)
