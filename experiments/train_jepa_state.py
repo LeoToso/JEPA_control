@@ -251,6 +251,7 @@ def main():
         _b_init_scale   = 0.02
         _b_force_levels = [float(v) for v in train_cfg.get(
             'b_target_force_levels', [1.0, 2.0, 3.0])]
+        _b_impulse_horizon = int(train_cfg.get('b_target_impulse_horizon', 3))
 
         def _to_dev(obs_np):
             return (torch.from_numpy(obs_np).float().permute(2, 0, 1)
@@ -261,36 +262,53 @@ def main():
                 return
             rng = np.random.RandomState(epoch)
             model.eval()
-            B_list = []
+            B_impulse_list = []
             with torch.no_grad():
                 for _ in range(_b_n_states):
                     x0 = rng.uniform(-_b_init_scale, _b_init_scale, 4).astype(np.float32)
                     obs_prev, state, _ = _b_env.reset_to_state(x0)
                     # One passive step so there is actual motion in the diff channel
                     obs_cur, state, _, _, _ = _b_env.step(0.0)
-                    # Average symmetric derivatives across several raw-force
-                    # magnitudes. This reduces rendering quantization at tiny forces
-                    # and avoids calibrating B to a single nonlinear operating point.
-                    obs_cur_t = _to_dev(obs_cur)
+                    # Symmetric impulse response: apply +/-du at the first
+                    # macro-step, then zero force. Matching later responses avoids
+                    # relying on a nearly subpixel one-step displacement.
                     for _b_du_raw in _b_force_levels:
-                        _b_env.reset_to_state(state)
-                        obs_plus,  _, _, _, _ = _b_env.step( _b_du_raw)
-                        _b_env.reset_to_state(state)
-                        obs_minus, _, _, _, _ = _b_env.step(-_b_du_raw)
-                        zp = model.encode_obs(_to_dev(obs_plus),  obs_cur_t).squeeze(0).cpu().numpy()
-                        zm = model.encode_obs(_to_dev(obs_minus), obs_cur_t).squeeze(0).cpu().numpy()
-                        B_list.append((zp - zm) / (2.0 * _b_du_raw / _action_scale))
+                        branches = []
+                        for _sign in (1.0, -1.0):
+                            _b_env.reset_to_state(state)
+                            _prev_obs = obs_cur
+                            _zs = []
+                            for _h in range(_b_impulse_horizon):
+                                _u_raw = _sign * _b_du_raw if _h == 0 else 0.0
+                                _next_obs, _, _, _done, _ = _b_env.step(_u_raw)
+                                _z = model.encode_obs(
+                                    _to_dev(_next_obs), _to_dev(_prev_obs)
+                                ).squeeze(0).cpu().numpy()
+                                _zs.append(_z)
+                                _prev_obs = _next_obs
+                                if _done:
+                                    break
+                            if len(_zs) != _b_impulse_horizon:
+                                break
+                            branches.append(np.stack(_zs))
+                        if len(branches) == 2:
+                            B_impulse_list.append(
+                                (branches[0] - branches[1])
+                                / (2.0 * _b_du_raw / _action_scale))
             model.train()
-            B_target = np.mean(B_list, axis=0)
+            if not B_impulse_list:
+                raise RuntimeError('No valid B impulse-response targets were generated')
+            B_target = np.mean(B_impulse_list, axis=0)  # (H_impulse, latent_dim)
             _trainer.set_B_target(B_target)
-            print(f'[B_align] epoch {epoch+1}: updated B_target  '
-                  f'||B||={np.linalg.norm(B_target):.4f}')
+            _norms = np.linalg.norm(B_target, axis=1)
+            print(f'[B_align] epoch {epoch+1}: updated impulse target  '
+                  f'||[B,AB,A2B]||={np.round(_norms, 4).tolist()}')
 
         on_epoch_start = _update_B_target
         if lambda_B_align > 0:
             print(f'[B_align] enabled  λ={lambda_B_align}  '
                   f'update_every={_b_update_every}  n_states={_b_n_states}  '
-                  f'forces={_b_force_levels}')
+                  f'forces={_b_force_levels}  H_imp={_b_impulse_horizon}')
         elif compute_B_diagnostic:
             print(f'[B_align] diagnostic only (λ=0)  '
                   f'update_every={_b_update_every}  n_states={_b_n_states}')
