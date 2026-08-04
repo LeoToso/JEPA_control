@@ -30,7 +30,8 @@ class GroundTruthCEM:
     """Batched CEM using the environment's exact nonlinear Euler dynamics."""
 
     def __init__(self, cfg, horizon, n_samples, n_elites, n_iter, init_std,
-                 action_lb, action_ub, device):
+                 warm_start_std, terminal_cost_mult, action_lb, action_ub,
+                 device):
         e = cfg['environment']
         self.M = float(e.get('mass_cart', 1.0))
         self.m = float(e.get('mass_pole', 0.1))
@@ -45,6 +46,8 @@ class GroundTruthCEM:
         self.n_elites = min(int(n_elites), self.n_samples)
         self.n_iter = int(n_iter)
         self.init_std = float(init_std)
+        self.warm_start_std = float(warm_start_std)
+        self.terminal_cost_mult = float(terminal_cost_mult)
         self.action_lb, self.action_ub = float(action_lb), float(action_ub)
         self.device = device
         self.Q = torch.tensor([1., 1., 10., 1.], device=device)
@@ -83,16 +86,19 @@ class GroundTruthCEM:
             u = actions[:, t]
             cost += (state.square() * self.Q).sum(-1) + self.R * u.square()
             state = self._macro_step(state, u)
-        return cost + (state.square() * self.Q).sum(-1)
+        return cost + self.terminal_cost_mult * (state.square() * self.Q).sum(-1)
 
     def plan_state(self, state):
         x0 = torch.as_tensor(state, dtype=torch.float32,
                              device=self.device).reshape(1, 4)
         if self.prev_mu is None:
             mu = torch.zeros(self.horizon, device=self.device)
+            sigma = torch.full_like(mu, self.init_std)
         else:
             mu = torch.cat((self.prev_mu[1:], torch.zeros(1, device=self.device)))
-        sigma = torch.full_like(mu, self.init_std)
+            # Preserve the previous solution locally instead of discarding it
+            # with full exploratory variance at every receding-horizon step.
+            sigma = torch.full_like(mu, self.warm_start_std)
         with torch.no_grad():
             for _ in range(self.n_iter):
                 actions = (mu + sigma * torch.randn(
@@ -182,6 +188,8 @@ def main():
     p.add_argument('--cem-elites', type=int, default=64)
     p.add_argument('--cem-iters', type=int, default=5)
     p.add_argument('--cem-init-std', type=float, default=3.0)
+    p.add_argument('--cem-warm-start-std', type=float, default=0.5)
+    p.add_argument('--cem-terminal-mult', type=float, default=10.0)
     p.add_argument('--seed', type=int, default=123)
     p.add_argument('--device', default='cuda')
     p.add_argument('--output', required=True)
@@ -218,7 +226,8 @@ def main():
     ctrl = cfg.get('control', {})
     planner = GroundTruthCEM(
         cfg, args.cem_horizon, args.cem_samples, args.cem_elites,
-        args.cem_iters, args.cem_init_std, bounds[0], bounds[1], device)
+        args.cem_iters, args.cem_init_std, args.cem_warm_start_std,
+        args.cem_terminal_mult, bounds[0], bounds[1], device)
     ridge_params = (w, b, state_mean, state_std)
     rng = np.random.RandomState(args.seed)
     initial_states = [rng.uniform(-float(ctrl.get('init_scale', .05)),
@@ -227,7 +236,11 @@ def main():
     results = {'checkpoint': args.checkpoint, 'posthoc_state_probe': metrics,
                'cem': {'horizon': args.cem_horizon,
                        'samples': args.cem_samples, 'elites': args.cem_elites,
-                       'iterations': args.cem_iters}, 'controllers': {}}
+                       'iterations': args.cem_iters,
+                       'init_std': args.cem_init_std,
+                       'warm_start_std': args.cem_warm_start_std,
+                       'terminal_cost_multiplier': args.cem_terminal_mult},
+               'controllers': {}}
     for mode in ('oracle_gt_cem', 'encoded_gt_cem'):
         env = make_env(cfg, args.seed)
         rows = []
