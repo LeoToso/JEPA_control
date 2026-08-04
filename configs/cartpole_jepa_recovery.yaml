@@ -1,6 +1,8 @@
 environment:
   name: cartpole
-  frame_skip: 1
+  # Five physics steps = 0.1 s between rendered frames. At 64x64 this makes
+  # velocity and action effects visible; frame_skip=1 was often subpixel.
+  frame_skip: 5
   image_size: 64
   mass_cart: 1.0
   mass_pole: 0.1
@@ -40,9 +42,9 @@ training:
   epochs: 150
   horizon: 3
 
-  # Thirty epochs establish a physically meaningful visual representation.
+  # Forty epochs establish a physically meaningful visual representation.
   # Prediction, predictor-state supervision, and SIGreg are disabled in warmup.
-  warmup_epochs: 30
+  warmup_epochs: 40
   warmup_lambda_state: 1.0
   warmup_lambda_state_pred: 0.0
   warmup_lambda_sigreg: 0.0
@@ -72,6 +74,7 @@ training:
   sigreg_num_points: 9
 
   lambda_anchor: 0.0
+  state_equilibrium_anchor_weight: 0.0
   lambda_enc_anchor: 0.0
   lambda_inv: 0.0
   lambda_action_reconstruction: 0.0
@@ -88,6 +91,7 @@ training:
   lambda_varfloor: 0.0
   lambda_temp: 0.0
   lambda_B_align: 0.0
+  compute_B_diagnostic: false
 
   predictor_window: 1
   num_workers: 2
