@@ -391,17 +391,26 @@ class Trainer:
         else:
             z_0_aug = z_0
         d   = z_0.shape[-1]
+        # Keep online latents for every trajectory position. Prediction targets
+        # may be detached/EMA encoded, but representation-shaping losses (state,
+        # SIGreg, VICReg, dynamics regularizers) must see online encoder outputs
+        # with gradients at all H+1 positions.
+        if is_train:
+            from torch.utils.checkpoint import checkpoint
+            z_rest_online = checkpoint(
+                self.model.encoder, inp_rest, use_reentrant=False).view(B, H, d)
+        else:
+            z_rest_online = self.model.encoder(inp_rest).view(B, H, d)
+        z_all = torch.cat([z_0.unsqueeze(1), z_rest_online], dim=1)
+
         if self.detach_targets:
             with torch.no_grad():
                 _target_enc = (self.model.target_encoder
                                if self.use_target_encoder
                                else self.model.encoder)
-                z_rest = _target_enc(inp_rest).view(B, H, d)
+                z_targets = _target_enc(inp_rest).view(B, H, d)
         else:
-            from torch.utils.checkpoint import checkpoint
-            z_rest = checkpoint(self.model.encoder, inp_rest,
-                                use_reentrant=False).view(B, H, d)
-        z_all = torch.cat([z_0.unsqueeze(1), z_rest], dim=1)  # (B, H+1, d)
+            z_targets = z_rest_online
 
         # z* = encoder(obs_eq) if available (exact), else EMA over near-eq batch samples.
         # Using the exact equilibrium image eliminates the train/eval z* mismatch that
@@ -424,8 +433,6 @@ class Trainer:
                     self._z_star_ema = z0_mean.clone()
                 else:
                     self._z_star_ema = 0.99 * self._z_star_ema + 0.01 * z0_mean
-
-        z_targets = z_all[:, 1:].detach() if self.detach_targets else z_all[:, 1:]
 
         # Multi-step unrolled prediction loss with optional window context.
         # Convention (matches CEM): window = [z_{t-W+1},...,z_t], [u_{t-W+1},...,u_t]
