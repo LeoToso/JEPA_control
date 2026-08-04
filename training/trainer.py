@@ -336,13 +336,14 @@ class Trainer:
     def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
         """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*.
 
-        With frame_stack > 1, the same frame is duplicated to fill all channels,
-        matching the training-time convention (prev=curr at episode start).
+        At equilibrium prev=curr, so the temporal difference is exactly zero.
         """
         import numpy as np
         obs = torch.from_numpy(obs_eq_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
         frame_stack = getattr(self.model.config, 'frame_stack', 1)
-        if frame_stack > 1:
+        if getattr(self.model.config, 'use_frame_diff', False):
+            obs = torch.cat([obs, obs, torch.zeros_like(obs)], dim=1)
+        elif frame_stack > 1:
             obs = obs.repeat(1, frame_stack, 1, 1)   # (1, 3*FS, h, w)
         self._obs_eq = obs.to(self.device)
 
@@ -355,7 +356,9 @@ class Trainer:
         """
         obs = torch.from_numpy(obs_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
         frame_stack = getattr(self.model.config, 'frame_stack', 1)
-        if frame_stack > 1:
+        if getattr(self.model.config, 'use_frame_diff', False):
+            obs = torch.cat([obs, obs, torch.zeros_like(obs)], dim=1)
+        elif frame_stack > 1:
             obs = obs.repeat(1, frame_stack, 1, 1)
         self._obs_v_u = obs.to(self.device)
 
@@ -392,7 +395,7 @@ class Trainer:
 
     # ── Loss computation ──────────────────────────────────────────────────────
     def _compute_loss(self, batch, is_train=True):
-        # batch keys: obs_seq (B,H+1,3,h,w), actions (B,H,1), states (B,H+1,4)
+        # batch keys: obs_seq, prev_obs, actions, states
         obs_seq = batch['obs_seq'].to(self.device, non_blocking=True).float().div_(255.0)  # (B, H+1, 3, h, w)
         actions = batch['actions'].to(self.device, non_blocking=True)   # (B, H, 1)
         B, H1, C, h, w = obs_seq.shape
@@ -405,7 +408,13 @@ class Trainer:
 
         # Build encoder inputs (frame-diff: [prev, curr, diff] stacked channel-wise)
         if self.model.config.use_frame_diff:
-            inp_0 = torch.cat([obs_0, obs_0, torch.zeros_like(obs_0)], dim=1)  # (B,9,h,w)
+            prev_0 = batch.get('prev_obs')
+            if prev_0 is None:
+                prev_0 = obs_0
+            else:
+                prev_0 = prev_0.to(
+                    self.device, non_blocking=True).float().div_(255.0)
+            inp_0 = torch.cat([prev_0, obs_0, obs_0 - prev_0], dim=1)          # (B,9,h,w)
             curr_r = obs_seq[:, 1:].contiguous().view(B * H, C, h, w)
             prev_r = obs_seq[:, :-1].contiguous().view(B * H, C, h, w)
             inp_rest = torch.cat([prev_r, curr_r, curr_r - prev_r], dim=1)     # (B*H,9,h,w)
@@ -417,9 +426,14 @@ class Trainer:
 
         # Augmented z_0 for collapse-prevention losses (varfloor, dynSIG) only.
         if self.aug_noise_std > 0 and is_train:
-            obs_0_n = (obs_0 + self.aug_noise_std * torch.randn_like(obs_0)).clamp(0., 1.)
+            noise_0 = self.aug_noise_std * torch.randn_like(obs_0)
+            obs_0_n = (obs_0 + noise_0).clamp(0., 1.)
             if self.model.config.use_frame_diff:
-                inp_0_n = torch.cat([obs_0_n, obs_0_n, torch.zeros_like(obs_0_n)], dim=1)
+                # Apply the same photometric perturbation to both frames so the
+                # motion channel is not contaminated by artificial noise.
+                prev_0_n = (prev_0 + noise_0).clamp(0., 1.)
+                inp_0_n = torch.cat(
+                    [prev_0_n, obs_0_n, obs_0_n - prev_0_n], dim=1)
             else:
                 inp_0_n = obs_0_n
             z_0_aug = self.model.encoder(inp_0_n)
