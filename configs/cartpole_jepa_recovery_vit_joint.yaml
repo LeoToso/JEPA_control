@@ -56,9 +56,14 @@ training:
   lambda_state_pred: 0.1
   # Joint training needs a strong anti-collapse gradient from initialization.
   lambda_sigreg: 1.0
+  # Bootstrap diversity, then let physical-state supervision shape the latent.
+  # Epoch is zero-based internally: 15 means the change is applied at epoch 16.
+  sigreg_anneal_epoch: 15
+  sigreg_final_weight: 0.1
   lambda_fp: 0.1
 
-  state_loss_weights: [1.0, 1.0, 1.0, 1.0]
+  # Normalized-state order: [x, x_dot, theta, theta_dot].
+  state_loss_weights: [1.0, 1.0, 5.0, 1.0]
   state_encoder_grad_scale: 1.0
   normalize_actions: true
   normalize_states: true
@@ -100,6 +105,9 @@ training:
   predictor_window: 1
   num_workers: 2
   checkpoint_every: 10
+  # Total JEPA loss rewards low-variance easy-to-predict latents; select using
+  # physical-state reconstruction while retaining last/selected outputs.
+  checkpoint_selection_metric: state_loss
   jacobian_every: 10
   rho_max_init: 1.5
   local_state_threshold: 0.05
