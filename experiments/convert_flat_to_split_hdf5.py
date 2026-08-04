@@ -37,27 +37,31 @@ def convert(src_path: str, out_dir: str) -> None:
         states      = f['states'][:]        # (N, 4)
         next_states = f['next_states'][:]   # (N, 4)
         episode_ids = f['episode_ids'][:]   # (N,)
+        trajectory_types = (f['trajectory_types'][:]
+                            if 'trajectory_types' in f
+                            else np.full(len(episode_ids), b'unknown', dtype='S16'))
 
     print(f'[convert] {src_path}')
     print(f'[convert] {len(obs):,} transitions  '
           f'episodes={len(set(episode_ids.tolist()))}  '
           f'obs_shape={obs.shape[1:]}')
 
-    # Always re-split by episode ID (80/10/10).
-    # Stored splits may contain transition indices rather than episode IDs,
-    # which would incorrectly assign every episode to train.
-    all_ep_ids = sorted(set(episode_ids.tolist()))
+    # Split whole episodes within each trajectory type (80/10/10). This avoids
+    # policy-distribution shift while keeping all frames from an episode together.
     rng = np.random.RandomState(42)
-    shuffled = np.array(all_ep_ids)
-    rng.shuffle(shuffled)
-    n = len(shuffled)
-    n_tr  = int(0.8 * n)
-    n_val = int(0.1 * n)
-    splits = {
-        'train': set(shuffled[:n_tr].tolist()),
-        'val':   set(shuffled[n_tr:n_tr + n_val].tolist()),
-        'test':  set(shuffled[n_tr + n_val:].tolist()),
-    }
+    splits = {'train': set(), 'val': set(), 'test': set()}
+    for typ in np.unique(trajectory_types):
+        type_eps = np.unique(episode_ids[trajectory_types == typ])
+        rng.shuffle(type_eps)
+        n = len(type_eps)
+        n_tr = max(1, int(0.8 * n))
+        n_val = max(1, int(0.1 * n)) if n >= 3 else 0
+        n_tr = min(n_tr, n - n_val)
+        splits['train'].update(type_eps[:n_tr].tolist())
+        splits['val'].update(type_eps[n_tr:n_tr + n_val].tolist())
+        splits['test'].update(type_eps[n_tr + n_val:].tolist())
+        label = typ.decode() if isinstance(typ, bytes) else str(typ)
+        print(f'[convert] {label}: train={n_tr} val={n_val} test={n-n_tr-n_val}')
     print(f'[convert] episode split: train={len(splits["train"])}  '
           f'val={len(splits["val"])}  test={len(splits["test"])} episodes')
 
@@ -76,6 +80,7 @@ def convert(src_path: str, out_dir: str) -> None:
                     'obs':     [obs[i]],
                     'actions': [],
                     'states':  [states[i]],
+                    'trajectory_type': trajectory_types[i],
                 }
             ep_dict[eid]['obs'].append(next_obs[i])
             ep_dict[eid]['actions'].append(actions[i])
@@ -94,6 +99,8 @@ def convert(src_path: str, out_dir: str) -> None:
                 g.create_dataset('observations', data=obs_arr, **opts)
                 g.create_dataset('actions',      data=act_arr, **opts)
                 g.create_dataset('states',       data=st_arr,  **opts)
+                typ = ep['trajectory_type']
+                g.attrs['trajectory_type'] = typ.decode() if isinstance(typ, bytes) else str(typ)
                 n_trans += len(ep['actions'])
             fout.attrs['n_episodes']    = len(ep_dict)
             fout.attrs['n_transitions'] = n_trans
