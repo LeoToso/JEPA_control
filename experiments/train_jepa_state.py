@@ -81,6 +81,11 @@ def main():
     epochs      = int(train_cfg.get('epochs', 500))
     horizon     = int(train_cfg.get('horizon', 10))
     frame_stack = int(model_cfg.get('frame_stack', 1))
+    use_frame_diff = bool(model_cfg.get('use_frame_diff', False))
+    if use_frame_diff and frame_stack != 1:
+        raise ValueError(
+            'use_frame_diff=true requires frame_stack=1: the encoder input is '
+            'constructed explicitly as [o_{t-1}, o_t, o_t-o_{t-1}] (9 channels).')
     num_workers = int(train_cfg.get('num_workers', 2))
 
     # When resuming, honour the checkpoint's architecture so yaml changes don't break loading.
