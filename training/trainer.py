@@ -75,6 +75,9 @@ class Trainer:
         self.B_align_min_target_norm = float(
             self.cfg.get('b_align_min_target_norm', 0.05))
         self.B_align_mse_floor = float(self.cfg.get('b_align_mse_floor', 0.01))
+        self.B_align_impulse_weights = [
+            float(v) for v in self.cfg.get(
+                'b_align_impulse_weights', [0.1, 0.3, 0.6])]
         self._B_target: Optional[torch.Tensor] = None   # set via set_B_target()
         self.lambda_anchor     = float(self.cfg.get('lambda_anchor',     0.0))
         self.state_equilibrium_anchor_weight = float(
@@ -295,15 +298,17 @@ class Trainer:
         self.epoch         = 0
 
     def set_B_target(self, B_target: 'np.ndarray') -> None:
-        """Set the physical B_eff vector (d,) used by lambda_B_align.
+        """Set symmetric impulse-response targets with shape (H, latent_dim).
 
-        Precomputed from the frozen encoder's finite difference at z*:
-          B_target = (encoder(obs_after_+du) - encoder(obs_after_-du)) / (2*du/action_scale)
-        This teaches the predictor the correct action sensitivity at z* — both
-        direction AND magnitude — without requiring stabilized training trajectories.
+        Row h is the encoder finite difference after an impulse at step one
+        followed by h zero-action propagation steps. Thus the rows approximate
+        B, AB, A^2B, ... in normalized-action units.
         """
         import numpy as np
-        self._B_target = torch.tensor(B_target, dtype=torch.float32)
+        target = np.asarray(B_target, dtype=np.float32)
+        if target.ndim == 1:
+            target = target[None, :]
+        self._B_target = torch.tensor(target, dtype=torch.float32)
 
     def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
         """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*.
@@ -834,38 +839,68 @@ class Trainer:
                 _zp = self.model.predict(_zw, _uw)
                 info['fp_err'] = torch.norm(_zp.squeeze(0) - self._z_star_ema).item()
 
-        # B-alignment loss: predictor's action sensitivity at z* must match encoder FD.
-        # f(z*, u_test) - f(z*, 0) should equal B_target * u_test (direction + magnitude).
-        # Fixes the near-z* calibration failure where fp_loss suppresses B_magnitude.
+        # Multistep impulse alignment: match the real encoder's symmetric
+        # response to +u/-u at step one followed by zero actions. For W=1 the
+        # targets approximate B, AB, A^2B. Later, visually observable responses
+        # receive larger configurable weights.
         if (is_train and self.lambda_B_align > 0
                 and self.epoch >= self.B_align_start_epoch
                 and self._B_target is not None and self._z_star_ema is not None):
             W = self.predictor_window
-            B_tgt = self._B_target.to(self.device)          # (d,)
+            targets = self._B_target.to(self.device)        # (H_imp, d)
+            H_imp = targets.shape[0]
             act_dim = self.model.action_encoder.action_dim
-            z_star_win = self._z_star_ema.detach().unsqueeze(0).unsqueeze(0).expand(1, W, -1)
-            u_zero_win = torch.zeros(1, W, act_dim, device=self.device)
-            u_test_win = u_zero_win.clone()
-            u_test_norm = 0.2   # normalized = 2N raw
-            u_test_win[0, -1, :] = u_test_norm
-            z_pred_zero = self.model.predict(z_star_win, u_zero_win)
-            z_pred_plus = self.model.predict(z_star_win, u_test_win)
-            B_pred_flat = ((z_pred_plus - z_pred_zero) / u_test_norm).squeeze(0)
+            u_test_norm = 0.2                               # 2 N raw
+            z_plus = self._z_star_ema.detach().unsqueeze(0)
+            z_minus = z_plus.clone()
+            z_hist_plus = [z_plus] * W
+            z_hist_minus = [z_minus] * W
+            u_hist_plus = [torch.zeros(1, act_dim, device=self.device)] * W
+            u_hist_minus = [torch.zeros(1, act_dim, device=self.device)] * W
+            pred_responses = []
+            for h in range(H_imp):
+                up = torch.zeros(1, act_dim, device=self.device)
+                um = torch.zeros(1, act_dim, device=self.device)
+                if h == 0:
+                    up[:, :] = u_test_norm
+                    um[:, :] = -u_test_norm
+                u_hist_plus.append(up)
+                u_hist_minus.append(um)
+                zwp = torch.stack(z_hist_plus[-W:], dim=1)
+                zwm = torch.stack(z_hist_minus[-W:], dim=1)
+                uwp = torch.stack(u_hist_plus[-W:], dim=1)
+                uwm = torch.stack(u_hist_minus[-W:], dim=1)
+                z_plus = self.model.predict(zwp, uwp)
+                z_minus = self.model.predict(zwm, uwm)
+                z_hist_plus.append(z_plus)
+                z_hist_minus.append(z_minus)
+                pred_responses.append(
+                    (z_plus - z_minus).squeeze(0) / (2.0 * u_test_norm))
+            predictions = torch.stack(pred_responses, dim=0)
 
-            # B_target is generated by the still-learning encoder. Early in
-            # training it can be nearly zero, so the former division by
-            # ||B_target||^2 made this loss explode and collapsed training.
-            # Use a floor-normalized vector error, and only define a direction
-            # loss once the target has a numerically meaningful direction.
-            target_mse = B_tgt.pow(2).mean().detach()
-            vec_loss = F.mse_loss(B_pred_flat, B_tgt) / torch.clamp(
-                target_mse, min=self.B_align_mse_floor)
-            if B_tgt.norm().detach() >= self.B_align_min_target_norm:
-                dir_loss = 1.0 - F.cosine_similarity(
-                    B_pred_flat.unsqueeze(0), B_tgt.unsqueeze(0), dim=-1).squeeze()
-            else:
-                dir_loss = B_pred_flat.new_zeros(())
-            B_align_loss = vec_loss + dir_loss
+            raw_weights = self.B_align_impulse_weights
+            if len(raw_weights) != H_imp:
+                raw_weights = [1.0 / H_imp] * H_imp
+            weights = torch.tensor(raw_weights, device=self.device)
+            weights = weights / weights.sum().clamp_min(1e-8)
+            step_losses = []
+            step_cosines = []
+            for h in range(H_imp):
+                target_mse = targets[h].pow(2).mean().detach()
+                vec_loss = F.mse_loss(predictions[h], targets[h]) / torch.clamp(
+                    target_mse, min=self.B_align_mse_floor)
+                if targets[h].norm().detach() >= self.B_align_min_target_norm:
+                    direction = 1.0 - F.cosine_similarity(
+                        predictions[h].unsqueeze(0),
+                        targets[h].unsqueeze(0), dim=-1).squeeze()
+                    cosine = 1.0 - direction
+                else:
+                    direction = predictions[h].new_zeros(())
+                    cosine = predictions[h].new_tensor(float('nan'))
+                step_losses.append(vec_loss + direction)
+                step_cosines.append(cosine)
+            step_losses_t = torch.stack(step_losses)
+            B_align_loss = (weights * step_losses_t).sum()
 
             if self.B_align_ramp_epochs > 0:
                 ramp = min(1.0, (self.epoch - self.B_align_start_epoch + 1)
@@ -876,7 +911,12 @@ class Trainer:
             total_loss = total_loss + effective_weight * B_align_loss
             info['B_align_loss'] = B_align_loss.item()
             info['B_align_weight'] = effective_weight
-            info['B_target_norm'] = B_tgt.norm().item()
+            info['B_target_norm'] = (
+                weights * targets.norm(dim=-1)).sum().item()
+            for h in range(H_imp):
+                info[f'B_impulse_loss_h{h+1}'] = step_losses_t[h].item()
+                if torch.isfinite(step_cosines[h]):
+                    info[f'B_impulse_cos_h{h+1}'] = step_cosines[h].item()
 
         # Mirror antisymmetry loss: encoder(flip(obs)) + encoder(obs) ≈ 2·z*
         # Horizontal flip of the cartpole image negates all state components
@@ -1199,6 +1239,8 @@ class Trainer:
             # Jacobian columns should point in the same direction as B_target).
             if self._B_target is not None:
                 B_tgt_np = self._B_target.cpu().numpy()
+                if B_tgt_np.ndim == 2:
+                    B_tgt_np = B_tgt_np[0]
                 B_eff_1d = B_raw.mean(axis=1) if B_raw.shape[1] > 1 else B_raw[:, 0]
                 denom = (np.linalg.norm(B_eff_1d) * np.linalg.norm(B_tgt_np) + 1e-12)
                 cos_B = float(np.dot(B_eff_1d, B_tgt_np) / denom)
