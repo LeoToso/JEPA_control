@@ -128,10 +128,14 @@ class CEMLatentPlanner:
             dz = z - z_star
             return dz @ self._A.T + u @ self._B.T + z_star + self._c
         else:
-            # Markov (W=1) nonlinear path — kept for backward compatibility.
-            # Model was trained on normalized actions; apply action_scale here.
+            # Markov (W=1) nonlinear path. Accept either the complete JEPAModel
+            # or the historical raw predictor + action_encoder pair.
+            u_norm = u / self._action_scale
             with torch.no_grad():
-                a = self.action_encoder(u / self._action_scale)   # (N, d_a)
+                if hasattr(self.predictor, 'predict'):
+                    return self.predictor.predict(
+                        z.unsqueeze(1), u_norm.unsqueeze(1))
+                a = self.action_encoder(u_norm)                    # (N, d_a)
                 return self.predictor(z, a)                        # (N, d)
 
     def _step_windowed(self, z_win: torch.Tensor, u_win: torch.Tensor) -> torch.Tensor:
