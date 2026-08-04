@@ -1391,7 +1391,7 @@ class Trainer:
         return {k: float(np.mean(v)) for k, v in metrics.items()}
 
     def _eval_checkpoint_diagnostics(self, val_loader, epoch: int) -> None:
-        """Print ρ(A_aug), cos(B), z_ss, R²_pred, and per-state R². Called every checkpoint_every epochs."""
+        """Print ρ(A_aug), z_ss, R²_pred, and per-state R². Called every checkpoint_every epochs."""
         if self._z_star_ema is None:
             return
         was_train = self.model.training
@@ -1531,12 +1531,11 @@ class Trainer:
         detail_str = '  '.join(
             f'{n}:mse={m:.3f},σ={sy:.3f},σhat={sp:.3f}'
             for n, m, sy, sp in zip(names, state_mse, target_std, pred_std))
-        cos_str  = f'{cos_B:+.3f}' if not np.isnan(cos_B) else '  nan'
         z_ss_str = f'{z_ss:.3f}'   if not np.isnan(z_ss)  else '  nan'
         pr2_str  = f'{pred_r2:.3f}' if not np.isnan(pred_r2) else '  nan'
         print(f'[Diag ep{epoch+1:03d}]'
               f'  ρ(A)={rho:.4f}  ||B||={B_norm:.4f}'
-              f'  cos(B)={cos_str}  z_ss={z_ss_str}  R²_pred={pr2_str}'
+              f'  z_ss={z_ss_str}  R²_pred={pr2_str}'
               f'  {r2_str}')
         if self.state_head is not None:
             print(f'[StateDiag ep{epoch+1:03d}]  {detail_str}')
