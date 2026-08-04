@@ -86,6 +86,8 @@ def main():
         frame_skip=frame_skip,
         image_size=int(env_cfg['image_size']),
         action_range=tuple(env_cfg['action_range']),
+        max_abs_x=float(data_cfg.get('max_abs_x', 2.2)),
+        max_abs_theta=float(data_cfg.get('max_abs_theta', 1.2)),
         save_path=str(h5_path),
         seed=args.seed,
     )
