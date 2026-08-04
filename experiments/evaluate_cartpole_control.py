@@ -60,9 +60,12 @@ class DecodedStateLQRPlanner:
         pass
 
     def plan(self, z, z_star):
-        state_norm = self.W @ z + self.b
-        state_phys = state_norm * self.std + self.mean
-        u = np.clip(-self.K @ state_phys, self.action_lb, self.action_ub)
+        # LQR regulates deviations from the upright equilibrium.  Subtract the
+        # decoder's own equilibrium output so constant decoder bias (including
+        # normalization mean and head bias) cannot create a persistent force.
+        state_delta_norm = self.W @ (z - z_star)
+        state_delta_phys = state_delta_norm * self.std
+        u = np.clip(-self.K @ state_delta_phys, self.action_lb, self.action_ub)
         return [np.asarray(u).reshape(-1)], np.stack([z, z])
 
 
