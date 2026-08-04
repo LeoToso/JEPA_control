@@ -73,6 +73,9 @@ training:
   sigreg_all_steps: false
   sigreg_num_slices: 64
   sigreg_num_points: 9
+  # Epps-Pulley is stationary at constant collapse; this std hinge supplies
+  # an anti-collapse gradient from the encoder's residual batch variation.
+  sigreg_variance_floor_weight: 1.0
 
   lambda_anchor: 0.0
   state_equilibrium_anchor_weight: 0.0
