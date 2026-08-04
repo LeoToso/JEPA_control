@@ -7,7 +7,7 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 
 def _compute_lqr_gain():
@@ -31,7 +31,10 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
                      action_low, action_high, init_range,
                      lqr_noise_std, rng,
                      pe_action_amplitude=3.0, pe_flip_prob=0.15,
-                     max_abs_x=2.2, max_abs_theta=1.2):
+                     max_abs_x=2.2, max_abs_theta=1.2,
+                     angle_min=0.1, angle_max=1.0,
+                     angle_x_range=0.1, angle_velocity_range=0.2,
+                     angle_action_noise_std=0.5):
     """Collect up to ``episode_length`` fully observed macro-transitions.
 
     A terminal transition is discarded. This guarantees that every stored
@@ -45,10 +48,22 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
                     hold ±pe_action_amplitude, flip sign with probability
                     pe_flip_prob each step.  Provides persistent excitation
                     with temporal structure for the windowed predictor.
-        'passive' — u=0 near equilibrium: captures natural unstable divergence
-                    so predictor/DMD can recover rho(A)>1 from data.
+        'passive' — u=0 near equilibrium: captures natural unstable divergence.
+        'angle_sweep' — broad signed pole angles with small cart/velocity state
+                        and stabilizing LQR plus action noise.
     """
-    obs, state, _ = env.reset(init_range=init_range)
+    if mode == 'angle_sweep':
+        sign = float(rng.choice([-1.0, 1.0]))
+        theta = sign * float(rng.uniform(angle_min, angle_max))
+        state0 = np.array([
+            rng.uniform(-angle_x_range, angle_x_range),
+            rng.uniform(-angle_velocity_range, angle_velocity_range),
+            theta,
+            rng.uniform(-angle_velocity_range, angle_velocity_range),
+        ], dtype=np.float32)
+        obs, state, _ = env.reset_to_state(state0)
+    else:
+        obs, state, _ = env.reset(init_range=init_range)
     obs_list, state_list, action_list = [], [], []
     next_obs_list, next_state_list = [], []
 
@@ -69,6 +84,11 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
             u = current_prbs
         elif mode == 'passive':
             u = 0.0
+        elif mode == 'angle_sweep':
+            u_lqr = float(np.clip((lqr_gain @ state).item(), action_low, action_high))
+            u = float(np.clip(
+                u_lqr + rng.normal(0.0, angle_action_noise_std),
+                action_low, action_high))
         else:
             raise ValueError(f'Unknown mode: {mode}')
 
@@ -100,7 +120,10 @@ def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
                       lqr_noise_std, rng, ep_id_offset=0,
                       pe_action_amplitude=3.0, pe_flip_prob=0.15,
                       max_abs_x=2.2, max_abs_theta=1.2,
-                      trajectory_type=None):
+                      trajectory_type=None,
+                      angle_min=0.1, angle_max=1.0,
+                      angle_x_range=0.1, angle_velocity_range=0.2,
+                      angle_action_noise_std=0.5):
     """Collect n_episodes episodes of episode_length steps each.
 
     Returns flat arrays with episode_ids so the windowed DataLoader can
@@ -117,6 +140,10 @@ def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
             pe_action_amplitude=pe_action_amplitude,
             pe_flip_prob=pe_flip_prob,
             max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            angle_min=angle_min, angle_max=angle_max,
+            angle_x_range=angle_x_range,
+            angle_velocity_range=angle_velocity_range,
+            angle_action_noise_std=angle_action_noise_std,
         )
         if ep is None:
             continue
@@ -162,6 +189,11 @@ def generate_dataset(
     # Passive divergence: u=0 near eq → pole falls, teaches rho(A)>1 from data
     n_passive_episodes=0, passive_ep_len=50,
     passive_init_range=0.05,
+    # Broad-angle episodes: explicitly make pole orientation observable.
+    n_angle_episodes=0, angle_ep_len=12,
+    angle_min=0.1, angle_max=1.0,
+    angle_x_range=0.1, angle_velocity_range=0.2,
+    angle_action_noise_std=0.5,
     # Train/val/test split
     train_frac=0.8, val_frac=0.1,
     # Environment
@@ -180,7 +212,8 @@ def generate_dataset(
     """
     from envs.cartpole_visual import ContinuousCartpoleVisual
     rng = np.random.RandomState(seed)
-    needs_lqr = (n_lqr_episodes > 0 or n_equilibrium > 0 or n_pe_episodes > 0)
+    needs_lqr = (n_lqr_episodes > 0 or n_equilibrium > 0
+                 or n_pe_episodes > 0 or n_angle_episodes > 0)
     lqr_gain  = _compute_lqr_gain() if needs_lqr else None
     env = ContinuousCartpoleVisual(frame_skip=frame_skip, image_size=image_size,
                                    action_range=(-10.0, 10.0),
@@ -267,6 +300,25 @@ def generate_dataset(
         all_segments.append(seg)
         next_ep_id += n_passive_episodes
 
+    # ── Broad-angle supervised trajectories ──────────────────────────────
+    if n_angle_episodes > 0:
+        n_trans = n_angle_episodes * angle_ep_len
+        print(f'[data] Angle:   {n_angle_episodes} ep × {angle_ep_len} steps'
+              f' = up to {n_trans:,} transitions  '
+              f'(|theta0|=[{angle_min},{angle_max}])')
+        seg = _collect_episodes(
+            env, n_angle_episodes, angle_ep_len, 'angle_sweep', lqr_gain,
+            action_low, action_high, init_range=0.0,
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='angle_sweep',
+            angle_min=angle_min, angle_max=angle_max,
+            angle_x_range=angle_x_range,
+            angle_velocity_range=angle_velocity_range,
+            angle_action_noise_std=angle_action_noise_std)
+        all_segments.append(seg)
+        next_ep_id += n_angle_episodes
+
     env.close()
 
     if not all_segments:
@@ -276,22 +328,39 @@ def generate_dataset(
             for key in all_segments[0]}
 
     N = data['obs'].shape[0]
-    # Stratify by trajectory type and split whole episodes. This keeps every
-    # policy family represented in train/val/test without trajectory leakage.
+    # Split whole episodes while balancing the signed angle distribution
+    # inside every trajectory family. Sorting by mean theta and assigning each
+    # block across train/val/test prevents the sign shifts seen in random splits.
     ep_ids    = data['episode_ids']
     ep_types  = data['trajectory_types']
     split_ep_ids = {'train': [], 'val': [], 'test': []}
     unique_types = np.unique(ep_types)
+    val_stride = max(2, int(round(1.0 / max(val_frac, 1e-6))))
+    test_frac = max(0.0, 1.0 - train_frac - val_frac)
+    test_stride = max(2, int(round(1.0 / max(test_frac, 1e-6))))
     for typ in unique_types:
         type_eps = np.unique(ep_ids[ep_types == typ])
-        rng.shuffle(type_eps)
-        n_typ = len(type_eps)
-        n_typ_tr = max(1, int(n_typ * train_frac))
-        n_typ_val = max(1, int(n_typ * val_frac)) if n_typ >= 3 else 0
-        n_typ_tr = min(n_typ_tr, n_typ - n_typ_val)
-        split_ep_ids['train'].extend(type_eps[:n_typ_tr].tolist())
-        split_ep_ids['val'].extend(type_eps[n_typ_tr:n_typ_tr + n_typ_val].tolist())
-        split_ep_ids['test'].extend(type_eps[n_typ_tr + n_typ_val:].tolist())
+        rng.shuffle(type_eps)  # random tie-breaking before stable angle sort
+        angle_score = {
+            int(ep): float(data['states'][ep_ids == ep, 2].mean())
+            for ep in type_eps
+        }
+        type_eps = np.array(sorted(type_eps, key=lambda ep: angle_score[int(ep)]))
+        for rank, ep in enumerate(type_eps):
+            # Offset test from validation so both span negative-to-positive theta.
+            if len(type_eps) >= 3 and rank % val_stride == 0:
+                split_ep_ids['val'].append(int(ep))
+            elif len(type_eps) >= 3 and rank % test_stride == test_stride // 2:
+                split_ep_ids['test'].append(int(ep))
+            else:
+                split_ep_ids['train'].append(int(ep))
+        # Ensure every sufficiently large family appears in all splits.
+        if len(type_eps) >= 3:
+            for split_name in ('val', 'test'):
+                if not any(ep in set(type_eps.tolist())
+                           for ep in split_ep_ids[split_name]):
+                    split_ep_ids[split_name].append(
+                        split_ep_ids['train'].pop())
     ordered_eps = (split_ep_ids['train'] + split_ep_ids['val'] + split_ep_ids['test'])
     ep_order  = {ep: i for i, ep in enumerate(ordered_eps)}
     sort_idx  = np.argsort([ep_order[e] for e in ep_ids], kind='stable')
@@ -670,7 +739,9 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               action_scale: float = 1.0,
                               target_image_size: int = None,
                               preload_obs: bool = True,
-                              data_fraction: float = 1.0) -> dict:
+                              data_fraction: float = 1.0,
+                              balanced_sampling: bool = False,
+                              angle_bin_edges=(0.05, 0.2, 0.6)) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
     _PRELOAD_LIMIT_BYTES = 8 * 1024 ** 3  # 8 GB
     loaders = {}
@@ -694,8 +765,33 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
             data_fraction=data_fraction)
         if len(ds) == 0:
             continue
+        sampler = None
+        if split == 'train' and balanced_sampling:
+            starts = ds.valid_starts
+            theta = ds.states[starts, 2]
+            magnitude_bin = np.digitize(np.abs(theta), angle_bin_edges)
+            sign_bin = (theta >= 0).astype(np.int64)
+            types = ds.trajectory_types[starts]
+            groups = [(str(typ), int(sign), int(mag))
+                      for typ, sign, mag in zip(types, sign_bin, magnitude_bin)]
+            group_counts = {}
+            bins_per_type = {}
+            for group in groups:
+                group_counts[group] = group_counts.get(group, 0) + 1
+                bins_per_type.setdefault(group[0], set()).add(group[1:])
+            weights = np.array([
+                1.0 / (len(bins_per_type[group[0]]) * group_counts[group])
+                for group in groups
+            ], dtype=np.float64)
+            sampler = WeightedRandomSampler(
+                torch.from_numpy(weights), num_samples=len(ds), replacement=True)
+            summary = ', '.join(
+                f'{typ}:{sum(str(g[0]) == str(typ) for g in groups)}'
+                for typ in sorted(set(types.tolist())))
+            print(f'[dataset:train] balanced sampler  {summary}')
         loaders[split] = DataLoader(
-            ds, batch_size=batch_size, shuffle=(split == 'train'),
+            ds, batch_size=batch_size,
+            shuffle=(split == 'train' and sampler is None), sampler=sampler,
             num_workers=num_workers, pin_memory=(num_workers > 0),
             drop_last=(split == 'train'),
             persistent_workers=(num_workers > 0),
