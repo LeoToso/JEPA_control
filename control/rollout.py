@@ -49,10 +49,10 @@ def rollout_latent_mpc(encoder, mpc, env, x0, T=200,
             all_obs.append(obs.copy())
         obs_t = torch.from_numpy(obs).float().permute(2, 0, 1)[None].to(device) / 255.0
         prev = prev_obs_t if prev_obs_t is not None else obs_t
-        if frame_stack > 1:
-            enc_input = torch.cat([prev, obs_t], dim=1)
-        elif use_frame_diff:
+        if use_frame_diff:
             enc_input = torch.cat([prev, obs_t, obs_t - prev], dim=1)
+        elif frame_stack > 1:
+            enc_input = torch.cat([prev, obs_t], dim=1)
         else:
             enc_input = obs_t
         with torch.no_grad():
