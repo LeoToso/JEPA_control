@@ -149,6 +149,9 @@ def main():
         balanced_sampling=bool(train_cfg.get('balanced_sampling', False)),
         angle_bin_edges=tuple(
             train_cfg.get('angle_bin_edges', [0.05, 0.2, 0.6])),
+        trajectory_type_sampling_weights=train_cfg.get(
+            'trajectory_type_sampling_weights'),
+        sampling_audit=bool(train_cfg.get('sampling_audit', False)),
         local_sampling_fraction=float(
             train_cfg.get('local_sampling_fraction', 0.0)),
         local_sampling_region=tuple(
@@ -214,12 +217,15 @@ def main():
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     use_fd = model_cfg.get('use_frame_diff', False)
     lambda_B_align = float(train_cfg.get('lambda_B_align', 0.0))
+    predictor_depth = (model_cfg['predictor_n_layers']
+                       if model_cfg['predictor_type'] == 'mlp'
+                       else model_cfg['predictor_depth'])
     print(f'[model] JEPA  {n_params:,} params  '
           f'latent={model_cfg["latent_dim"]}  '
           f'encoder={model_cfg["encoder_type"]}(depth={model_cfg["vit_depth"]} '
           f'embed={model_cfg["vit_embed_dim"]} fd={use_fd})  '
           f'predictor={model_cfg["predictor_type"]}(W={model_cfg["predictor_window"]} '
-          f'depth={model_cfg["predictor_depth"]})  '
+          f'depth={predictor_depth})  '
           f'horizon={horizon}  '
           f'λ_pred={train_cfg.get("lambda_pred",1.0)}  '
           f'λ_state={train_cfg.get("lambda_state",0.0)}  '

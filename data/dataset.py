@@ -118,7 +118,8 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
 def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
                       action_low, action_high, init_range,
                       lqr_noise_std, rng, ep_id_offset=0,
-                      pe_action_amplitude=3.0, pe_flip_prob=0.15,
+                      pe_action_amplitude=3.0, pe_action_amplitudes=None,
+                      pe_flip_prob=0.15,
                       max_abs_x=2.2, max_abs_theta=1.2,
                       trajectory_type=None,
                       angle_min=0.1, angle_max=1.0,
@@ -133,11 +134,15 @@ def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
     next_obs_l, next_states_l, ep_ids_l, type_l = [], [], [], []
 
     for ep_idx in range(n_episodes):
+        episode_pe_amplitude = pe_action_amplitude
+        if pe_action_amplitudes:
+            episode_pe_amplitude = float(
+                pe_action_amplitudes[ep_idx % len(pe_action_amplitudes)])
         ep = _collect_episode(
             env, episode_length, mode, lqr_gain,
             action_low, action_high, init_range,
             lqr_noise_std, rng,
-            pe_action_amplitude=pe_action_amplitude,
+            pe_action_amplitude=episode_pe_amplitude,
             pe_flip_prob=pe_flip_prob,
             max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
             angle_min=angle_min, angle_max=angle_max,
@@ -185,7 +190,8 @@ def generate_dataset(
     eq_init_range=0.002, eq_noise_std=0.001,
     # PRBS persistent excitation near equilibrium
     n_pe_episodes=0, pe_ep_len=40,
-    pe_init_range=0.05, pe_action_amplitude=3.0, pe_flip_prob=0.15,
+    pe_init_range=0.05, pe_action_amplitude=3.0,
+    pe_action_amplitudes=None, pe_flip_prob=0.15,
     # Passive divergence: u=0 near eq → pole falls, teaches rho(A)>1 from data
     n_passive_episodes=0, passive_ep_len=50,
     passive_init_range=0.05,
@@ -273,13 +279,16 @@ def generate_dataset(
         n_trans = n_pe_episodes * pe_ep_len
         print(f'[data] PRBS:    {n_pe_episodes} ep × {pe_ep_len} steps'
               f' = {n_trans:,} transitions  '
-              f'(init_range={pe_init_range}, amp={pe_action_amplitude},'
+              f'(init_range={pe_init_range}, '
+              f'amp={pe_action_amplitudes or pe_action_amplitude},'
               f' p_flip={pe_flip_prob})')
         seg = _collect_episodes(
             env, n_pe_episodes, pe_ep_len, 'prbs', lqr_gain,
             action_low, action_high, init_range=pe_init_range,
             lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
-            pe_action_amplitude=pe_action_amplitude, pe_flip_prob=pe_flip_prob,
+            pe_action_amplitude=pe_action_amplitude,
+            pe_action_amplitudes=pe_action_amplitudes,
+            pe_flip_prob=pe_flip_prob,
             max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
             trajectory_type='prbs')
         all_segments.append(seg)
@@ -746,6 +755,8 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                               data_fraction: float = 1.0,
                               balanced_sampling: bool = False,
                               angle_bin_edges=(0.05, 0.2, 0.6),
+                              trajectory_type_sampling_weights=None,
+                              sampling_audit: bool = False,
                               local_sampling_fraction: float = 0.0,
                               local_sampling_region=(0.10, 0.25, 0.05, 0.50)) -> dict:
     """Build DataLoaders from a discrete CartPole HDF5 dataset directory."""
@@ -796,6 +807,21 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                     for typ in sorted(set(types.tolist())))
                 print(f'[dataset:train] balanced sampler  {summary}')
 
+            if trajectory_type_sampling_weights:
+                types = ds.trajectory_types[starts]
+                requested = {
+                    str(key): max(0.0, float(value))
+                    for key, value in trajectory_type_sampling_weights.items()
+                }
+                missing = sorted(set(requested) - set(map(str, np.unique(types))))
+                if missing:
+                    warnings.warn(f'Trajectory sampling weights contain absent types: {missing}')
+                multipliers = np.array(
+                    [requested.get(str(typ), 0.0) for typ in types], dtype=np.float64)
+                if not np.any(multipliers > 0):
+                    raise ValueError('trajectory_type_sampling_weights assigns zero mass to all samples')
+                weights *= multipliers
+
             if local_sampling_fraction > 0:
                 frac = float(np.clip(local_sampling_fraction, 0.0, 0.99))
                 region = np.asarray(local_sampling_region, dtype=np.float64)
@@ -811,6 +837,33 @@ def make_discrete_dataloaders(dataset_dir: str, batch_size: int = 256,
                           f'region={region.tolist()}')
                 else:
                     warnings.warn('Local sampling requested but local/nonlocal split is empty')
+            if sampling_audit:
+                total = weights.sum()
+                probs = weights / total
+                types = ds.trajectory_types[starts]
+                states = ds.states[starts]
+                actions = np.asarray(ds.actions[starts]).reshape(len(starts), -1)[:, 0]
+                region = np.asarray(local_sampling_region, dtype=np.float64)
+                local = (np.abs(states) <= region[None]).all(axis=1)
+                print('[sampler audit] type       raw     mass    local   |u|<0.05  mean|u|')
+                for typ in sorted(map(str, np.unique(types))):
+                    mask = np.asarray([str(value) == typ for value in types])
+                    type_mass = probs[mask].sum()
+                    conditional = probs[mask] / max(type_mass, 1e-12)
+                    print(f'[sampler audit] {typ:<10} {mask.mean():6.1%}  '
+                          f'{type_mass:6.1%}  '
+                          f'{conditional[local[mask]].sum():6.1%}  '
+                          f'{conditional[np.abs(actions[mask]) < 0.05].sum():8.1%}  '
+                          f'{np.sum(conditional * np.abs(actions[mask])):7.3f}')
+                action_edges = (0.05, 0.5, 1.5, 3.5)
+                action_bins = np.digitize(np.abs(actions), action_edges)
+                labels = ('<0.05', '0.05-0.5', '0.5-1.5', '1.5-3.5', '>=3.5')
+                action_summary = ', '.join(
+                    f'{label}:{probs[action_bins == idx].sum():.1%}'
+                    for idx, label in enumerate(labels))
+                ess = total ** 2 / np.square(weights).sum()
+                print(f'[sampler audit] local={probs[local].sum():.1%}  '
+                      f'ESS={ess:.0f}/{len(weights)}  action_mass=({action_summary})')
             sampler = WeightedRandomSampler(
                 torch.from_numpy(weights), num_samples=len(ds), replacement=True)
         loaders[split] = DataLoader(

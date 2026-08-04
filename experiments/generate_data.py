@@ -77,6 +77,7 @@ def main():
         pe_ep_len=int(data_cfg.get('pe_ep_len', 40)),
         pe_init_range=float(data_cfg.get('pe_init_range', 0.05)),
         pe_action_amplitude=float(data_cfg.get('pe_action_amplitude', 3.0)),
+        pe_action_amplitudes=data_cfg.get('pe_action_amplitudes'),
         pe_flip_prob=float(data_cfg.get('pe_flip_prob', 0.15)),
         n_passive_episodes=int(data_cfg.get('n_passive_episodes', 0)),
         passive_ep_len=int(data_cfg.get('passive_ep_len', 50)),

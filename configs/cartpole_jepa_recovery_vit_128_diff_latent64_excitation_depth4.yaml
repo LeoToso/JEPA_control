@@ -1,0 +1,179 @@
+environment:
+  name: cartpole
+  frame_skip: 5
+  image_size: 128
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  latent_dim: 64
+  action_dim: 1
+  action_latent_dim: 1
+  action_encoder: none
+  encoder_type: vit
+  image_size: 128
+  patch_size: 8
+  frame_stack: 1
+  use_frame_diff: true
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  vit_mlp_ratio: 2.0
+  predictor_type: mlp
+  predictor_window: 1
+  predictor_hidden_dim: 128
+  # Four hidden layers; the final latent output layer is added separately.
+  predictor_n_layers: 4
+  predictor_activation: relu
+  predictor_embed_dim: 128
+  predictor_depth: 4
+  predictor_num_heads: 4
+  predictor_mlp_ratio: 4.0
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  batch_size: 64
+  epochs: 200
+  horizon: 3
+  warmup_epochs: 0
+  warmup_lambda_state: 1.0
+  warmup_lambda_state_pred: 0.0
+  warmup_lambda_sigreg: 0.01
+  freeze_encoder_epochs: 0
+  encoder_lr_unfreeze_mult: 0.1
+
+  lambda_pred: 1.0
+  lambda_state: 1.0
+  lambda_state_pred: 1.0
+  lambda_state_local: 0.0
+  lambda_state_local_delta: 0.0
+  lambda_sigreg: 1.0
+  sigreg_anneal_epoch: 15
+  sigreg_final_weight: 0.1
+  lambda_fp: 0.0
+  compute_fp_diagnostic: false
+  lambda_B_align: 0.0
+  compute_B_diagnostic: false
+
+  state_loss_weights: [1.0, 1.0, 2.0, 1.0]
+  state_encoder_grad_scale: 1.0
+  normalize_actions: true
+  normalize_states: true
+
+  # First balance signed-angle bins inside every trajectory family. These
+  # multipliers then set the desired family mass. Open-loop excitation gets
+  # 75%; LQR-derived families get 25% in total.
+  balanced_sampling: true
+  angle_bin_edges: [0.05, 0.2, 0.6]
+  trajectory_type_sampling_weights:
+    angle_sweep: 0.10
+    eq_lqr: 0.05
+    lqr: 0.10
+    passive: 0.25
+    prbs: 0.30
+    random: 0.20
+  sampling_audit: true
+  local_sampling_fraction: 0.0
+  local_sampling_region: [0.10, 0.25, 0.05, 0.50]
+
+  detach_targets: true
+  use_target_encoder: true
+  target_encoder_momentum: 0.99
+  aug_noise_std: 0.0
+  predictor_lr_mult: 1.0
+  sigreg_sampling: random_step
+  sigreg_all_steps: false
+  sigreg_num_slices: 64
+  sigreg_num_points: 9
+  sigreg_variance_floor_weight: 1.0
+
+  lambda_anchor: 0.0
+  state_equilibrium_anchor_weight: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0
+  lambda_action_reconstruction: 0.0
+  lambda_pred_vicreg: 0.0
+  use_vicreg: false
+  lambda_mirror: 0.0
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_spec_eig: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_varfloor: 0.0
+  lambda_temp: 0.0
+
+  predictor_window: 1
+  num_workers: 2
+  checkpoint_every: 10
+  checkpoint_selection_metric: state_loss
+  jacobian_every: 10
+  rho_max_init: 1.5
+  local_state_threshold: 0.05
+  unstable_eta: 0.05
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+cem:
+  horizon: 15
+  chunk_size: 1
+  n_samples: 2000
+  n_elites: 100
+  n_iter: 15
+  init_std: 1.0
+  n_trials: 50
+
+data:
+  max_abs_x: 2.2
+  max_abs_theta: 1.2
+  train_frac: 0.8
+  val_frac: 0.1
+
+  # More unique open-loop windows; the sampler weights above, rather than raw
+  # episode lengths, determine their optimizer probability mass.
+  n_random_episodes: 200
+  random_ep_len: 100
+  random_init_range: 0.20
+  n_lqr_episodes: 20
+  lqr_ep_len: 100
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.50
+  n_equilibrium: 250
+  eq_ep_len: 50
+  eq_init_range: 0.002
+  eq_noise_std: 0.001
+  n_pe_episodes: 300
+  pe_ep_len: 30
+  pe_init_range: 0.05
+  # Cycle through finite amplitudes so similar local states are paired with
+  # several independent actions, instead of one fixed PRBS magnitude.
+  pe_action_amplitudes: [0.5, 1.0, 3.0]
+  pe_flip_prob: 0.20
+  n_passive_episodes: 300
+  passive_ep_len: 30
+  passive_init_range: 0.05
+  n_angle_episodes: 160
+  angle_ep_len: 12
+  angle_min: 0.10
+  angle_max: 1.00
+  angle_x_range: 0.10
+  angle_velocity_range: 0.20
+  angle_action_noise_std: 1.0
