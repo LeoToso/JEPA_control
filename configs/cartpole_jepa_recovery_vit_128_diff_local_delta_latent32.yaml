@@ -1,0 +1,207 @@
+environment:
+  name: cartpole
+  # Five physics steps = 0.1 s between rendered frames. At 128x128 this makes
+  # velocity and action effects visible; frame_skip=1 was often subpixel.
+  frame_skip: 5
+  image_size: 128
+  mass_cart: 1.0
+  mass_pole: 0.1
+  pole_length: 0.5
+  gravity: 9.8
+  dt: 0.02
+  action_range: [-10, 10]
+
+model:
+  # Overcomplete latent-capacity comparison against latent dimensions 4 and 8.
+  latent_dim: 32
+  action_dim: 1
+  action_latent_dim: 1
+  action_encoder: none
+  encoder_type: vit
+  image_size: 128
+  # Patch 8 at 128x128 retains the previous 16x16 token grid while each
+  # patch receives four times as many image pixels.
+  patch_size: 8
+  # Exactly nine channels: [o_{t-1}, o_t, o_t-o_{t-1}]. The dataset returns
+  # raw RGB frames and the trainer constructs this input consistently.
+  frame_stack: 1
+  use_frame_diff: true
+  vit_embed_dim: 128
+  vit_depth: 4
+  vit_num_heads: 4
+  vit_mlp_ratio: 2.0
+  predictor_type: mlp
+  predictor_window: 1
+  predictor_hidden_dim: 128
+  predictor_n_layers: 2
+  predictor_activation: relu
+  predictor_embed_dim: 128
+  predictor_depth: 3
+  predictor_num_heads: 4
+  predictor_mlp_ratio: 4.0
+
+training:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  # Token count matches the 64x64/patch-4 run, but source images use 4x RAM.
+  batch_size: 64
+  epochs: 150
+  horizon: 3
+
+  # Joint-from-scratch ablation: optimize the complete core JEPA objective
+  # from epoch 1, without encoder warm-up or subsequent freezing.
+  warmup_epochs: 0
+  warmup_lambda_state: 1.0
+  warmup_lambda_state_pred: 0.0
+  warmup_lambda_sigreg: 0.01
+  freeze_encoder_epochs: 0
+  encoder_lr_unfreeze_mult: 0.1
+
+  lambda_pred: 5.0
+  lambda_state: 1.0
+  lambda_state_pred: 0.0
+  # Replace absolute local decoding with the exact equilibrium-centered
+  # deviation used by decoded LQR: (D(z)-D(z*)) * state_std.
+  lambda_state_local: 0.0
+  lambda_state_local_delta: 2.0
+  local_delta_state_scales: [0.02, 0.05, 0.01, 0.05]
+  local_delta_state_region: [0.10, 0.25, 0.05, 0.50]
+  local_state_scales: [0.05, 0.10, 0.02, 0.10]
+  local_state_region: [0.15, 0.50, 0.15, 1.00]
+  local_state_anchor_weight: 0.0
+  # Joint training needs a strong anti-collapse gradient from initialization.
+  lambda_sigreg: 1.0
+  # Bootstrap diversity, then let physical-state supervision shape the latent.
+  # Epoch is zero-based internally: 15 means the change is applied at epoch 16.
+  sigreg_anneal_epoch: 15
+  sigreg_final_weight: 0.1
+  lambda_fp: 0.1
+
+  # Normalized-state order: [x, x_dot, theta, theta_dot].
+  state_loss_weights: [1.0, 1.0, 2.0, 1.0]
+  state_encoder_grad_scale: 1.0
+  normalize_actions: true
+  normalize_states: true
+  # Equal trajectory-family mass, then balance signed theta-magnitude bins
+  # within each family. This corrects the LQR/near-zero-angle dominance.
+  balanced_sampling: true
+  angle_bin_edges: [0.05, 0.2, 0.6]
+  # Preserve broad-angle balancing while forcing half of sampled window starts
+  # into the tight physical region where decoded LQR operates.
+  local_sampling_fraction: 0.50
+  local_sampling_region: [0.10, 0.25, 0.05, 0.50]
+
+  detach_targets: true
+  use_target_encoder: true
+  target_encoder_momentum: 0.99
+  aug_noise_std: 0.0
+  predictor_lr_mult: 1.0
+
+  sigreg_sampling: random_step
+  sigreg_all_steps: false
+  sigreg_num_slices: 64
+  sigreg_num_points: 9
+  # Epps-Pulley is stationary at constant collapse; this std hinge supplies
+  # an anti-collapse gradient from the encoder's residual batch variation.
+  sigreg_variance_floor_weight: 1.0
+
+  lambda_anchor: 0.0
+  state_equilibrium_anchor_weight: 0.0
+  lambda_enc_anchor: 0.0
+  lambda_inv: 0.0
+  lambda_action_reconstruction: 0.0
+  lambda_pred_vicreg: 0.0
+  use_vicreg: false
+  lambda_mirror: 0.0
+  lambda_spec: 0.0
+  lambda_spec_marginal: 0.0
+  lambda_spec_eig: 0.0
+  lambda_PBH: 0.0
+  lambda_local: 0.0
+  lambda_unstable: 0.0
+  lambda_dynSIG: 0.0
+  lambda_varfloor: 0.0
+  lambda_temp: 0.0
+  # Disabled for this clean state-estimation run. No impulse target rollouts
+  # are generated and no B-alignment term contributes to the objective.
+  lambda_B_align: 0.0
+  compute_B_diagnostic: false
+  b_target_update_every: 1
+  b_target_n_states: 24
+  b_target_force_levels: [1.0, 2.0, 3.0]
+  b_target_impulse_horizon: 3
+  b_target_ema: 0.8
+  # Approximate [B, AB, A^2B]. Later steps carry more weight because their
+  # image displacement is observable at 64x64.
+  b_align_impulse_weights: [0.1, 0.3, 0.6]
+  # Core JEPA losses still start at epoch 1. Delay only B alignment until
+  # the encoder has a meaningful visual action-response direction, then ramp.
+  b_align_start_epoch: 15
+  b_align_ramp_epochs: 10
+  b_align_min_target_norm: 0.05
+  b_align_mse_floor: 0.01
+
+  predictor_window: 1
+  num_workers: 2
+  checkpoint_every: 10
+  # Total JEPA loss rewards low-variance easy-to-predict latents; select using
+  # physical-state reconstruction while retaining last/selected outputs.
+  checkpoint_selection_metric: local_delta_state_loss
+  jacobian_every: 10
+  rho_max_init: 1.5
+  local_state_threshold: 0.05
+  unstable_eta: 0.05
+
+probes:
+  epsilon_lambda: 0.05
+  delta_tol: 0.05
+  n_trials_control: 30
+  n_trials_grad_mpc: 10
+  T_rollout: 200
+
+control:
+  R_lqr: 0.01
+  init_scale: 0.05
+  stabilization_threshold: 0.1
+  settling_threshold: 0.05
+
+cem:
+  horizon: 15
+  chunk_size: 1
+  n_samples: 2000
+  n_elites: 100
+  n_iter: 15
+  init_std: 1.0
+  n_trials: 50
+
+data:
+  # Keep all supervised states inside the observable rendering region.
+  max_abs_x: 2.2
+  max_abs_theta: 1.2
+  train_frac: 0.8
+  val_frac: 0.1
+  n_random_episodes: 100
+  random_ep_len: 200
+  random_init_range: 1.0
+  # Keep near-equilibrium control data below half of total windows.
+  n_lqr_episodes: 40
+  lqr_ep_len: 100
+  lqr_init_range: 0.10
+  lqr_noise_std: 0.0
+  n_equilibrium: 500
+  n_pe_episodes: 100
+  pe_ep_len: 40
+  pe_init_range: 0.05
+  pe_action_amplitude: 3.0
+  pe_flip_prob: 0.15
+  n_passive_episodes: 200
+  passive_ep_len: 50
+  passive_init_range: 0.05
+  # Explicit broad signed orientations for visual angle identification.
+  n_angle_episodes: 240
+  angle_ep_len: 12
+  angle_min: 0.10
+  angle_max: 1.00
+  angle_x_range: 0.10
+  angle_velocity_range: 0.20
+  angle_action_noise_std: 0.50
