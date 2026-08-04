@@ -12,7 +12,8 @@ environment:
   action_range: [-10, 10]
 
 model:
-  # Minimal state-sized latent for the four-dimensional CartPole state.\n  latent_dim: 4
+  # Minimal state-sized latent for the four-dimensional CartPole state.
+  latent_dim: 4
   action_dim: 1
   action_latent_dim: 1
   action_encoder: none
