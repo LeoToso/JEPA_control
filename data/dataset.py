@@ -30,11 +30,13 @@ def _compute_lqr_gain():
 def _collect_episode(env, episode_length, mode, lqr_gain,
                      action_low, action_high, init_range,
                      lqr_noise_std, rng,
-                     pe_action_amplitude=3.0, pe_flip_prob=0.15):
-    """Collect exactly one episode of episode_length consecutive steps.
+                     pe_action_amplitude=3.0, pe_flip_prob=0.15,
+                     max_abs_x=2.2, max_abs_theta=1.2):
+    """Collect up to ``episode_length`` fully observed macro-transitions.
 
-    No mid-episode resets — the done signal from gym is ignored so trajectories
-    show the pole falling freely past the gym threshold (12° / 0.21 rad).
+    A terminal transition is discarded. This guarantees that every stored
+    transition contains exactly ``frame_skip`` physics steps and prevents
+    assigning off-screen or otherwise ambiguous images to extreme states.
 
     mode:
         'random'  — uniform random actions over full action range
@@ -70,7 +72,11 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
         else:
             raise ValueError(f'Unknown mode: {mode}')
 
-        next_obs, next_state, _, _, _ = env.step(u)
+        next_obs, next_state, _, done, _ = env.step(u)
+        observable = (abs(float(next_state[0])) <= max_abs_x
+                      and abs(float(next_state[2])) <= max_abs_theta)
+        if done or not observable:
+            break
         obs_list.append(obs.copy())
         state_list.append(state.copy())
         action_list.append(np.array([u], dtype=np.float32))
@@ -78,6 +84,8 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
         next_state_list.append(next_state.copy())
         obs, state = next_obs, next_state
 
+    if not obs_list:
+        return None
     return {
         'obs':         np.stack(obs_list).astype(np.uint8),
         'states':      np.stack(state_list).astype(np.float32),
@@ -90,14 +98,16 @@ def _collect_episode(env, episode_length, mode, lqr_gain,
 def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
                       action_low, action_high, init_range,
                       lqr_noise_std, rng, ep_id_offset=0,
-                      pe_action_amplitude=3.0, pe_flip_prob=0.15):
+                      pe_action_amplitude=3.0, pe_flip_prob=0.15,
+                      max_abs_x=2.2, max_abs_theta=1.2,
+                      trajectory_type=None):
     """Collect n_episodes episodes of episode_length steps each.
 
     Returns flat arrays with episode_ids so the windowed DataLoader can
     extract horizon+1 windows without crossing episode boundaries.
     """
     obs_l, states_l, actions_l = [], [], []
-    next_obs_l, next_states_l, ep_ids_l = [], [], []
+    next_obs_l, next_states_l, ep_ids_l, type_l = [], [], [], []
 
     for ep_idx in range(n_episodes):
         ep = _collect_episode(
@@ -106,14 +116,24 @@ def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
             lqr_noise_std, rng,
             pe_action_amplitude=pe_action_amplitude,
             pe_flip_prob=pe_flip_prob,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
         )
+        if ep is None:
+            continue
+        n_ep = len(ep['actions'])
+        if n_ep == 0:
+            continue
         obs_l.append(ep['obs'])
         states_l.append(ep['states'])
         actions_l.append(ep['actions'])
         next_obs_l.append(ep['next_obs'])
         next_states_l.append(ep['next_states'])
-        ep_ids_l.append(np.full(episode_length, ep_id_offset + ep_idx, dtype=np.int32))
+        ep_ids_l.append(np.full(n_ep, ep_id_offset + ep_idx, dtype=np.int32))
+        type_l.append(np.full(n_ep, trajectory_type or mode, dtype='S16'))
 
+    if not obs_l:
+        raise RuntimeError(
+            f'No observable transitions collected for trajectory type {trajectory_type or mode!r}.')
     return {
         'obs':         np.concatenate(obs_l),
         'states':      np.concatenate(states_l),
@@ -121,6 +141,7 @@ def _collect_episodes(env, n_episodes, episode_length, mode, lqr_gain,
         'next_obs':    np.concatenate(next_obs_l),
         'next_states': np.concatenate(next_states_l),
         'episode_ids': np.concatenate(ep_ids_l),
+        'trajectory_types': np.concatenate(type_l),
     }
 
 
@@ -145,14 +166,14 @@ def generate_dataset(
     train_frac=0.8, val_frac=0.1,
     # Environment
     frame_skip=1, image_size=64, action_range=(-10.0, 10.0),
+    max_abs_x=2.2, max_abs_theta=1.2,
     save_path=None, seed=42,
 ):
     """Generate an episode-centric dataset of cartpole trajectories.
 
-    Each data type is specified as (n_episodes × episode_length) rather than
-    a flat transition count.  All episodes run for their full length with no
-    mid-episode resets — the gym done signal is ignored so trajectories show
-    the pole falling freely past the 12° (0.21 rad) threshold.
+    Episode lengths are upper bounds. Collection stops before a terminal or
+    visually ambiguous transition, so stored macro-transitions always contain
+    exactly ``frame_skip`` physics steps and remain inside the rendered region.
 
     Train/val/test splits are done by shuffling whole episodes before slicing,
     so no episode ever spans two splits.
@@ -162,7 +183,8 @@ def generate_dataset(
     needs_lqr = (n_lqr_episodes > 0 or n_equilibrium > 0 or n_pe_episodes > 0)
     lqr_gain  = _compute_lqr_gain() if needs_lqr else None
     env = ContinuousCartpoleVisual(frame_skip=frame_skip, image_size=image_size,
-                                   action_range=(-10.0, 10.0), seed=seed)
+                                   action_range=(-10.0, 10.0),
+                                   theta_threshold=max_abs_theta, seed=seed)
     action_low, action_high = action_range
 
     all_segments = []
@@ -176,7 +198,9 @@ def generate_dataset(
         seg = _collect_episodes(
             env, n_random_episodes, random_ep_len, 'random', lqr_gain,
             action_low, action_high, init_range=random_init_range,
-            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='random')
         all_segments.append(seg)
         next_ep_id += n_random_episodes
 
@@ -189,7 +213,9 @@ def generate_dataset(
         seg = _collect_episodes(
             env, n_lqr_episodes, lqr_ep_len, 'lqr', lqr_gain,
             action_low, action_high, init_range=lqr_init_range,
-            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='lqr')
         all_segments.append(seg)
         next_ep_id += n_lqr_episodes
 
@@ -203,7 +229,9 @@ def generate_dataset(
         seg = _collect_episodes(
             env, n_eq_episodes, eq_ep_len, 'lqr', lqr_gain,
             action_low, action_high, init_range=eq_init_range,
-            lqr_noise_std=eq_noise_std, rng=rng, ep_id_offset=next_ep_id)
+            lqr_noise_std=eq_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='eq_lqr')
         all_segments.append(seg)
         next_ep_id += n_eq_episodes
 
@@ -218,7 +246,9 @@ def generate_dataset(
             env, n_pe_episodes, pe_ep_len, 'prbs', lqr_gain,
             action_low, action_high, init_range=pe_init_range,
             lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
-            pe_action_amplitude=pe_action_amplitude, pe_flip_prob=pe_flip_prob)
+            pe_action_amplitude=pe_action_amplitude, pe_flip_prob=pe_flip_prob,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='prbs')
         all_segments.append(seg)
         next_ep_id += n_pe_episodes
 
@@ -231,7 +261,9 @@ def generate_dataset(
         seg = _collect_episodes(
             env, n_passive_episodes, passive_ep_len, 'passive', lqr_gain,
             action_low, action_high, init_range=passive_init_range,
-            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id)
+            lqr_noise_std=lqr_noise_std, rng=rng, ep_id_offset=next_ep_id,
+            max_abs_x=max_abs_x, max_abs_theta=max_abs_theta,
+            trajectory_type='passive')
         all_segments.append(seg)
         next_ep_id += n_passive_episodes
 
@@ -244,18 +276,31 @@ def generate_dataset(
             for key in all_segments[0]}
 
     N = data['obs'].shape[0]
-    # Shuffle whole episodes before splitting so no episode straddles two splits
+    # Stratify by trajectory type and split whole episodes. This keeps every
+    # policy family represented in train/val/test without trajectory leakage.
     ep_ids    = data['episode_ids']
-    unique_ep = np.unique(ep_ids)
-    rng.shuffle(unique_ep)
-    ep_order  = {ep: i for i, ep in enumerate(unique_ep)}
+    ep_types  = data['trajectory_types']
+    split_ep_ids = {'train': [], 'val': [], 'test': []}
+    unique_types = np.unique(ep_types)
+    for typ in unique_types:
+        type_eps = np.unique(ep_ids[ep_types == typ])
+        rng.shuffle(type_eps)
+        n_typ = len(type_eps)
+        n_typ_tr = max(1, int(n_typ * train_frac))
+        n_typ_val = max(1, int(n_typ * val_frac)) if n_typ >= 3 else 0
+        n_typ_tr = min(n_typ_tr, n_typ - n_typ_val)
+        split_ep_ids['train'].extend(type_eps[:n_typ_tr].tolist())
+        split_ep_ids['val'].extend(type_eps[n_typ_tr:n_typ_tr + n_typ_val].tolist())
+        split_ep_ids['test'].extend(type_eps[n_typ_tr + n_typ_val:].tolist())
+    ordered_eps = (split_ep_ids['train'] + split_ep_ids['val'] + split_ep_ids['test'])
+    ep_order  = {ep: i for i, ep in enumerate(ordered_eps)}
     sort_idx  = np.argsort([ep_order[e] for e in ep_ids], kind='stable')
     for key in data:
         data[key] = data[key][sort_idx]
 
     N     = len(data['obs'])
-    n_tr  = int(N * train_frac)
-    n_val = int(N * val_frac)
+    n_tr  = int(np.isin(data['episode_ids'], split_ep_ids['train']).sum())
+    n_val = int(np.isin(data['episode_ids'], split_ep_ids['val']).sum())
     splits = {
         'train': np.arange(0,    n_tr),
         'val':   np.arange(n_tr, n_tr + n_val),
@@ -276,7 +321,7 @@ def generate_dataset(
     data['state_mean'] = train_states.mean(axis=0).astype(np.float32)
     data['state_std']  = np.maximum(train_states.std(axis=0), 1e-8).astype(np.float32)
 
-    total_eps = next_ep_id
+    total_eps = len(np.unique(data['episode_ids']))
     print(f'[data] Total: {N:,} transitions  '
           f'(train={n_tr:,}, val={n_val:,}, test={N-n_tr-n_val:,})  '
           f'{total_eps} episodes  avg_ep_len={N/total_eps:.0f}')
@@ -288,7 +333,8 @@ def generate_dataset(
 def _save_hdf5(data, path, splits):
     os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
     with h5py.File(path, 'w') as f:
-        for key in ['obs', 'states', 'actions', 'next_obs', 'next_states', 'episode_ids']:
+        for key in ['obs', 'states', 'actions', 'next_obs', 'next_states',
+                    'episode_ids', 'trajectory_types']:
             f.create_dataset(key, data=data[key], compression='gzip', compression_opts=4)
         f.create_dataset('action_cov', data=data['action_cov'])
         f.attrs['action_cov_condition_number'] = float(data['action_cov_condition_number'])
@@ -307,7 +353,8 @@ def load_dataset(path):
     data = {}
     with h5py.File(path, 'r') as f:
         for key in ['obs', 'states', 'actions', 'next_obs', 'next_states',
-                    'action_cov', 'episode_ids', 'state_mean', 'state_std']:
+                    'action_cov', 'episode_ids', 'trajectory_types',
+                    'state_mean', 'state_std']:
             if key in f:
                 data[key] = f[key][:]
         data['action_cov_condition_number'] = float(
@@ -526,18 +573,25 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         if self._obs_flat is not None:
             # Fast path: pure numpy slice from preloaded RAM array
             ep_offset = int(self._obs_ep_start[int(self.ep_ids[start])])
-            obs_np = self._obs_flat[ep_offset + local_start:
-                                    ep_offset + local_start + H + 1]
+            base = ep_offset + local_start
+            obs_np = self._obs_flat[base:base + H + 1]
+            prev0_np = self._obs_flat[base - 1] if local_start > 0 else obs_np[0]
         else:
             # Lazy path: one HDF5 read per sample (slower, used when preload_obs=False)
             obs_np = self._file()['episodes'][ep_key]['observations'][
                 local_start: local_start + H + 1]  # (H+1, h, w, C) uint8
+            prev0_np = (self._file()['episodes'][ep_key]['observations'][local_start - 1]
+                        if local_start > 0 else obs_np[0])
             if self.target_image_size is not None:
                 s = self.target_image_size
-                t = torch.from_numpy(obs_np).permute(0, 3, 1, 2).float()
+                # Resize the actual preceding frame together with the window so
+                # frame stacking remains shape-consistent for local_start > 0.
+                resize_np = np.concatenate([prev0_np[None], obs_np], axis=0)
+                t = torch.from_numpy(resize_np).permute(0, 3, 1, 2).float()
                 t = torch.nn.functional.interpolate(
                     t, size=(s, s), mode='bilinear', align_corners=False)
-                obs_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
+                resize_np = t.permute(0, 2, 3, 1).to(torch.uint8).numpy()
+                prev0_np, obs_np = resize_np[0], resize_np[1:]
 
         def _t(arr):
             return torch.from_numpy(arr).permute(2, 0, 1)  # uint8 (C, h, w)
@@ -545,7 +599,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
         frames = []
         for k in range(H + 1):
             curr = _t(obs_np[k])
-            prev = _t(obs_np[k - 1]) if k > 0 else curr
+            prev = _t(obs_np[k - 1]) if k > 0 else _t(prev0_np)
             frames.append(torch.cat([prev, curr], dim=0) if FS > 1 else curr)
         obs_seq = torch.stack(frames)   # (H+1, 3*FS, h, w) uint8
 
