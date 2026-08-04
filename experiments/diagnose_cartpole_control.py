@@ -54,30 +54,51 @@ def oracle_eval(env, K, trials, steps, init_scale, seed, threshold, hold=10):
                 mean_cost=float(np.mean(costs)), saturation_rate=float(np.mean(sat)))
 
 
-def empirical_latent_B(model, env, device, action_scale, forces=(0.5, 1., 3.)):
+def empirical_impulse_response(model, env, device, action_scale,
+                               forces=(0.5, 1., 3.), horizon=3):
     obs0, _, _ = env.reset_to_state(np.zeros(4))
     x0 = torch.from_numpy(obs0).float().permute(2, 0, 1)[None].to(device) / 255.
-    with torch.no_grad(): z0 = model.encode_obs(x0, x0)
+    with torch.no_grad():
+        z0 = model.encode_obs(x0, x0)
     rows = []
+    W = int(model.config.predictor_window)
     for force in forces:
-        encoded = []
-        predicted = []
+        real_branches, pred_branches = [], []
         for sign in (1., -1.):
             env.reset_to_state(np.zeros(4))
-            obs1, _, _, _, _ = env.step(sign * force)
-            x1 = torch.from_numpy(obs1).float().permute(2, 0, 1)[None].to(device) / 255.
-            u = torch.tensor([[[sign * force / action_scale]]], device=device)
-            with torch.no_grad():
-                encoded.append(model.encode_obs(x1, x0).cpu().numpy()[0])
-                predicted.append(model.predict(z0[:, None], u).cpu().numpy()[0])
-        B_real = (encoded[0] - encoded[1]) / (2 * force)
-        B_pred = (predicted[0] - predicted[1]) / (2 * force)
-        denom = np.linalg.norm(B_real) * np.linalg.norm(B_pred)
-        rows.append((force, np.linalg.norm(B_real), np.linalg.norm(B_pred),
-                     float(B_real @ B_pred / denom) if denom > 1e-12 else np.nan,
-                     np.linalg.norm(B_pred - B_real) / max(np.linalg.norm(B_real), 1e-12)))
+            prev_obs = obs0
+            real_zs = []
+            z = z0.clone()
+            z_hist = [z] * W
+            u_hist = [torch.zeros(1, model.config.action_dim, device=device)] * W
+            pred_zs = []
+            for h in range(horizon):
+                u_raw = sign * force if h == 0 else 0.0
+                obs1, _, _, _, _ = env.step(u_raw)
+                prev_t = torch.from_numpy(prev_obs).float().permute(2, 0, 1)[None].to(device) / 255.
+                x1 = torch.from_numpy(obs1).float().permute(2, 0, 1)[None].to(device) / 255.
+                u = torch.tensor([[u_raw / action_scale]], device=device)
+                u_hist.append(u)
+                with torch.no_grad():
+                    real_zs.append(model.encode_obs(x1, prev_t).cpu().numpy()[0])
+                    z = model.predict(
+                        torch.stack(z_hist[-W:], dim=1),
+                        torch.stack(u_hist[-W:], dim=1))
+                z_hist.append(z)
+                pred_zs.append(z.cpu().numpy()[0])
+                prev_obs = obs1
+            real_branches.append(np.stack(real_zs))
+            pred_branches.append(np.stack(pred_zs))
+        B_real = (real_branches[0] - real_branches[1]) / (2 * force)
+        B_pred = (pred_branches[0] - pred_branches[1]) / (2 * force)
+        for h in range(horizon):
+            denom = np.linalg.norm(B_real[h]) * np.linalg.norm(B_pred[h])
+            rows.append((
+                force, h + 1, np.linalg.norm(B_real[h]), np.linalg.norm(B_pred[h]),
+                float(B_real[h] @ B_pred[h] / denom) if denom > 1e-12 else np.nan,
+                np.linalg.norm(B_pred[h] - B_real[h])
+                / max(np.linalg.norm(B_real[h]), 1e-12)))
     return rows
-
 
 def main():
     p = argparse.ArgumentParser()
@@ -103,9 +124,10 @@ def main():
     scale = float(load_discrete_dataset_meta(a.data).get('action_scale', 1.))
     Bl = physical_action_jacobian(model, Be, scale, device)
     print(f'[learned] rho(A)={max(abs(np.linalg.eigvals(Al))):.4f}  ||B_raw||={np.linalg.norm(Bl):.5f}')
-    print('[action test] force  ||B_real||  ||B_pred||  cosine  relative_error')
-    for row in empirical_latent_B(model, env, device, scale):
-        print(f'              {row[0]:4.1f}   {row[1]:10.5f}  {row[2]:10.5f}  {row[3]:+7.3f}  {row[4]:10.3f}')
+    print('[impulse test] force step  ||real||    ||pred||   cosine  relative_error')
+    for row in empirical_impulse_response(model, env, device, scale):
+        print(f'               {row[0]:4.1f}   {row[1]:2d}   {row[2]:10.5f}  '
+              f'{row[3]:10.5f}  {row[4]:+7.3f}  {row[5]:10.3f}')
     env.close()
 
 
