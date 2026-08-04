@@ -468,7 +468,7 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
 
         all_states, all_nstates = [], []
         all_actions, all_ep_ids = [], []
-        all_terminated = []
+        all_terminated, all_trajectory_types = [], []
         ep_keys_list, local_offsets_list = [], []
         obs_chunks       = [] if preload_obs else None
         ep_obs_starts    = [] if preload_obs else None
@@ -491,6 +491,10 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
                 all_nstates.append(states_ep[1:].astype(np.float32))
                 all_actions.append(acts_ep.astype(np.float32))
                 all_ep_ids.append(np.full(T, global_ep_id, dtype=np.int32))
+                trajectory_type = ep.attrs.get('trajectory_type', 'unknown')
+                if isinstance(trajectory_type, bytes):
+                    trajectory_type = trajectory_type.decode()
+                all_trajectory_types.extend([str(trajectory_type)] * T)
                 ep_keys_list.extend([ep_key] * T)
                 local_offsets_list.extend(range(T))
 
@@ -520,12 +524,14 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
             self.actions    = np.zeros((0, 1), dtype=np.float32)
             self.ep_ids     = np.zeros(0, dtype=np.int32)
             self.terminated = np.zeros(0, dtype=bool)
+            self.trajectory_types = np.empty(0, dtype=object)
         else:
             self.states      = np.concatenate(all_states,      axis=0)
             self.next_states = np.concatenate(all_nstates,     axis=0)
             self.actions     = np.concatenate(all_actions,     axis=0)  # (N, action_dim)
             self.ep_ids      = np.concatenate(all_ep_ids,      axis=0)
             self.terminated  = np.concatenate(all_terminated,  axis=0)  # (N,) bool
+            self.trajectory_types = np.asarray(all_trajectory_types, dtype=object)
         self.ep_keys     = np.array(ep_keys_list)
         self.local_offs  = np.array(local_offsets_list, dtype=np.int32)
         self.valid_starts = self._find_valid_starts()
@@ -617,7 +623,12 @@ class DiscreteHDF5TrajectoryDataset(Dataset):
             states = ((states - torch.from_numpy(self.state_mean))
                       / torch.from_numpy(self.state_std))
 
-        return {'obs_seq': obs_seq, 'actions': actions, 'states': states}
+        return {
+            'obs_seq': obs_seq,
+            'actions': actions,
+            'states': states,
+            'trajectory_type': str(self.trajectory_types[start]),
+        }
 
     def __del__(self):
         for fh in self._handles.values():
