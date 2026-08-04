@@ -67,6 +67,8 @@ class Trainer:
         self.lambda_state = float(self.cfg.get('lambda_state', 1.0))
         self.lambda_state_local = float(
             self.cfg.get('lambda_state_local', 0.0))
+        self.lambda_state_local_delta = float(
+            self.cfg.get('lambda_state_local_delta', 0.0))
         self.local_state_anchor_weight = float(
             self.cfg.get('local_state_anchor_weight', 0.0))
         self.lambda_spec  = float(self.cfg.get('lambda_spec',  1.0))
@@ -150,6 +152,12 @@ class Trainer:
         self.local_state_region = torch.tensor(
             self.cfg.get('local_state_region', [0.15, 0.50, 0.15, 1.00]),
             dtype=torch.float32, device=self.device)
+        self.local_delta_state_scales = torch.tensor(
+            self.cfg.get('local_delta_state_scales', [0.02, 0.05, 0.01, 0.05]),
+            dtype=torch.float32, device=self.device)
+        self.local_delta_state_region = torch.tensor(
+            self.cfg.get('local_delta_state_region', [0.10, 0.25, 0.05, 0.50]),
+            dtype=torch.float32, device=self.device)
         self.jacobian_every = int(self.cfg.get('jacobian_every', 50))
         self.predictor_window = int(self.cfg.get('predictor_window', 1))
 
@@ -179,6 +187,7 @@ class Trainer:
         _needs_state_head = (
             self.lambda_state > 0
             or self.lambda_state_local > 0
+            or self.lambda_state_local_delta > 0
             or self.lambda_state_pred > 0
             or float(self.cfg.get('warmup_lambda_state', 0.0)) > 0
             or self.lambda_anchor > 0
@@ -889,6 +898,61 @@ class Trainer:
             for _j, _name in enumerate(_names):
                 if torch.isfinite(local_rmse[_j]):
                     info[f'local_rmse_{_name}'] = local_rmse[_j].item()
+
+        # Equilibrium-centered local reconstruction.  LQR regulates physical
+        # state deviations, so train exactly (D(z)-D(z*)) rather than an
+        # absolute decoder whose small equilibrium bias is amplified by K.
+        if (self.lambda_state_local_delta > 0 and self.state_head is not None
+                and self._z_star_ema is not None and 'states' in batch):
+            delta_states = batch['states'].to(
+                self.device, non_blocking=True).float().clone()
+            delta_states[:, :, 2] = torch.atan2(
+                delta_states[:, :, 2].sin(), delta_states[:, :, 2].cos())
+            alpha = self.state_encoder_grad_scale
+            z_eq = self._z_star_ema.detach()
+            pred_eq_norm = self.state_head(z_eq.unsqueeze(0))
+            delta_losses, delta_errors_phys = [], []
+            for k in range(H + 1):
+                target_delta_norm = (
+                    delta_states[:, k]
+                    - self.equilibrium_state_target.unsqueeze(0))
+                target_delta_phys = (
+                    target_delta_norm
+                    * self.state_normalization_std.unsqueeze(0))
+                mask = (target_delta_phys.abs()
+                        <= self.local_delta_state_region.unsqueeze(0)).all(dim=-1)
+                if mask.any():
+                    z_mix = (alpha * z_all[mask, k]
+                             + (1.0 - alpha) * z_all[mask, k].detach())
+                    pred_delta_norm = self.state_head(z_mix) - pred_eq_norm
+                    pred_delta_phys = (
+                        pred_delta_norm
+                        * self.state_normalization_std.unsqueeze(0))
+                    error_phys = pred_delta_phys - target_delta_phys[mask]
+                    scaled_error = (
+                        error_phys / self.local_delta_state_scales.unsqueeze(0))
+                    delta_losses.append(F.smooth_l1_loss(
+                        scaled_error, torch.zeros_like(scaled_error),
+                        beta=1.0, reduction='mean'))
+                    delta_errors_phys.append(error_phys.detach())
+            if delta_losses:
+                local_delta_loss = torch.stack(delta_losses).mean()
+                all_delta_errors = torch.cat(delta_errors_phys, dim=0)
+                local_delta_rmse = all_delta_errors.pow(2).mean(dim=0).sqrt()
+                local_delta_count = int(all_delta_errors.shape[0])
+            else:
+                local_delta_loss = z_all.sum() * 0.0
+                local_delta_rmse = torch.full(
+                    (4,), float('nan'), device=self.device)
+                local_delta_count = 0
+            total_loss = (
+                total_loss
+                + self.lambda_state_local_delta * local_delta_loss)
+            info['local_delta_state_loss'] = local_delta_loss.item()
+            info['local_delta_state_count'] = local_delta_count
+            for j, name in enumerate(('x', 'xdot', 'theta', 'thetadot')):
+                if torch.isfinite(local_delta_rmse[j]):
+                    info[f'local_delta_rmse_{name}'] = local_delta_rmse[j].item()
 
         # Unrolled state prediction loss: state_head(predictor(z_t, u_t)) ≈ s_{t+1}
         # Unlike the state loss above (which only supervises encoder outputs), this
@@ -1729,6 +1793,12 @@ class Trainer:
                 f"th={tr.get('local_rmse_theta', float('nan')):.4f},"
                 f"dth={tr.get('local_rmse_thetadot', float('nan')):.4f})"
                 ) if 'local_state_loss' in tr else ''
+            local_delta_str = (
+                f"  sdelta={tr.get('local_delta_state_loss', 0):.3f}"
+                f"(n={int(tr.get('local_delta_state_count', 0))},"
+                f"th={tr.get('local_delta_rmse_theta', float('nan')):.4f},"
+                f"dth={tr.get('local_delta_rmse_thetadot', float('nan')):.4f})"
+                ) if 'local_delta_state_loss' in tr else ''
             inv_str    = f"  inv={tr.get('inv_loss',       0):.4f}" if 'inv_loss'       in tr else ''
             ea_str     = f"  ea={tr.get('enc_anchor_loss', 0):.4f}" if 'enc_anchor_loss' in tr else ''
             fp_str       = f"  fp={tr.get('fp_loss',         0):.4f}" if 'fp_loss'         in tr else ''
@@ -1769,7 +1839,7 @@ class Trainer:
                   f'  train={tr.get("total_loss",0):.4f}'
                   f'  val={val_loss:.4f}'
                   f'  pred={tr.get("pred_loss",0):.4f}'
-                  f'{state_str}{local_state_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{ep_act_pred_str}{zmove_str}'
+                  f'{state_str}{local_state_str}{local_delta_str}{inv_str}{ea_str}{fp_str}{fp_err_str}{B_align_str}{z_ss_str}{local_str}{unstable_str}{spec_str}{spec_eig_str}{anchor_str}{sig_str}{dynsig_str}{varfloor_str}{temp_str}{pbh_str}{mirror_str}{ep_act_str}{ep_act_pred_str}{zmove_str}'
                   f'  lr={self.optimizer.param_groups[0]["lr"]:.2e}'
                   f'  dt={dt:.1f}s')
 
