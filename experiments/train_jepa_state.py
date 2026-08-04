@@ -134,7 +134,10 @@ def main():
         action_scale=action_scale,
         target_image_size=img_size,
         preload_obs=not args.no_preload,
-        data_fraction=args.data_fraction)
+        data_fraction=args.data_fraction,
+        balanced_sampling=bool(train_cfg.get('balanced_sampling', False)),
+        angle_bin_edges=tuple(
+            train_cfg.get('angle_bin_edges', [0.05, 0.2, 0.6])))
 
     if args.extra_data:
         extra_ds = []
