@@ -1348,6 +1348,15 @@ class Trainer:
         freeze_predictor_at = int(self.cfg.get('freeze_predictor_at_epoch', -1))
         _predictor_frozen   = False
 
+        # Optional absolute-epoch SIGReg anneal. This keeps every objective active
+        # from epoch 1 while reducing anti-collapse pressure after bootstrapping.
+        sigreg_anneal_epoch = int(self.cfg.get('sigreg_anneal_epoch', -1))
+        sigreg_final_weight = float(
+            self.cfg.get('sigreg_final_weight', self.lambda_sigreg))
+        _sigreg_annealed = False
+        selection_metric = str(
+            self.cfg.get('checkpoint_selection_metric', 'total_loss'))
+
         # freeze_encoder_at_epoch=0 → freeze before any gradient step
         if freeze_encoder_at == 0 and not _encoder_frozen:
             for p in self.model.encoder.parameters():
@@ -1423,6 +1432,15 @@ class Trainer:
                     print(f'[train] Encoder unfrozen at epoch {epoch+1}'
                           f'  (lr_mult={enc_lr_mult})')
 
+            if (sigreg_anneal_epoch >= 0
+                    and epoch >= sigreg_anneal_epoch
+                    and not _sigreg_annealed):
+                old_sigreg = self.lambda_sigreg
+                self.lambda_sigreg = sigreg_final_weight
+                _sigreg_annealed = True
+                print(f'[train] SIGReg annealed at epoch {epoch+1}: '
+                      f'λ={old_sigreg:g} → {self.lambda_sigreg:g}')
+
             # Stage-1→2 transition: freeze encoder at a fixed epoch (independent
             # of warmup), keeping all losses active before and after the freeze.
             if freeze_encoder_at > 0 and epoch == freeze_encoder_at and not _encoder_frozen:
@@ -1477,8 +1495,9 @@ class Trainer:
             history['train'].append(tr)
             history['val'].append(val)
             val_loss = val.get('total_loss', float('inf'))
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
+            selection_value = val.get(selection_metric, float('inf'))
+            if selection_value < self.best_val_loss:
+                self.best_val_loss = selection_value
                 best_state      = {k: v.cpu().clone()
                                    for k, v in self.model.state_dict().items()}
                 _best_val_epoch = epoch
@@ -1542,6 +1561,8 @@ class Trainer:
                             for k, v in self.model.state_dict().items()}
         self._spec_converged_epoch = _spec_conv_epoch
         self._best_val_epoch       = _best_val_epoch
+        self.best_state            = best_state
+        self.selection_metric      = selection_metric
 
         if best_state is None:
             return history
@@ -1557,8 +1578,8 @@ class Trainer:
             self.model.load_state_dict({k: v.to(self.device)
                                          for k, v in best_state.items()})
             spec_note = 'no spec reg' if no_spec else f'spec converged epoch {_spec_conv_epoch+1}'
-            print(f'[train] Using best-val model  '
-                  f'epoch={_best_val_epoch+1}  val={self.best_val_loss:.4f}  '
+            print(f'[train] Using best-selection model  '
+                  f'epoch={_best_val_epoch+1}  {selection_metric}={self.best_val_loss:.4f}  '
                   f'({spec_note})')
         else:
             print(f'[train] Using final-epoch model  '
