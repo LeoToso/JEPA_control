@@ -51,14 +51,14 @@ training:
   # from epoch 1, without encoder warm-up or subsequent freezing.
   warmup_epochs: 0
   warmup_lambda_state: 1.0
-  warmup_lambda_state_pred: 0.1
+  warmup_lambda_state_pred: 0.0
   warmup_lambda_sigreg: 0.01
   freeze_encoder_epochs: 0
   encoder_lr_unfreeze_mult: 0.1
 
-  lambda_pred: 1.0
+  lambda_pred: 5.0
   lambda_state: 1.0
-  lambda_state_pred: 0.1
+  lambda_state_pred: 0.0
   # Replace absolute local decoding with the exact equilibrium-centered
   # deviation used by decoded LQR: (D(z)-D(z*)) * state_std.
   lambda_state_local: 0.0
