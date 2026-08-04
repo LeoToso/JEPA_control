@@ -75,6 +75,7 @@ class Trainer:
         self.B_align_min_target_norm = float(
             self.cfg.get('b_align_min_target_norm', 0.05))
         self.B_align_mse_floor = float(self.cfg.get('b_align_mse_floor', 0.01))
+        self.B_target_ema = float(self.cfg.get('b_target_ema', 0.0))
         self.B_align_impulse_weights = [
             float(v) for v in self.cfg.get(
                 'b_align_impulse_weights', [0.1, 0.3, 0.6])]
@@ -308,7 +309,15 @@ class Trainer:
         target = np.asarray(B_target, dtype=np.float32)
         if target.ndim == 1:
             target = target[None, :]
-        self._B_target = torch.tensor(target, dtype=torch.float32)
+        new_target = torch.tensor(target, dtype=torch.float32)
+        if (self._B_target is not None
+                and self._B_target.shape == new_target.shape
+                and self.B_target_ema > 0):
+            self._B_target = (
+                self.B_target_ema * self._B_target
+                + (1.0 - self.B_target_ema) * new_target)
+        else:
+            self._B_target = new_target
 
     def set_obs_eq(self, obs_eq_np: 'np.ndarray') -> None:
         """Pass the exact equilibrium observation (H,W,3 uint8) to anchor z*.
