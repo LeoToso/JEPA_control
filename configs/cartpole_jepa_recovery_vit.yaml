@@ -44,11 +44,12 @@ training:
 
   # Matched ViT ablation: all settings except encoder_type match the CNN recovery run.
   # Forty epochs establish a physically meaningful visual representation.
-  # Prediction, predictor-state supervision, and SIGreg are disabled in warmup.
+  # Prediction and predictor-state supervision are disabled in warmup.
+  # Strong SIGReg is active from epoch 1 to prevent constant-latent collapse.
   warmup_epochs: 40
   warmup_lambda_state: 1.0
   warmup_lambda_state_pred: 0.0
-  warmup_lambda_sigreg: 0.0
+  warmup_lambda_sigreg: 1.0
   freeze_encoder_epochs: 20
   encoder_lr_unfreeze_mult: 0.1
 
