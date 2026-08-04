@@ -19,6 +19,9 @@ def sigreg_loss(
     z: torch.Tensor,
     num_slices: int = 128,
     num_points: int = 17,
+    variance_floor_weight: float = 0.0,
+    variance_target: float = 1.0,
+    variance_eps: float = 1e-4,
 ) -> torch.Tensor:
     """
     Args:
@@ -26,6 +29,11 @@ def sigreg_loss(
         num_slices: Number of random 1-D projections (K).  128 suffices for
             D=32; the paper uses 1024 for large D.
         num_points: Frequency evaluation points for the Epps-Pulley statistic.
+        variance_floor_weight: Optional VICReg-style standard-deviation floor.
+            The characteristic-function statistic has zero gradient at exact
+            constant collapse; this term amplifies any residual batch variation.
+        variance_target: Minimum standard deviation for every latent dimension.
+        variance_eps: Numerical stabilizer inside the standard deviation.
 
     Returns:
         Scalar SIGreg loss (≥ 0; equals 0 when z ~ N(0, I)).
@@ -56,4 +64,15 @@ def sigreg_loss(
     # Epps-Pulley statistic: |φ_N(ω) - target|² per (slice, frequency)
     ep = (phi_real - target[None, :]) ** 2 + phi_imag ** 2  # (K, P)
 
-    return ep.mean()
+    loss = ep.mean()
+
+    if variance_floor_weight > 0:
+        # Epps-Pulley alone is stationary at a constant zero embedding:
+        # d cos(omega*y)/dy = 0 and the sine residual is zero at y=0.
+        # A standard-deviation hinge supplies a strong gradient whenever there
+        # is residual (even tiny) sample-to-sample variation.
+        std = torch.sqrt(z.var(dim=0, unbiased=False) + variance_eps)
+        variance_floor = F.relu(variance_target - std).mean()
+        loss = loss + variance_floor_weight * variance_floor
+
+    return loss
