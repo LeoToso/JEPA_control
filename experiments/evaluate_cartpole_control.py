@@ -41,6 +41,51 @@ class LearnedLQRPlanner:
         return [np.asarray(u).reshape(-1)], np.stack([z, z1])
 
 
+class DecodedStateLQRPlanner:
+    """Exact physical LQR driven by the checkpoint's decoded visual state."""
+    def __init__(self, latent_dim, K_phys, state_head_state, state_mean,
+                 state_std, lb, ub):
+        head = nn.Linear(latent_dim, 4)
+        head.load_state_dict(state_head_state)
+        self.W = head.weight.detach().cpu().numpy()
+        self.b = head.bias.detach().cpu().numpy()
+        self.mean = np.asarray(state_mean)
+        self.std = np.asarray(state_std)
+        self.K = K_phys
+        self.action_lb, self.action_ub = float(lb), float(ub)
+        self.A = np.eye(latent_dim)
+        self.B = np.zeros((latent_dim, 1))
+
+    def reset(self):
+        pass
+
+    def plan(self, z, z_star):
+        state_norm = self.W @ z + self.b
+        state_phys = state_norm * self.std + self.mean
+        u = np.clip(-self.K @ state_phys, self.action_lb, self.action_ub)
+        return [np.asarray(u).reshape(-1)], np.stack([z, z])
+
+
+def physical_macro_jacobian(env, eps_x=1e-4, eps_u=1e-3):
+    """Finite-difference the exact frame-skip environment at equilibrium."""
+    A = np.zeros((4, 4))
+    B = np.zeros((4, 1))
+    for j in range(4):
+        dx = np.zeros(4)
+        dx[j] = eps_x
+        env.reset_to_state(dx)
+        _, xp, _, _, _ = env.step(0.0)
+        env.reset_to_state(-dx)
+        _, xm, _, _, _ = env.step(0.0)
+        A[:, j] = (xp - xm) / (2.0 * eps_x)
+    env.reset_to_state(np.zeros(4))
+    _, xp, _, _, _ = env.step(eps_u)
+    env.reset_to_state(np.zeros(4))
+    _, xm, _, _, _ = env.step(-eps_u)
+    B[:, 0] = (xp - xm) / (2.0 * eps_u)
+    return A, B
+
+
 def build_model(model_cfg, checkpoint, device):
     arch = dict(model_cfg)
     arch.update(checkpoint.get('config', {}))
@@ -131,7 +176,7 @@ def main():
     p.add_argument('--config', required=True)
     p.add_argument('--data', required=True)
     p.add_argument('--checkpoints', nargs='+', required=True)
-    p.add_argument('--controller', choices=['lqr', 'cem', 'both'], default='lqr')
+    p.add_argument('--controller', choices=['lqr', 'cem', 'decoded_lqr', 'both', 'all'], default='lqr')
     p.add_argument('--trials', type=int, default=50)
     p.add_argument('--steps', type=int, default=200)
     p.add_argument('--seed', type=int, default=123)
@@ -145,10 +190,16 @@ def main():
         cfg = yaml.safe_load(f)
     meta = load_discrete_dataset_meta(args.data)
     action_scale = float(meta.get('action_scale', 1.0))
+    state_mean = np.asarray(meta.get('state_mean', np.zeros(4)))
     state_std = np.asarray(meta.get('state_std', np.ones(4)))
     ctrl = cfg.get('control', {})
     bounds = cfg['environment'].get('action_range', [-10, 10])
-    controllers = ['lqr', 'cem'] if args.controller == 'both' else [args.controller]
+    if args.controller == 'both':
+        controllers = ['lqr', 'cem']
+    elif args.controller == 'all':
+        controllers = ['decoded_lqr', 'lqr', 'cem']
+    else:
+        controllers = [args.controller]
     rows = []
 
     for ckpt_path in args.checkpoints:
@@ -165,7 +216,20 @@ def main():
               f'||B_raw||={np.linalg.norm(B_raw):.5f}  action_scale={action_scale:g}')
 
         for kind in controllers:
-            if kind == 'lqr':
+            if kind == 'decoded_lqr':
+                if 'state_head_state' not in checkpoint:
+                    raise RuntimeError(
+                        f'{ckpt_path} has no state_head_state for decoded LQR')
+                A_phys, B_phys = physical_macro_jacobian(env)
+                R = np.array([[float(ctrl.get('R_lqr', 0.01))]])
+                K_phys, _, poles = solve_discrete_lqr(
+                    A_phys, B_phys, np.diag([1., 1., 10., 1.]), R)
+                planner = DecodedStateLQRPlanner(
+                    model.latent_dim, K_phys, checkpoint['state_head_state'],
+                    state_mean, state_std, bounds[0], bounds[1])
+                print(f'[decoded_lqr] rho(A_phys-B_phys K)='
+                      f'{np.max(np.abs(poles)):.4f}')
+            elif kind == 'lqr':
                 R = np.array([[float(ctrl.get('R_lqr', 0.01))]])
                 K, _, poles = solve_discrete_lqr(A, B_raw, Qz, R)
                 planner = LearnedLQRPlanner(A, B_raw, K, bounds[0], bounds[1])
