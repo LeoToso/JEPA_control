@@ -51,9 +51,11 @@ class DINOv2Features(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         self.register_buffer(
-            'mean', torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1))
+            'mean', torch.tensor(
+                IMAGENET_MEAN, device=device).view(1, 3, 1, 1))
         self.register_buffer(
-            'std', torch.tensor(IMAGENET_STD).view(1, 3, 1, 1))
+            'std', torch.tensor(
+                IMAGENET_STD, device=device).view(1, 3, 1, 1))
 
     def preprocess(self, images):
         x = images.float() / 255.
