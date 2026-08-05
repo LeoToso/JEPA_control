@@ -204,7 +204,7 @@ def encode_online(extractor, obs, prev_obs, device):
 
 
 def evaluate_cem(cfg, args, extractor, decoder, equilibrium,
-                 terminal_q, initial_states, device):
+                 terminal_q, initial_states, device, true_indices=()):
     bounds = cfg['environment'].get('action_range', [-10., 10.])
     ctrl = cfg.get('control', {})
     rows = []
@@ -220,6 +220,9 @@ def evaluate_cem(cfg, args, extractor, decoder, equilibrium,
         for step in range(args.steps):
             feature = encode_online(extractor, obs, prev_obs, device)
             estimate = decoder(feature)[0] - equilibrium
+            if true_indices:
+                estimate[np.asarray(true_indices, dtype=np.int64)] = \
+                    state[np.asarray(true_indices, dtype=np.int64)]
             torch.manual_seed(args.seed * 10000 + trial * 1000 + step)
             action = planner.plan_state(estimate)
             norms.append(float(np.linalg.norm(state)))
@@ -259,6 +262,9 @@ def main():
     p.add_argument('--decoder-batch-size', type=int, default=256)
     p.add_argument('--decoder-lr', type=float, default=1e-3)
     p.add_argument('--local-weight', type=float, default=25.)
+    p.add_argument('--replacement-diagnostic', action='store_true',
+                   help='run closed-loop CEM with selected decoded state '
+                        'coordinates replaced by ground truth')
     p.add_argument('--control-trials', type=int, default=3)
     p.add_argument('--steps', type=int, default=100)
     p.add_argument('--cem-horizon', type=int, default=2)
@@ -319,9 +325,30 @@ def main():
         cem = evaluate_cem(
             cfg, args, extractor, decoder, equilibrium,
             terminal_q, initial_states, device)
+        replacement = {}
+        if args.replacement_diagnostic:
+            variants = {
+                'true_x': (0,),
+                'true_x_dot': (1,),
+                'true_theta': (2,),
+                'true_theta_dot': (3,),
+                'true_velocities': (1, 3),
+                'true_positions': (0, 2),
+                'true_state': (0, 1, 2, 3),
+            }
+            for variant, indices in variants.items():
+                row = evaluate_cem(
+                    cfg, args, extractor, decoder, equilibrium,
+                    terminal_q, initial_states, device,
+                    true_indices=indices)
+                replacement[variant] = row
+                print(f'  [{variant}] success={row["success_rate"]:.1%} '
+                      f'term={row["termination_rate"]:.1%} '
+                      f'final={row["mean_final_error"]:.3f}')
         result['decoders'][name] = {
             'equilibrium_decode': equilibrium.tolist(),
             'metrics': metrics, 'cem': cem,
+            'replacement_diagnostic': replacement,
         }
         local = metrics['local']
         print(f'[{name}] global_R2={np.round(metrics["global"]["r2"], 3).tolist()}')
