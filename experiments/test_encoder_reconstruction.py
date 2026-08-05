@@ -1,8 +1,8 @@
-"""Killer encoder test: can we reconstruct pixel frames from the 8-dim latent?
+"""Killer encoder test: can we reconstruct pixel frames from the latent?
 
 Procedure:
   1. Load checkpoint (encoder frozen).
-  2. Train a small pixel decoder  z ∈ R^8 → 64×64×3  on the existing dataset.
+  2. Train a small pixel decoder at the configured image resolution.
   3. Generate a fresh cartpole rollout (pixel space).
   4. Encode each frame → z_t, decode back → obs_hat_t.
   5. Show original vs reconstructed side-by-side + PSNR per frame.
@@ -39,22 +39,35 @@ class PixelDecoder(nn.Module):
     """z ∈ R^d  →  (3, H, W) image in [0, 1]."""
     def __init__(self, latent_dim: int = 8, image_size: int = 64):
         super().__init__()
-        # 4×4 spatial base, 256 channels → upsample ×16 → 64×64
+        if image_size < 8 or image_size & (image_size - 1):
+            raise ValueError(
+                f'image_size must be a power of two >= 8, got {image_size}')
+        n_upsamples = int(np.log2(image_size // 4))
+        if 4 * (2 ** n_upsamples) != image_size:
+            raise ValueError(f'image_size must be reachable from 4×4, got {image_size}')
+
+        # Begin at 4×4 and add exactly as many stride-2 stages as needed.
         self.proj   = nn.Linear(latent_dim, 256 * 4 * 4)
-        self.decode = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),   # 4  → 8
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128,  64, 4, stride=2, padding=1),   # 8  → 16
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d( 64,  32, 4, stride=2, padding=1),   # 16 → 32
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d( 32,   3, 4, stride=2, padding=1),   # 32 → 64
-            nn.Sigmoid(),
-        )
+        layers = []
+        in_channels = 256
+        for stage in range(n_upsamples):
+            is_last = stage == n_upsamples - 1
+            out_channels = 3 if is_last else max(8, 128 // (2 ** stage))
+            layers.append(nn.ConvTranspose2d(
+                in_channels, out_channels, 4, stride=2, padding=1))
+            layers.append(nn.Sigmoid() if is_last else nn.ReLU(inplace=True))
+            in_channels = out_channels
+        self.decode = nn.Sequential(*layers)
+        self.image_size = image_size
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         x = self.proj(z).view(z.shape[0], 256, 4, 4)
-        return self.decode(x)
+        out = self.decode(x)
+        if out.shape[-2:] != (self.image_size, self.image_size):
+            raise RuntimeError(
+                f'decoder produced {tuple(out.shape[-2:])}, expected '
+                f'{(self.image_size, self.image_size)}')
+        return out
 
 
 def psnr(a: np.ndarray, b: np.ndarray) -> float:
