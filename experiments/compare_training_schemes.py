@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 import torch
 
+from jepa_lds.checkpoint import save_checkpoint
 from jepa_lds.control import design_latent_controller, evaluate_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import unstable_mode_retention
@@ -43,6 +44,11 @@ def main():
     p.add_argument("--lambda-pred-ms", type=float, default=1.0, help="weight on L_pred (multistep rollout, the only prediction term used)")
     p.add_argument("--lambda-sigreg", type=float, default=1.0, help="weight on L_SIGReg (only used when --config sigreg)")
     p.add_argument("--lambda-actrecon", type=float, default=20.0, help="weight on L_act, multistep decoder only (only used when --config actrecon)")
+    p.add_argument(
+        "--out-dir", type=str,
+        default=os.path.join(os.path.dirname(__file__), "..", "results", "compare_training_schemes"),
+        help="where to save checkpoints (one per training scheme)",
+    )
     args = p.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -94,9 +100,22 @@ def main():
         f"lambda_actrecon_ms={cfg.lambda_actrecon_ms}"
     )
 
-    for name, train_fn in [("alternating", train_jepa), ("naive (regular joint SGD)", train_jepa_naive)]:
+    os.makedirs(args.out_dir, exist_ok=True)
+    for name, slug, train_fn in [
+        ("alternating", "alternating", train_jepa),
+        ("naive (regular joint SGD)", "naive", train_jepa_naive),
+    ]:
         print(f"\n--- {name} ---")
-        enc, pred, _dec, _hist = train_fn(system, obs_model, train_batch, cfg, verbose=True)
+        enc, pred, dec, _hist = train_fn(system, obs_model, train_batch, cfg, verbose=True)
+
+        ckpt_path = os.path.join(args.out_dir, f"checkpoint_{args.config}_{slug}.pt")
+        save_checkpoint(
+            ckpt_path, enc, pred, dec, cfg,
+            extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
+                   "config_name": config_label, "trainer": slug},
+        )
+        print(f"  saved checkpoint to {ckpt_path}")
+
         ctrl = design_latent_controller(pred)
         ev = evaluate_controller(
             system, obs_model, enc, ctrl["K_z"],

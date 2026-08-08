@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import torch
 
+from jepa_lds.checkpoint import save_checkpoint
 from jepa_lds.control import design_latent_controller, evaluate_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import eigenvalue_comparison, unstable_mode_retention
@@ -29,6 +30,10 @@ from jepa_lds.plotting import (
 )
 from jepa_lds.systems import make_linearized_cartpole_system
 from jepa_lds.train import TrainConfig, train_jepa_naive
+
+
+def _slug(name: str) -> str:
+    return name.replace(" ", "_").replace("+", "").replace("__", "_")
 
 
 def main():
@@ -94,8 +99,16 @@ def main():
     summary, eval_results, latent_eigs = {}, {}, {}
     for name, cfg in configs.items():
         print(f"\n--- training {name} (naive joint SGD) ---")
-        enc, pred, _dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True)
+        enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True)
         encoders[name], predictors[name], histories[name] = enc, pred, hist
+
+        ckpt_path = os.path.join(args.out_dir, f"checkpoint_{_slug(name)}.pt")
+        save_checkpoint(
+            ckpt_path, enc, pred, dec, cfg,
+            extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
+                   "config_name": name, "trainer": "naive"},
+        )
+        print(f"  saved checkpoint to {ckpt_path}")
 
         ctrl = design_latent_controller(pred)
         ev = evaluate_controller(
