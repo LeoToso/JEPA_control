@@ -153,9 +153,9 @@ def train_jepa(
                 loss.backward()
                 opt.step()
 
-                totals["pred_1step"] += loss_1step.item()
-                totals["pred_ms"] += loss_ms.item()
-                totals["sigreg"] += loss_sigreg.item()
+                totals["pred_1step"] += (cfg.lambda_pred_1step * loss_1step).item()
+                totals["pred_ms"] += (cfg.lambda_pred_ms * loss_ms).item()
+                totals["sigreg"] += (cfg.lambda_sigreg * loss_sigreg).item()
                 totals["actrecon"] += loss_ar.item() if torch.is_tensor(loss_ar) else loss_ar
                 totals["total"] += loss.item()
                 n_batches += 1
@@ -244,9 +244,9 @@ def train_jepa_naive(
             loss.backward()
             opt.step()
 
-            totals["pred_1step"] += loss_1step.item()
-            totals["pred_ms"] += loss_ms.item()
-            totals["sigreg"] += loss_sigreg.item()
+            totals["pred_1step"] += (cfg.lambda_pred_1step * loss_1step).item()
+            totals["pred_ms"] += (cfg.lambda_pred_ms * loss_ms).item()
+            totals["sigreg"] += (cfg.lambda_sigreg * loss_sigreg).item()
             totals["actrecon"] += loss_ar.item() if torch.is_tensor(loss_ar) else loss_ar
             totals["total"] += loss.item()
             n_batches += 1
