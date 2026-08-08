@@ -116,10 +116,16 @@ def evaluate_controller(
     seed: int = 0,
     process_noise_std: float = 0.0,
     action_clip: float | None = None,
+    x0: np.ndarray | None = None,
 ) -> dict:
     """Metrics mirror the notes' reporting: success rate (state norm stays
     below threshold for the final `hold_steps` steps), mean fraction of the
-    episode spent "stable", and the average final-state distance."""
+    episode spent "stable", and the average final-state distance.
+
+    `x0`: if given (shape (system.n,)), every trial starts from this exact
+    state instead of a random draw ~ N(0, x0_std^2 I). Trials still differ
+    from each other because the observation model's measurement noise (and
+    `process_noise_std`, if nonzero) is resampled per trial/step."""
     if hold_steps > n_steps + 1:
         raise ValueError(
             f"hold_steps={hold_steps} exceeds the trajectory length (n_steps+1={n_steps + 1}); "
@@ -127,6 +133,10 @@ def evaluate_controller(
             "success_rate would silently be 0 regardless of how stable the trajectory actually "
             "was. Either increase n_steps or decrease hold_steps."
         )
+    if x0 is not None:
+        x0 = np.asarray(x0, dtype=np.float64)
+        if x0.shape != (system.n,):
+            raise ValueError(f"x0 must have shape ({system.n},), got {x0.shape}")
     if K_z is None:
         return {
             "success_rate": 0.0,
@@ -139,8 +149,8 @@ def evaluate_controller(
     successes = 0
     frac_stable_list, final_dist_list, trajectories = [], [], []
     for _trial in range(n_trials):
-        x0 = x0_std * rng.standard_normal(system.n)
-        xs = closed_loop_rollout(system, obs_model, encoder, K_z, n_steps, x0, process_noise_std, rng, action_clip)
+        x0_trial = x0 if x0 is not None else x0_std * rng.standard_normal(system.n)
+        xs = closed_loop_rollout(system, obs_model, encoder, K_z, n_steps, x0_trial, process_noise_std, rng, action_clip)
         trajectories.append(xs)
         norms = np.linalg.norm(xs, axis=1)
         finite = np.isfinite(norms)

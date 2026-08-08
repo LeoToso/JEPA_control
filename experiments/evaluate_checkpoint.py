@@ -10,6 +10,11 @@ The checkpoint's `extra` metadata records which observation model (sensing
 matrix + noise) was used at training time; older checkpoints saved before
 that was added fall back to this example's known defaults (see
 checkpoint_io._OBS_DEFAULTS), with a printed warning so it's never silent.
+
+By default every trial starts from a random initial state ~ N(0, x0_std^2 I).
+Pass --x0 (or, for cartpole_linear, the shorthand --pole-angle0) to pin every
+trial to the same, exact starting state instead -- trials will still differ
+because the observation model's measurement noise is resampled per trial.
 """
 from __future__ import annotations
 
@@ -33,7 +38,9 @@ def main():
     p.add_argument("--n-steps", type=int, default=100, help="length of each closed-loop rollout")
     p.add_argument("--n-trials", type=int, default=30, help="number of random initial conditions to test")
     p.add_argument("--hold-steps", type=int, default=20, help="state must stay below threshold for the final N steps to count as a success")
-    p.add_argument("--x0-std", type=float, default=0.03, help="std of the random initial state")
+    p.add_argument("--x0-std", type=float, default=0.03, help="std of the random initial state (ignored if --x0/--pole-angle0 is given)")
+    p.add_argument("--x0", type=float, nargs="+", default=None, help="exact initial state to use for every trial, e.g. --x0 0 0 0.1 0 for cartpole_linear (length must equal the system's state dimension)")
+    p.add_argument("--pole-angle0", type=float, default=None, help="shorthand for cartpole_linear: pins the initial state to [0, 0, angle, 0] (cart centered/at rest, pole at this angle in radians, no angular velocity)")
     p.add_argument("--q-scale", type=float, default=10.0, help="LQR Q = q_scale * I in latent space")
     p.add_argument("--r-scale", type=float, default=1.0, help="LQR R = r_scale * I")
     p.add_argument("--seed", type=int, default=0, help="seed for the closed-loop evaluation trials")
@@ -53,6 +60,25 @@ def main():
         f"lambda_actrecon_ms={cfg.lambda_actrecon_ms}"
     )
 
+    if args.x0 is not None and args.pole_angle0 is not None:
+        raise SystemExit("pass only one of --x0 or --pole-angle0")
+    x0 = None
+    if args.pole_angle0 is not None:
+        if system.name != "cartpole_linear":
+            raise SystemExit(
+                f"--pole-angle0 assumes the cartpole_linear state layout "
+                f"[cart_pos, cart_vel, pole_angle, pole_angular_vel]; system is {system.name!r} -- use --x0 instead"
+            )
+        x0 = np.array([0.0, 0.0, args.pole_angle0, 0.0])
+    elif args.x0 is not None:
+        if len(args.x0) != system.n:
+            raise SystemExit(f"--x0 must have {system.n} values for system {system.name!r} (got {len(args.x0)})")
+        x0 = np.array(args.x0, dtype=np.float64)
+    if x0 is not None:
+        print(f"\nx0 (fixed for every trial) = {x0}")
+    else:
+        print(f"\nx0 ~ N(0, {args.x0_std}^2 I), resampled per trial")
+
     ctrl = design_latent_controller(predictor, q_scale=args.q_scale, r_scale=args.r_scale)
     print(f"\nstabilizable (latent) = {ctrl['stabilizable']}")
     print(f"true eigvals(A)      = {system.eigvals()}")
@@ -64,7 +90,7 @@ def main():
 
     ev = evaluate_controller(
         system, obs_model, encoder, ctrl["K_z"],
-        n_trials=args.n_trials, n_steps=args.n_steps, x0_std=args.x0_std,
+        n_trials=args.n_trials, n_steps=args.n_steps, x0_std=args.x0_std, x0=x0,
         success_threshold=args.success_threshold, hold_steps=args.hold_steps, seed=args.seed,
     )
     print(

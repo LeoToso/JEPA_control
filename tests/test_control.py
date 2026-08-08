@@ -80,6 +80,39 @@ def test_evaluate_controller_handles_no_controller():
     assert ev["final_state_distance_avg"] == float("inf")
 
 
+def test_evaluate_controller_fixed_x0_used_for_every_trial():
+    """When `x0` is passed, every trial's trajectory must start from that
+    exact state instead of a random draw."""
+    system = make_double_mode_system()
+    obs_model = make_observation_model(system, seed=0, n_distractor=4, measurement_noise_std=0.0)
+    from jepa_lds.models import FixedLinearEncoder
+
+    W = obs_model.oracle_decoder_weight(system.n)
+    encoder = FixedLinearEncoder(W)
+    pred = _predictor_from_matrices(system.A, system.B)
+    ctrl = design_latent_controller(pred)
+    fixed_x0 = np.array([0.02, -0.01])
+    ev = evaluate_controller(
+        system, obs_model, encoder, ctrl["K_z"],
+        n_trials=5, n_steps=10, hold_steps=3, seed=2, x0=fixed_x0,
+    )
+    for xs in ev["trajectories"]:
+        assert np.allclose(xs[0], fixed_x0)
+
+
+def test_evaluate_controller_rejects_wrong_shaped_x0():
+    system = make_double_mode_system()
+    obs_model = make_observation_model(system, seed=0)
+    from jepa_lds.models import LinearEncoder
+
+    encoder = LinearEncoder(obs_model.p, system.n)
+    K_z = np.zeros((system.m, system.n))
+    import pytest
+
+    with pytest.raises(ValueError, match="x0"):
+        evaluate_controller(system, obs_model, encoder, K_z, n_trials=2, n_steps=10, x0=np.array([0.0, 0.0, 0.0]))
+
+
 def test_evaluate_controller_rejects_hold_steps_longer_than_trajectory():
     """hold_steps > n_steps+1 can never be satisfied (there aren't that many
     steps to check), which would otherwise silently report success_rate=0
