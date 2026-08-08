@@ -57,6 +57,143 @@ def unstable_mode_retention(
     return r2_score(xi_val, xi_pred)
 
 
+def fit_state_probe(encoder, batch: EpisodeBatch, alpha: float = 1e-2) -> np.ndarray:
+    """Ridge-regress the FULL ground-truth state x (not just the unstable
+    modal coordinate) from z = encoder(y). Used to decode a state-space
+    quantity (position in the phase portrait, etc.) out of the latent for
+    plotting, the same way `unstable_mode_retention` probes a single
+    coordinate."""
+    Z, x = _encode_flat(encoder, batch)
+    return ridge_fit(Z, x, alpha=alpha)
+
+
+def decode_state(Z: np.ndarray, beta: np.ndarray) -> np.ndarray:
+    return ridge_predict(Z, beta)
+
+
+def build_2d_grid(lo: tuple[float, float], hi: tuple[float, float], n_points: int = 21):
+    """Meshgrid over [lo[0], hi[0]] x [lo[1], hi[1]]."""
+    g0 = np.linspace(lo[0], hi[0], n_points)
+    g1 = np.linspace(lo[1], hi[1], n_points)
+    return np.meshgrid(g0, g1)
+
+
+def grid_to_states(XX: np.ndarray, YY: np.ndarray, dims: tuple[int, int], n: int) -> np.ndarray:
+    """Embed a 2D (dims[0], dims[1]) grid into full n-dim state vectors, with
+    every other coordinate held at zero. Returns (n_points^2, n)."""
+    states = np.zeros((XX.size, n))
+    states[:, dims[0]] = XX.ravel()
+    states[:, dims[1]] = YY.ravel()
+    return states
+
+
+def _encode_states(obs_model: ObservationModel, encoder, states: np.ndarray) -> np.ndarray:
+    """Deterministic (noiseless, zeroed-distractor) encode of raw states --
+    used for the grid-based panels, where we want a fixed vector field / cost
+    surface rather than a noisy Monte-Carlo estimate."""
+    y_signal = states @ obs_model.C.T
+    if obs_model.n_distractor:
+        y = np.hstack([y_signal, np.zeros((states.shape[0], obs_model.n_distractor))])
+    else:
+        y = y_signal
+    with torch.no_grad():
+        return encoder(torch.tensor(y, dtype=torch.float32)).numpy()
+
+
+def phase_portrait_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    predictor,
+    beta: np.ndarray,
+    dims: tuple[int, int] = (0, 1),
+    lo: tuple[float, float] = (-1.0, -1.0),
+    hi: tuple[float, float] = (1.0, 1.0),
+    n_points: int = 17,
+) -> dict:
+    """Panel 1: at each grid state x, compare the true one-step drift
+    (A - I) x against the learned drift obtained by encoding x, applying the
+    latent predictor with zero action, and decoding back to state space with
+    the ridge probe `beta`."""
+    XX, YY = build_2d_grid(lo, hi, n_points)
+    states = grid_to_states(XX, YY, dims, system.n)
+    dx_true = states @ (system.A - np.eye(system.n)).T
+
+    z = _encode_states(obs_model, encoder, states)
+    with torch.no_grad():
+        z_next = predictor(
+            torch.tensor(z, dtype=torch.float32), torch.zeros(states.shape[0], system.m)
+        ).numpy()
+    x_hat_next = decode_state(z_next, beta)
+    dx_learned = x_hat_next - states
+
+    d0, d1 = dims
+    return {
+        "XX": XX,
+        "YY": YY,
+        "U_true": dx_true[:, d0].reshape(XX.shape),
+        "V_true": dx_true[:, d1].reshape(XX.shape),
+        "U_learned": dx_learned[:, d0].reshape(XX.shape),
+        "V_learned": dx_learned[:, d1].reshape(XX.shape),
+        "dims": dims,
+    }
+
+
+def h_step_prediction_error_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    predictor,
+    dims: tuple[int, int] = (0, 1),
+    lo: tuple[float, float] = (-1.0, -1.0),
+    hi: tuple[float, float] = (1.0, 1.0),
+    n_points: int = 17,
+    H: int = 10,
+) -> dict:
+    """Panel 2: from each grid state x0, compare the H-step-ahead latent
+    reached by (a) recursively applying the learned predictor with zero
+    actions against (b) re-encoding the true H-step-ahead state, both starting
+    from z0 = encoder(x0). Error is computed IN LATENT SPACE (||.||), not
+    decoded back to state space."""
+    XX, YY = build_2d_grid(lo, hi, n_points)
+    states = grid_to_states(XX, YY, dims, system.n)
+
+    x_H_true = states @ np.linalg.matrix_power(system.A, H).T
+    z0 = _encode_states(obs_model, encoder, states)
+    z_H_true = _encode_states(obs_model, encoder, x_H_true)
+
+    with torch.no_grad():
+        z = torch.tensor(z0, dtype=torch.float32)
+        zero_a = torch.zeros(states.shape[0], system.m)
+        for _ in range(H):
+            z = predictor(z, zero_a)
+        z_H_pred = z.numpy()
+
+    error = np.linalg.norm(z_H_pred - z_H_true, axis=1)
+    return {"XX": XX, "YY": YY, "error": error.reshape(XX.shape), "dims": dims, "H": H}
+
+
+def planning_cost_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    P_z: np.ndarray,
+    dims: tuple[int, int] = (0, 1),
+    lo: tuple[float, float] = (-1.0, -1.0),
+    hi: tuple[float, float] = (1.0, 1.0),
+    n_points: int = 17,
+) -> dict:
+    """Panel 3: log10 of the infinite-horizon LQR cost-to-go z^T P_z z under
+    the latent controller's own Riccati solution `P_z`, evaluated at each
+    grid state's encoding -- a stand-in for a learned planner's cost surface."""
+    XX, YY = build_2d_grid(lo, hi, n_points)
+    states = grid_to_states(XX, YY, dims, system.n)
+    z = _encode_states(obs_model, encoder, states)
+    cost = np.einsum("bi,ij,bj->b", z, P_z, z)
+    cost = np.clip(cost, 1e-12, None)
+    return {"XX": XX, "YY": YY, "log_cost": np.log10(cost).reshape(XX.shape), "dims": dims}
+
+
 def eigenvalue_comparison(system: LTISystem, predictor) -> dict:
     A_z, _B_z = predictor.matrices()
     return {

@@ -60,15 +60,18 @@ def design_latent_controller(predictor, q_scale: float = 1.0, r_scale: float = 1
     result["stabilizable"] = len(result["uncontrollable_unstable_modes"]) == 0
     if not result["stabilizable"]:
         result["K_z"] = None
+        result["P_z"] = None
         return result
     try:
-        K_z, _P_z = dlqr(A_z, B_z, q_scale * np.eye(d), r_scale * np.eye(m))
+        K_z, P_z = dlqr(A_z, B_z, q_scale * np.eye(d), r_scale * np.eye(m))
         result["K_z"] = K_z
+        result["P_z"] = P_z
         result["latent_closed_loop_spectral_radius"] = float(
             np.max(np.abs(np.linalg.eigvals(A_z - B_z @ K_z)))
         )
     except Exception as e:  # DARE can fail to converge on a pathological A_z, B_z
         result["K_z"] = None
+        result["P_z"] = None
         result["error"] = str(e)
     return result
 

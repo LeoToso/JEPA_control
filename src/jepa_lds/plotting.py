@@ -98,6 +98,92 @@ def plot_norm_divergence(true_norms: np.ndarray, rec_norms: np.ndarray, out_path
     return fig
 
 
+def plot_five_panels(
+    phase_panel: dict,
+    pred_err_panel: dict,
+    planning_panel: dict,
+    true_norms: np.ndarray,
+    rec_norms: np.ndarray,
+    cos_over_time: np.ndarray,
+    out_path: str,
+    title: str = "",
+):
+    """The 5-panel diagnostic figure: phase portrait, H-step latent
+    prediction error, latent LQR planning cost, latent norm divergence, and
+    cosine alignment along the unstable eigenvector -- adapted from the
+    real pixel-based project's `plot_checkpoint_summary_smwm.py`."""
+    fig, axes = plt.subplots(1, 5, figsize=(34, 6.5))
+
+    # Panel 1: phase portrait -- true (green) vs learned (plasma) vector field.
+    ax = axes[0]
+    XX, YY = phase_panel["XX"], phase_panel["YY"]
+    d0, d1 = phase_panel["dims"]
+    ax.quiver(
+        XX, YY, phase_panel["U_true"], phase_panel["V_true"],
+        color="green", alpha=0.7, label="true", angles="xy",
+    )
+    mag = np.hypot(phase_panel["U_learned"], phase_panel["V_learned"])
+    q = ax.quiver(
+        XX, YY, phase_panel["U_learned"], phase_panel["V_learned"], mag,
+        cmap="plasma", alpha=0.9, angles="xy",
+    )
+    fig.colorbar(q, ax=ax, fraction=0.046, pad=0.04, label="||learned drift||")
+    ax.set_xlabel(f"x[{d0}]")
+    ax.set_ylabel(f"x[{d1}]")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title("Phase portrait: true vs learned drift")
+
+    # Panel 2: H-step latent prediction error.
+    ax = axes[1]
+    XX2, YY2 = pred_err_panel["XX"], pred_err_panel["YY"]
+    d0e, d1e = pred_err_panel["dims"]
+    cf = ax.contourf(XX2, YY2, pred_err_panel["error"], levels=20, cmap="YlOrRd")
+    ax.contour(XX2, YY2, pred_err_panel["error"], levels=8, colors="k", linewidths=0.3, alpha=0.5)
+    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xlabel(f"x[{d0e}]")
+    ax.set_ylabel(f"x[{d1e}]")
+    ax.set_title(f"{pred_err_panel['H']}-step latent prediction error")
+
+    # Panel 3: planning cost (log10 z^T P_z z).
+    ax = axes[2]
+    XX3, YY3 = planning_panel["XX"], planning_panel["YY"]
+    d0p, d1p = planning_panel["dims"]
+    cf = ax.contourf(XX3, YY3, planning_panel["log_cost"], levels=8, cmap="RdYlBu_r")
+    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_xlabel(f"x[{d0p}]")
+    ax.set_ylabel(f"x[{d1p}]")
+    ax.set_title("log10 planning cost (z^T P_z z)")
+
+    # Panel 4: latent norm divergence.
+    ax = axes[3]
+    ax.plot(true_norms, color="steelblue", label="||z_t|| (re-encoded truth)")
+    ax.plot(rec_norms, "--", color="darkorange", label="||z_t_hat|| (recursive rollout)")
+    ax.set_xlabel("step")
+    ax.set_ylabel("latent norm")
+    ax.legend(fontsize=8)
+    ax.set_title("Latent norm divergence")
+
+    # Panel 5: cosine alignment along the unstable eigenvector.
+    ax = axes[4]
+    mean = cos_over_time.mean(axis=0)
+    std = cos_over_time.std(axis=0)
+    steps = np.arange(cos_over_time.shape[1])
+    ax.plot(steps, mean, color="#2166ac")
+    ax.fill_between(steps, mean - std, mean + std, alpha=0.25, color="#2166ac")
+    ax.axhline(1.0, color="grey", linewidth=0.5, linestyle=":")
+    ax.axhline(0.0, color="grey", linewidth=0.5)
+    ax.set_ylim(-1.1, 1.1)
+    ax.set_xlabel("step")
+    ax.set_title("Cosine alignment (unstable direction)")
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return fig
+
+
 def plot_cosine_alignment(cos_over_time: np.ndarray, out_path: str, title: str = ""):
     fig, ax = plt.subplots(figsize=(5, 4))
     mean = cos_over_time.mean(axis=0)

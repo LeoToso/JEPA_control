@@ -9,7 +9,7 @@ on the TRUE system -- with full control over the evaluation protocol.
 The checkpoint's `extra` metadata records which observation model (sensing
 matrix + noise) was used at training time; older checkpoints saved before
 that was added fall back to this example's known defaults (see
-_OBS_DEFAULTS below), with a printed warning so it's never silent.
+checkpoint_io._OBS_DEFAULTS), with a printed warning so it's never silent.
 """
 from __future__ import annotations
 
@@ -22,19 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 import torch
 
-from jepa_lds.checkpoint import load_checkpoint
+from checkpoint_io import load_checkpoint_with_env
 from jepa_lds.control import design_latent_controller, evaluate_controller
-from jepa_lds.data import make_observation_model
-from jepa_lds.systems import make_double_mode_system, make_linearized_cartpole_system
-
-_SYSTEM_MAKERS = {
-    "cartpole_linear": lambda: make_linearized_cartpole_system(dt=0.02),
-    "double_mode": make_double_mode_system,
-}
-_OBS_DEFAULTS = {
-    "cartpole_linear": dict(obs_dim_signal=10, n_distractor=10, measurement_noise_std=0.002, distractor_std=1.0, seed=0),
-    "double_mode": dict(obs_dim_signal=6, n_distractor=8, measurement_noise_std=0.01, distractor_std=1.0, seed=0),
-}
 
 
 def main():
@@ -53,39 +42,10 @@ def main():
 
     torch.set_num_threads(args.threads)
 
-    raw = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    extra_raw = raw.get("extra", {})
-    system_name = extra_raw.get("system_name")
-    if system_name not in _SYSTEM_MAKERS:
-        raise ValueError(
-            f"checkpoint's extra['system_name']={system_name!r} is missing or unrecognized "
-            f"(known: {list(_SYSTEM_MAKERS)}) -- can't reconstruct the ground-truth system"
-        )
-    system = _SYSTEM_MAKERS[system_name]()
-
-    obs_kwargs = {
-        k: extra_raw[k]
-        for k in ("obs_dim_signal", "n_distractor", "measurement_noise_std", "distractor_std", "obs_seed")
-        if k in extra_raw
-    }
-    if "obs_seed" in obs_kwargs:
-        obs_kwargs["seed"] = obs_kwargs.pop("obs_seed")
-    if not obs_kwargs:
-        print(f"[!] checkpoint predates saved obs-model params -- falling back to {system_name}'s known defaults")
-        obs_kwargs = _OBS_DEFAULTS[system_name]
-    obs_model = make_observation_model(system, **obs_kwargs)
-
-    if "obs_dim" in extra_raw and obs_model.p != extra_raw["obs_dim"]:
-        raise ValueError(
-            f"reconstructed observation model has p={obs_model.p} but checkpoint was trained with "
-            f"obs_dim={extra_raw['obs_dim']} -- obs-model reconstruction doesn't match training, "
-            f"results would be meaningless. Check obs_kwargs above."
-        )
-
-    encoder, predictor, _decoder, cfg, extra = load_checkpoint(args.checkpoint, obs_dim=obs_model.p, action_dim=system.m)
+    system, obs_model, encoder, predictor, _decoder, cfg, extra = load_checkpoint_with_env(args.checkpoint)
 
     print(f"checkpoint: {args.checkpoint}")
-    print(f"  system={system_name}  config={extra.get('config_name', '?')}  trainer={extra.get('trainer', '?')}")
+    print(f"  system={system.name}  config={extra.get('config_name', '?')}  trainer={extra.get('trainer', '?')}")
     print(
         f"  cfg: latent_dim={cfg.latent_dim} horizon={cfg.horizon} "
         f"lambda_pred_1step={cfg.lambda_pred_1step} lambda_pred_ms={cfg.lambda_pred_ms} "
