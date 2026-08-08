@@ -123,7 +123,9 @@ def main():
         save_checkpoint(
             ckpt_path, enc, pred, dec, cfg,
             extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
-                   "config_name": name, "trainer": "naive"},
+                   "config_name": name, "trainer": "naive",
+                   "obs_dim_signal": 10, "n_distractor": 10, "measurement_noise_std": 0.002,
+                   "distractor_std": 1.0, "obs_seed": args.obs_seed},
         )
         print(f"  saved checkpoint to {ckpt_path}")
 
