@@ -49,6 +49,7 @@ def main():
     p.add_argument("--config", choices=["sigreg", "actrecon", "both"], default="both",
                     help="train only L_pred+L_SIGReg, only L_pred+L_act, or both (default)")
     p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
+    p.add_argument("--log-every", type=int, default=10, help="print training progress every N outer rounds")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper"),
@@ -110,7 +111,7 @@ def main():
     summary, eval_results, latent_eigs = {}, {}, {}
     for name, cfg in configs.items():
         print(f"\n--- training {name} ---")
-        enc, pred, dec, hist = train_jepa(system, obs_model, train_batch, cfg, verbose=True)
+        enc, pred, dec, hist = train_jepa(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
         encoders[name], predictors[name], histories[name] = enc, pred, hist
 
         ckpt_path = os.path.join(args.out_dir, f"checkpoint_{_slug(name)}.pt")

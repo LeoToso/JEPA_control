@@ -71,6 +71,7 @@ def run_experiment(
     seed: int = 0,
     obs_seed: int = 0,
     verbose: bool = True,
+    log_every: int = 10,
 ):
     """`obs_seed` fixes the random "sensor" matrix (the observation model)
     independently of `seed`: it represents a fixed physical sensing
@@ -138,7 +139,7 @@ def run_experiment(
     encoders, predictors, histories = {}, {}, {}
     for name, cfg in configs.items():
         print(f"\n--- training {name} ---")
-        enc, pred, _dec, hist = train_jepa(system, obs_model, train_batch, cfg, verbose=verbose)
+        enc, pred, _dec, hist = train_jepa(system, obs_model, train_batch, cfg, verbose=verbose, log_every=log_every)
         encoders[name], predictors[name], histories[name] = enc, pred, hist
 
     # oracle: fixed, known-good encoder recovering x (up to measurement
@@ -152,7 +153,7 @@ def run_experiment(
     )
     oracle_encoder, oracle_predictor, _dec, oracle_hist = train_jepa(
         system, obs_model, train_batch, oracle_cfg,
-        encoder=oracle_encoder, train_encoder=False, verbose=verbose,
+        encoder=oracle_encoder, train_encoder=False, verbose=verbose, log_every=log_every,
     )
     encoders["oracle"], predictors["oracle"], histories["oracle"] = oracle_encoder, oracle_predictor, oracle_hist
 

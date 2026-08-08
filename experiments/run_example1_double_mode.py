@@ -26,6 +26,7 @@ def main():
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--outer-rounds", type=int, default=40)
     p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
+    p.add_argument("--log-every", type=int, default=10, help="print training progress every N outer rounds")
     p.add_argument("--out-dir", type=str, default=os.path.join(os.path.dirname(__file__), "..", "results", "example1_double_mode"))
     args = p.parse_args()
 
@@ -62,6 +63,7 @@ def main():
         hold_steps=15,
         seed=args.seed,
         obs_seed=args.obs_seed,
+        log_every=args.log_every,
     )
 
 

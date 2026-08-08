@@ -44,6 +44,7 @@ def main():
     p.add_argument("--lambda-pred-ms", type=float, default=1.0, help="weight on L_pred (multistep rollout, the only prediction term used)")
     p.add_argument("--lambda-sigreg", type=float, default=1.0, help="weight on L_SIGReg (only used when --config sigreg)")
     p.add_argument("--lambda-actrecon", type=float, default=20.0, help="weight on L_act, multistep decoder only (only used when --config actrecon)")
+    p.add_argument("--log-every", type=int, default=10, help="print training progress every N outer rounds / epochs")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "compare_training_schemes"),
@@ -106,7 +107,7 @@ def main():
         ("naive (regular joint SGD)", "naive", train_jepa_naive),
     ]:
         print(f"\n--- {name} ---")
-        enc, pred, dec, _hist = train_fn(system, obs_model, train_batch, cfg, verbose=True)
+        enc, pred, dec, _hist = train_fn(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
 
         ckpt_path = os.path.join(args.out_dir, f"checkpoint_{args.config}_{slug}.pt")
         save_checkpoint(

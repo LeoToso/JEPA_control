@@ -41,6 +41,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--obs-seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
+    p.add_argument("--log-every", type=int, default=10, help="print training progress every N epochs")
     p.add_argument("--n-train-ep", type=int, default=500)
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--outer-rounds", type=int, default=40, help="sets the naive trainer's total epoch budget (outer_rounds * inner_epochs)")
@@ -111,7 +112,7 @@ def main():
     summary, eval_results, latent_eigs = {}, {}, {}
     for name, cfg in configs.items():
         print(f"\n--- training {name} (naive joint SGD) ---")
-        enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True)
+        enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
         encoders[name], predictors[name], histories[name] = enc, pred, hist
 
         ckpt_path = os.path.join(args.out_dir, f"checkpoint_{_slug(name)}.pt")

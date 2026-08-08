@@ -89,6 +89,7 @@ def train_jepa(
     encoder=None,
     train_encoder: bool = True,
     verbose: bool = True,
+    log_every: int = 10,
 ):
     """If `encoder` is given and `train_encoder=False`, it is used as-is
     (e.g. the oracle FixedLinearEncoder) and excluded from optimization; the
@@ -164,7 +165,7 @@ def train_jepa(
             totals["pred"] = totals["pred_1step"] + totals["pred_ms"]
             history.append(totals)
 
-        if verbose and (outer % max(1, n_outer // 10) == 0 or outer == n_outer - 1):
+        if verbose and (outer % log_every == 0 or outer == n_outer - 1):
             t = history[-1]
             print(
                 f"[outer {outer:3d}] total={t['total']:.4f} pred1={t['pred_1step']:.4f} "
@@ -184,6 +185,7 @@ def train_jepa_naive(
     train_batch: EpisodeBatch,
     cfg: TrainConfig,
     verbose: bool = True,
+    log_every: int = 10,
 ):
     """"Regular" JEPA training, for direct comparison against `train_jepa`'s
     alternating scheme: encoder AND predictor are trained jointly, via a
@@ -255,7 +257,7 @@ def train_jepa_naive(
         totals["pred"] = totals["pred_1step"] + totals["pred_ms"]
         history.append(totals)
 
-        if verbose and (epoch % max(1, total_epochs // 10) == 0 or epoch == total_epochs - 1):
+        if verbose and (epoch % log_every == 0 or epoch == total_epochs - 1):
             t = history[-1]
             print(
                 f"[epoch {epoch:4d}] total={t['total']:.4f} pred1={t['pred_1step']:.4f} "
