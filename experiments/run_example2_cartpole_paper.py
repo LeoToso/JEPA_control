@@ -46,6 +46,8 @@ def main():
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lambda-sigreg", type=float, default=5.0, help="weight on L_SIGReg in the L_pred+L_SIGReg config")
     p.add_argument("--lambda-actrecon", type=float, default=5.0, help="weight on L_act (multistep decoder) in the L_pred+L_act config")
+    p.add_argument("--config", choices=["sigreg", "actrecon", "both"], default="both",
+                    help="train only L_pred+L_SIGReg, only L_pred+L_act, or both (default)")
     p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
     p.add_argument(
         "--out-dir", type=str,
@@ -77,7 +79,7 @@ def main():
     # rollout ONLY (lambda_pred_1step=0 -- no one-step backbone), L_act is
     # the multistep action decoder ONLY (lambda_actrecon_1step=0).
     # lambda_pred_ms is always 1; the second term's weight is CLI-configurable.
-    configs = {
+    all_configs = {
         "L_pred + L_SIGReg": TrainConfig(
             latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6, lr=1e-2,
             batch_size=args.batch_size,
@@ -95,7 +97,13 @@ def main():
             seed=args.seed,
         ),
     }
-    print(f"lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}")
+    if args.config == "sigreg":
+        configs = {"L_pred + L_SIGReg": all_configs["L_pred + L_SIGReg"]}
+    elif args.config == "actrecon":
+        configs = {"L_pred + L_act": all_configs["L_pred + L_act"]}
+    else:
+        configs = all_configs
+    print(f"config={args.config}  lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     encoders, predictors, histories = {}, {}, {}

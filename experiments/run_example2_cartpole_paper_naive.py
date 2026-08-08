@@ -46,6 +46,8 @@ def main():
     p.add_argument("--outer-rounds", type=int, default=40, help="sets the naive trainer's total epoch budget (outer_rounds * inner_epochs)")
     p.add_argument("--lambda-sigreg", type=float, default=5.0, help="weight on L_SIGReg in the L_pred+L_SIGReg config")
     p.add_argument("--lambda-actrecon", type=float, default=5.0, help="weight on L_act (multistep decoder) in the L_pred+L_act config")
+    p.add_argument("--config", choices=["sigreg", "actrecon", "both"], default="both",
+                    help="train only L_pred+L_SIGReg, only L_pred+L_act, or both (default)")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper_naive"),
@@ -78,7 +80,7 @@ def main():
     # via train_jepa_naive (regular joint end-to-end SGD) instead of the
     # alternating scheme. lambda_pred_ms is always 1; the second term's
     # weight is CLI-configurable.
-    configs = {
+    all_configs = {
         "L_pred + L_SIGReg": TrainConfig(
             latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6, lr=1e-2,
             batch_size=4096,
@@ -96,7 +98,13 @@ def main():
             seed=args.seed,
         ),
     }
-    print(f"lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}")
+    if args.config == "sigreg":
+        configs = {"L_pred + L_SIGReg": all_configs["L_pred + L_SIGReg"]}
+    elif args.config == "actrecon":
+        configs = {"L_pred + L_act": all_configs["L_pred + L_act"]}
+    else:
+        configs = all_configs
+    print(f"config={args.config}  lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     encoders, predictors, histories = {}, {}, {}
