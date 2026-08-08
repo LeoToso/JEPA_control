@@ -16,6 +16,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import torch
+
 from jepa_lds.checkpoint import save_checkpoint
 from jepa_lds.control import design_latent_controller, evaluate_controller
 from jepa_lds.data import generate_dataset, make_observation_model
@@ -44,11 +46,14 @@ def main():
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lambda-sigreg", type=float, default=5.0, help="weight on L_SIGReg in the L_pred+L_SIGReg config")
     p.add_argument("--lambda-actrecon", type=float, default=5.0, help="weight on L_act (multistep decoder) in the L_pred+L_act config")
+    p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper"),
     )
     args = p.parse_args()
+
+    torch.set_num_threads(args.threads)
 
     system = make_linearized_cartpole_system(dt=0.02)
     T = 30

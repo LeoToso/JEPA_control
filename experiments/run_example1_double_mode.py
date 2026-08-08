@@ -11,6 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import torch
+
 from common import run_experiment
 
 from jepa_lds.systems import make_double_mode_system
@@ -23,8 +25,11 @@ def main():
     p.add_argument("--n-train-ep", type=int, default=400)
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--outer-rounds", type=int, default=40)
+    p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
     p.add_argument("--out-dir", type=str, default=os.path.join(os.path.dirname(__file__), "..", "results", "example1_double_mode"))
     args = p.parse_args()
+
+    torch.set_num_threads(args.threads)
 
     system = make_double_mode_system()
     T = 10
