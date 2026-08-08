@@ -38,6 +38,11 @@ def main():
     p.add_argument("--n-train-ep", type=int, default=500)
     p.add_argument("--outer-rounds", type=int, default=40, help="also sets the naive trainer's total epoch budget (outer_rounds * inner_epochs)")
     p.add_argument("--n-trials", type=int, default=15)
+    p.add_argument("--config", choices=["sigreg", "actrecon"], default="sigreg",
+                    help="which second loss term to add to L_pred (multistep-only): SIGReg or action reconstruction")
+    p.add_argument("--lambda-pred-ms", type=float, default=1.0, help="weight on L_pred (multistep rollout, the only prediction term used)")
+    p.add_argument("--lambda-sigreg", type=float, default=1.0, help="weight on L_SIGReg (only used when --config sigreg)")
+    p.add_argument("--lambda-actrecon", type=float, default=20.0, help="weight on L_act, multistep decoder only (only used when --config actrecon)")
     args = p.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -60,16 +65,33 @@ def main():
 
     print(f"eigvals(A) = {system.eigvals()}  spectral_radius = {system.spectral_radius():.4f}")
 
-    # Tuned config known to make the alternating scheme succeed cleanly
-    # (see run_example2_cartpole_linear.py) -- chosen here specifically so
-    # the comparison has a clear "succeeds vs fails" contrast to show,
-    # rather than two mediocre-and-inconclusive results.
+    # L_pred is ALWAYS multistep-only here: lambda_pred_1step=0 (no one-step
+    # backbone), matching the LaTeX's L_pred exactly. Exactly one of
+    # {SIGReg, action reconstruction} is active; the other's weights are 0.
+    if args.config == "sigreg":
+        config_label = f"L_pred + L_SIGReg (lambda_sigreg={args.lambda_sigreg})"
+        lambda_sigreg = args.lambda_sigreg
+        lambda_actrecon_1step = 0.0
+        lambda_actrecon_ms = 0.0
+    else:
+        config_label = f"L_pred + L_act (lambda_act={args.lambda_actrecon})"
+        lambda_sigreg = 0.0
+        lambda_actrecon_1step = 0.0  # one-step decoder off too -- L_act is the multistep decoder only
+        lambda_actrecon_ms = args.lambda_actrecon
+
     cfg = TrainConfig(
         latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6,
         batch_size=4096, lr=1e-2,
-        lambda_pred_1step=1.0, lambda_pred_ms=1.0,
-        lambda_actrecon_1step=20.0, lambda_actrecon_ms=20.0,
+        lambda_pred_1step=0.0, lambda_pred_ms=args.lambda_pred_ms,
+        lambda_sigreg=lambda_sigreg,
+        lambda_actrecon_1step=lambda_actrecon_1step, lambda_actrecon_ms=lambda_actrecon_ms,
         seed=args.seed,
+    )
+    print(f"config: {config_label}")
+    print(
+        f"  lambda_pred_1step={cfg.lambda_pred_1step}  lambda_pred_ms={cfg.lambda_pred_ms}  "
+        f"lambda_sigreg={cfg.lambda_sigreg}  lambda_actrecon_1step={cfg.lambda_actrecon_1step}  "
+        f"lambda_actrecon_ms={cfg.lambda_actrecon_ms}"
     )
 
     for name, train_fn in [("alternating", train_jepa), ("naive (regular joint SGD)", train_jepa_naive)]:
