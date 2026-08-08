@@ -117,6 +117,13 @@ def evaluate_controller(
     """Metrics mirror the notes' reporting: success rate (state norm stays
     below threshold for the final `hold_steps` steps), mean fraction of the
     episode spent "stable", and the average final-state distance."""
+    if hold_steps > n_steps + 1:
+        raise ValueError(
+            f"hold_steps={hold_steps} exceeds the trajectory length (n_steps+1={n_steps + 1}); "
+            "the 'stable for the last hold_steps steps' check can never be satisfied, so "
+            "success_rate would silently be 0 regardless of how stable the trajectory actually "
+            "was. Either increase n_steps or decrease hold_steps."
+        )
     if K_z is None:
         return {
             "success_rate": 0.0,
