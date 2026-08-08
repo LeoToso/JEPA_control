@@ -50,6 +50,8 @@ def main():
                     help="train only L_pred+L_SIGReg, only L_pred+L_act, or both (default)")
     p.add_argument("--threads", type=int, default=4, help="torch.set_num_threads -- tiny models, more is often worse on shared/many-core machines")
     p.add_argument("--log-every", type=int, default=10, help="print training progress every N outer rounds")
+    p.add_argument("--horizon", type=int, default=None,
+                    help="multistep rollout length H for L_pred (default T-1=29, i.e. almost the whole episode)")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper"),
@@ -60,7 +62,7 @@ def main():
 
     system = make_linearized_cartpole_system(dt=0.02)
     T = 30
-    horizon = T - 1
+    horizon = args.horizon if args.horizon is not None else T - 1
 
     obs_model = make_observation_model(
         system, obs_dim_signal=10, n_distractor=10, measurement_noise_std=0.002, seed=args.obs_seed,

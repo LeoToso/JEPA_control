@@ -49,6 +49,10 @@ def main():
     p.add_argument("--lambda-actrecon", type=float, default=5.0, help="weight on L_act (multistep decoder) in the L_pred+L_act config")
     p.add_argument("--config", choices=["sigreg", "actrecon", "both"], default="both",
                     help="train only L_pred+L_SIGReg, only L_pred+L_act, or both (default)")
+    p.add_argument("--horizon", type=int, default=None,
+                    help="multistep rollout length H for L_pred (default T-1=29, i.e. almost the whole episode). "
+                         "Shorter H means fewer sequential steps to backprop the recursive rollout through -- "
+                         "much better-conditioned for naive joint SGD on unstable dynamics.")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper_naive"),
@@ -59,7 +63,7 @@ def main():
 
     system = make_linearized_cartpole_system(dt=0.02)
     T = 30
-    horizon = T - 1
+    horizon = args.horizon if args.horizon is not None else T - 1
 
     obs_model = make_observation_model(
         system, obs_dim_signal=10, n_distractor=10, measurement_noise_std=0.002, seed=args.obs_seed,
