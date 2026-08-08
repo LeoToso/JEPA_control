@@ -36,6 +36,7 @@ def main():
     p.add_argument("--n-train-ep", type=int, default=500)
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--outer-rounds", type=int, default=40)
+    p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper"),
@@ -67,6 +68,7 @@ def main():
     configs = {
         "L_pred + L_SIGReg": TrainConfig(
             latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6, lr=1e-2,
+            batch_size=args.batch_size,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0,
             lambda_sigreg=1.0,
             lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0,
@@ -74,6 +76,7 @@ def main():
         ),
         "L_pred + L_act": TrainConfig(
             latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6, lr=1e-2,
+            batch_size=args.batch_size,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0,
             lambda_sigreg=0.0,
             lambda_actrecon_1step=0.0, lambda_actrecon_ms=1.0,
