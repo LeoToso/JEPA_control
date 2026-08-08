@@ -44,6 +44,8 @@ def main():
     p.add_argument("--n-train-ep", type=int, default=500)
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--outer-rounds", type=int, default=40, help="sets the naive trainer's total epoch budget (outer_rounds * inner_epochs)")
+    p.add_argument("--lambda-sigreg", type=float, default=5.0, help="weight on L_SIGReg in the L_pred+L_SIGReg config")
+    p.add_argument("--lambda-actrecon", type=float, default=5.0, help="weight on L_act (multistep decoder) in the L_pred+L_act config")
     p.add_argument(
         "--out-dir", type=str,
         default=os.path.join(os.path.dirname(__file__), "..", "results", "example2_cartpole_paper_naive"),
@@ -70,17 +72,18 @@ def main():
 
     print(f"eigvals(A) = {system.eigvals()}  spectral_radius = {system.spectral_radius():.4f}")
 
-    # Same two boxed problems as run_example2_cartpole_paper.py, literally:
-    # L_pred is the multistep rollout ONLY (lambda_pred_1step=0), L_act is
-    # the multistep action decoder ONLY (lambda_actrecon_1step=0), every
-    # active weight is 1 -- but trained via train_jepa_naive (regular joint
-    # end-to-end SGD) instead of the alternating scheme.
+    # Same two boxed problems as run_example2_cartpole_paper.py: L_pred is
+    # the multistep rollout ONLY (lambda_pred_1step=0), L_act is the
+    # multistep action decoder ONLY (lambda_actrecon_1step=0) -- but trained
+    # via train_jepa_naive (regular joint end-to-end SGD) instead of the
+    # alternating scheme. lambda_pred_ms is always 1; the second term's
+    # weight is CLI-configurable.
     configs = {
         "L_pred + L_SIGReg": TrainConfig(
             latent_dim=system.n, horizon=horizon, outer_rounds=args.outer_rounds, inner_epochs=6, lr=1e-2,
             batch_size=4096,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0,
-            lambda_sigreg=1.0,
+            lambda_sigreg=args.lambda_sigreg,
             lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0,
             seed=args.seed,
         ),
@@ -89,10 +92,11 @@ def main():
             batch_size=4096,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0,
             lambda_sigreg=0.0,
-            lambda_actrecon_1step=0.0, lambda_actrecon_ms=1.0,
+            lambda_actrecon_1step=0.0, lambda_actrecon_ms=args.lambda_actrecon,
             seed=args.seed,
         ),
     }
+    print(f"lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     encoders, predictors, histories = {}, {}, {}
@@ -146,7 +150,8 @@ def main():
         json.dump(summary, f, indent=2)
     md_path = os.path.join(args.out_dir, "summary.md")
     with open(md_path, "w") as f:
-        f.write("# cartpole_linear -- paper-exact, naive joint SGD (2 configs, all weights = 1)\n\n")
+        f.write("# cartpole_linear -- paper-exact, naive joint SGD (2 configs, L_pred multistep-only)\n\n")
+        f.write(f"lambda_sigreg={args.lambda_sigreg}  lambda_actrecon={args.lambda_actrecon}\n\n")
         f.write(f"true eigvals(A): {system.eigvals()}\n\n")
         f.write("| config | stabilizable (latent) | unstable-mode R^2 | success rate | mean frac stable |\n")
         f.write("|---|---|---|---|---|\n")
