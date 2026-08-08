@@ -34,7 +34,7 @@ def load_checkpoint(path: str, obs_dim: int, action_dim: int):
     `obs_dim`/`action_dim` you supply -- these aren't stored in `cfg` since
     they come from the observation model / system, not the training
     hyperparameters, so pass the same values used to train the checkpoint."""
-    ckpt = torch.load(path, map_location="cpu")
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
     cfg = TrainConfig(**ckpt["cfg"])
 
     encoder = LinearEncoder(obs_dim, cfg.latent_dim, bias=False)

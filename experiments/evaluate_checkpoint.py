@@ -53,7 +53,7 @@ def main():
 
     torch.set_num_threads(args.threads)
 
-    raw = torch.load(args.checkpoint, map_location="cpu")
+    raw = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     extra_raw = raw.get("extra", {})
     system_name = extra_raw.get("system_name")
     if system_name not in _SYSTEM_MAKERS:
