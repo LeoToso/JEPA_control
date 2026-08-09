@@ -88,7 +88,13 @@ def main():
         direction_desc = direction_desc or f"direction={np.round(direction, 3).tolist()}"
 
         ctrl = design_latent_controller(predictor, q_scale=args.q_scale, r_scale=args.r_scale)
-        print(f"[{label}] stabilizable(latent)={ctrl['stabilizable']}")
+        radius_str = (
+            f"{ctrl['latent_closed_loop_spectral_radius']:.4f}" if ctrl["stabilizable"] else "n/a"
+        )
+        print(
+            f"[{label}] stabilizable(latent)={ctrl['stabilizable']}  "
+            f"latent_closed_loop_spectral_radius={radius_str}"
+        )
 
         res = {"success_rate": [], "mean_fraction_stable": [], "final_state_distance_avg": []}
         for mag in magnitudes:

@@ -87,6 +87,11 @@ def main():
         print("\nNo stabilizing latent controller could be designed: an unstable latent "
               "eigenvalue is uncontrollable (PBH test failed). Nothing to evaluate.")
         return
+    print(
+        f"latent closed-loop spectral radius = {ctrl['latent_closed_loop_spectral_radius']:.4f}  "
+        "(how close eig(A_z - B_z K_z) is to 1 -- closer to 1 means slower, more lightly damped "
+        "settling, even when the trajectory is technically converging)"
+    )
 
     ev = evaluate_controller(
         system, obs_model, encoder, ctrl["K_z"],
