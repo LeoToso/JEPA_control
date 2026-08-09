@@ -102,6 +102,73 @@ def plot_robustness_sweep(
     return fig
 
 
+def plot_local_stability_probe(
+    vf_panel: dict,
+    roa_panel: dict,
+    lyap_panel: dict,
+    out_path: str,
+    title: str = "",
+    unit_suffix: str = "",
+):
+    """The 3-panel local-stability probe: vector field (true vs learned
+    drift, near the origin), empirical region of attraction under the
+    learned closed-loop controller (with an optional oracle-LQR boundary
+    overlay), and a Lyapunov-decrease certificate map -- adapted from the
+    real pixel-based project's `probe_local_stability_smwm.py`."""
+    fig, axes = plt.subplots(1, 3, figsize=(19, 6))
+    suffix = f" ({unit_suffix})" if unit_suffix else ""
+
+    # Panel 1: vector field, true (green) vs learned (orange).
+    ax = axes[0]
+    XX, YY = vf_panel["XX"], vf_panel["YY"]
+    d0, d1 = vf_panel["dims"]
+    ax.quiver(XX, YY, vf_panel["U_true"], vf_panel["V_true"], color="green", alpha=0.8, label="true", angles="xy")
+    ax.quiver(XX, YY, vf_panel["U_learned"], vf_panel["V_learned"], color="darkorange", alpha=0.8, label="learned", angles="xy")
+    ax.scatter([0], [0], marker="*", s=150, c="red", zorder=5)
+    ax.set_xlabel(f"x[{d0}]{suffix}")
+    ax.set_ylabel(f"x[{d1}]{suffix}")
+    ax.legend(fontsize=8)
+    err = np.hypot(vf_panel["U_true"] - vf_panel["U_learned"], vf_panel["V_true"] - vf_panel["V_learned"])
+    mean_gt_mag = np.hypot(vf_panel["U_true"], vf_panel["V_true"]).mean()
+    norm_err = float(err.mean() / mean_gt_mag) if mean_gt_mag > 1e-12 else float("nan")
+    ax.set_title(f"Vector field (local)\nnormalized mean error = {norm_err:.3f}")
+
+    # Panel 2: empirical region of attraction.
+    ax = axes[1]
+    XX2, YY2 = roa_panel["XX"], roa_panel["YY"]
+    d0r, d1r = roa_panel["dims"]
+    ax.pcolormesh(XX2, YY2, roa_panel["success"], cmap="RdYlGn", vmin=0, vmax=1, shading="auto")
+    gt_note = ""
+    if "success_gt" in roa_panel:
+        ax.contour(XX2, YY2, roa_panel["success_gt"], levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
+        gt_note = f"  (dashed: oracle-LQR, {roa_panel['success_rate_gt']*100:.0f}%)"
+    ax.scatter([0], [0], marker="*", s=150, c="blue", zorder=5)
+    ax.set_xlabel(f"x[{d0r}]{suffix}")
+    ax.set_ylabel(f"x[{d1r}]{suffix}")
+    ax.set_title(f"Empirical region of attraction\nlearned-LQR success rate = {roa_panel['success_rate']*100:.1f}%{gt_note}")
+
+    # Panel 3: Lyapunov decrease.
+    ax = axes[2]
+    XX3, YY3 = lyap_panel["XX"], lyap_panel["YY"]
+    d0l, d1l = lyap_panel["dims"]
+    vmax = float(np.percentile(np.abs(lyap_panel["delta_V"]), 95))
+    vmax = vmax if vmax > 1e-12 else 1.0
+    cf = ax.pcolormesh(XX3, YY3, lyap_panel["delta_V"], cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
+    ax.contour(XX3, YY3, lyap_panel["delta_V"], levels=[0.0], colors="black", linewidths=1.2)
+    ax.scatter([0], [0], marker="*", s=150, c="lime", edgecolors="darkgreen", zorder=5)
+    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04, label="delta V = V(x') - V(x)")
+    ax.set_xlabel(f"x[{d0l}]{suffix}")
+    ax.set_ylabel(f"x[{d1l}]{suffix}")
+    ax.set_title(f"Lyapunov certificate (oracle quadratic V)\n{lyap_panel['frac_decrease']*100:.1f}% of grid satisfies decrease")
+
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return fig
+
+
 def plot_summary_bars(configs: list[str], r2_values: list[float], success_rates: list[float], out_path: str):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     axes[0].bar(configs, r2_values, color="steelblue")

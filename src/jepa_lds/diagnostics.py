@@ -71,10 +71,14 @@ def decode_state(Z: np.ndarray, beta: np.ndarray) -> np.ndarray:
     return ridge_predict(Z, beta)
 
 
-def build_2d_grid(lo: tuple[float, float], hi: tuple[float, float], n_points: int = 21):
-    """Meshgrid over [lo[0], hi[0]] x [lo[1], hi[1]]."""
-    g0 = np.linspace(lo[0], hi[0], n_points)
-    g1 = np.linspace(lo[1], hi[1], n_points)
+def build_2d_grid(lo: tuple[float, float], hi: tuple[float, float], n_points: int | tuple[int, int] = 21):
+    """Meshgrid over [lo[0], hi[0]] x [lo[1], hi[1]]. `n_points` is either a
+    single resolution shared by both axes, or a (n0, n1) pair for
+    independently-sized axes (e.g. a tighter grid on angle than on angular
+    velocity)."""
+    n0, n1 = (n_points, n_points) if isinstance(n_points, int) else n_points
+    g0 = np.linspace(lo[0], hi[0], n0)
+    g1 = np.linspace(lo[1], hi[1], n1)
     return np.meshgrid(g0, g1)
 
 
@@ -207,6 +211,118 @@ def planning_cost_panel(
     cost = np.sum(s_pred**2, axis=1)
     cost = np.clip(cost, 1e-12, None)
     return {"XX": XX, "YY": YY, "log_cost": np.log10(cost).reshape(XX.shape), "dims": dims, "H": H}
+
+
+def _batched_deterministic_success(
+    x_next_fn, X0: np.ndarray, n_steps: int, success_threshold: float, hold_steps: int
+) -> np.ndarray:
+    """Runs `x_next_fn(x) -> x_next` for `n_steps` on the WHOLE batch `X0`
+    (batch, n) at once (noiseless/deterministic -- one trial per grid point,
+    not a Monte-Carlo average), and applies the same success criterion as
+    `evaluate_controller`: state norm stays below `success_threshold` for the
+    final `hold_steps` of the trajectory."""
+    x = X0.copy()
+    norms = np.zeros((X0.shape[0], n_steps + 1))
+    norms[:, 0] = np.linalg.norm(x, axis=1)
+    for t in range(n_steps):
+        x = x_next_fn(x)
+        norms[:, t + 1] = np.linalg.norm(x, axis=1)
+    finite = np.isfinite(norms)
+    stable = finite & (norms < success_threshold)
+    tail = stable[:, -hold_steps:] if norms.shape[1] >= hold_steps else np.zeros((X0.shape[0], 0), dtype=bool)
+    return np.all(tail, axis=1) if tail.shape[1] > 0 else np.zeros(X0.shape[0], dtype=bool)
+
+
+def region_of_attraction_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    K_z: np.ndarray,
+    dims: tuple[int, int] = (0, 1),
+    lo: tuple[float, float] = (-1.0, -1.0),
+    hi: tuple[float, float] = (1.0, 1.0),
+    n_points: int | tuple[int, int] = 17,
+    n_steps: int = 60,
+    success_threshold: float = 0.3,
+    hold_steps: int = 10,
+    K_gt: np.ndarray | None = None,
+) -> dict:
+    """Panel 2 of the local-stability probe: for each grid state x0, a
+    single deterministic (noiseless) closed-loop rollout under the LEARNED
+    controller u_t = -K_z * encoder(observe(x_t)) on the TRUE system;
+    "success" uses the same criterion as `evaluate_controller`. If `K_gt` is
+    given (a full-state-feedback oracle gain designed directly on the true
+    (A, B), e.g. from `system.dlqr`), also computes its success map for
+    comparison (u_t = -K_gt x_t directly, no encoder involved).
+
+    CAVEAT specific to this exactly-linear, unconstrained toy system: a
+    genuinely stabilizing linear controller's true region of attraction is
+    the WHOLE state space -- there is no nonlinearity or actuator
+    saturation to shrink it (unlike the original pixel-based/nonlinear
+    cartpole this probe was adapted from). What this panel actually measures
+    is "how large an initial deviation decays below a FIXED threshold within
+    a FIXED step budget" -- a convergence-speed budget, not a structural
+    stability boundary. Still informative (larger deviations take
+    proportionally longer to decay below an absolute threshold), just don't
+    over-read the boundary shape as a literal basin of attraction."""
+    XX, YY = build_2d_grid(lo, hi, n_points)
+    states = grid_to_states(XX, YY, dims, system.n)
+
+    def learned_step(x):
+        z = _encode_states(obs_model, encoder, x)
+        u = -(K_z @ z.T).T
+        return x @ system.A.T + u @ system.B.T
+
+    success = _batched_deterministic_success(learned_step, states, n_steps, success_threshold, hold_steps)
+    result = {
+        "XX": XX, "YY": YY, "dims": dims,
+        "success": success.astype(float).reshape(XX.shape),
+        "success_rate": float(success.mean()),
+    }
+    if K_gt is not None:
+        def gt_step(x):
+            u = -(K_gt @ x.T).T
+            return x @ system.A.T + u @ system.B.T
+
+        success_gt = _batched_deterministic_success(gt_step, states, n_steps, success_threshold, hold_steps)
+        result["success_gt"] = success_gt.astype(float).reshape(XX.shape)
+        result["success_rate_gt"] = float(success_gt.mean())
+    return result
+
+
+def lyapunov_decrease_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    K_z: np.ndarray,
+    P_gt: np.ndarray,
+    dims: tuple[int, int] = (0, 1),
+    lo: tuple[float, float] = (-1.0, -1.0),
+    hi: tuple[float, float] = (1.0, 1.0),
+    n_points: int | tuple[int, int] = 17,
+) -> dict:
+    """Panel 3 of the local-stability probe: pointwise check of whether ONE
+    step under the LEARNED closed-loop controller decreases the GT quadratic
+    Lyapunov function V(x) = x^T P_gt x, where `P_gt` is the Riccati solution
+    of a full-state-feedback oracle LQR designed directly on the true
+    (A, B) (e.g. from `system.dlqr`) -- an honest, model-free check of
+    whether the learned controller's action is a valid descent direction for
+    the TRUE system's own natural cost, independent of what the learned
+    model itself believes."""
+    XX, YY = build_2d_grid(lo, hi, n_points)
+    states = grid_to_states(XX, YY, dims, system.n)
+    z = _encode_states(obs_model, encoder, states)
+    u = -(K_z @ z.T).T
+    x_next = states @ system.A.T + u @ system.B.T
+
+    V = np.einsum("bi,ij,bj->b", states, P_gt, states)
+    V_next = np.einsum("bi,ij,bj->b", x_next, P_gt, x_next)
+    delta_V = V_next - V
+    return {
+        "XX": XX, "YY": YY, "dims": dims,
+        "delta_V": delta_V.reshape(XX.shape),
+        "frac_decrease": float(np.mean(delta_V < 0)),
+    }
 
 
 def eigenvalue_comparison(system: LTISystem, predictor) -> dict:

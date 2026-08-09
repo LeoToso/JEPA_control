@@ -1,14 +1,17 @@
 import numpy as np
 import torch
 
+from jepa_lds.control import design_latent_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import (
     decode_state,
     fit_state_probe,
     grid_to_states,
     h_step_prediction_error_panel,
+    lyapunov_decrease_panel,
     phase_portrait_panel,
     planning_cost_panel,
+    region_of_attraction_panel,
 )
 from jepa_lds.models import FixedLinearEncoder, LinearLatentPredictor
 from jepa_lds.systems import make_double_mode_system
@@ -99,3 +102,46 @@ def test_planning_cost_panel_shape_and_finite():
     # cost should be minimal (near -inf in log10, i.e. lowest value) at the origin (center of an odd-sized grid).
     center = panel["log_cost"].shape[0] // 2
     assert panel["log_cost"][center, center] <= panel["log_cost"].max()
+
+
+def test_region_of_attraction_panel_shape_and_success_near_origin():
+    """With a faithful encoder + exactly-matching predictor, the learned LQR
+    gain should coincide with the oracle full-state gain, and small enough
+    perturbations near the origin should all be classified as successes by
+    both under a generous threshold."""
+    system, obs_model, _batch, encoder, pred = _setup()
+    ctrl = design_latent_controller(pred)
+    assert ctrl["stabilizable"]
+    K_gt, _P_gt = system.dlqr()
+    panel = region_of_attraction_panel(
+        system, obs_model, encoder, ctrl["K_z"], dims=(0, 1), lo=(-0.05, -0.05), hi=(0.05, 0.05),
+        n_points=3, n_steps=30, success_threshold=1.0, hold_steps=5, K_gt=K_gt,
+    )
+    assert panel["success"].shape == panel["XX"].shape
+    assert panel["success_rate"] == 1.0
+    assert "success_gt" in panel and "success_rate_gt" in panel
+    assert panel["success_rate_gt"] == 1.0
+
+
+def test_region_of_attraction_panel_no_gt_key_when_k_gt_omitted():
+    system, obs_model, _batch, encoder, pred = _setup()
+    ctrl = design_latent_controller(pred)
+    panel = region_of_attraction_panel(
+        system, obs_model, encoder, ctrl["K_z"], dims=(0, 1), lo=(-0.05, -0.05), hi=(0.05, 0.05),
+        n_points=3, n_steps=10, success_threshold=1.0, hold_steps=3,
+    )
+    assert "success_gt" not in panel
+
+
+def test_lyapunov_decrease_panel_shape_and_decrease_near_origin():
+    system, obs_model, _batch, encoder, pred = _setup()
+    ctrl = design_latent_controller(pred)
+    _K_gt, P_gt = system.dlqr()
+    panel = lyapunov_decrease_panel(
+        system, obs_model, encoder, ctrl["K_z"], P_gt, dims=(0, 1), lo=(-0.1, -0.1), hi=(0.1, 0.1), n_points=5,
+    )
+    assert panel["delta_V"].shape == panel["XX"].shape
+    assert np.all(np.isfinite(panel["delta_V"]))
+    # a faithful encoder + matching predictor's LQR gain should satisfy the
+    # oracle's own Lyapunov decrease almost everywhere near the origin.
+    assert panel["frac_decrease"] >= 0.8
