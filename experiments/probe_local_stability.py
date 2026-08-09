@@ -1,10 +1,18 @@
-"""Local-stability probe for a saved checkpoint: a 3-panel figure (vector
-field, empirical region of attraction, Lyapunov certificate), adapted from
-the real pixel-based project's `probe_local_stability_smwm.py`.
+"""Local-stability probe for a saved checkpoint: a 3-panel figure
+(unstable-eigenvector alignment, empirical region of attraction, Lyapunov
+certificate), adapted from the real pixel-based project's
+`probe_local_stability_smwm.py`.
 
-  Panel 1 (vector field): true vs learned one-step drift near the origin --
-    reuses the same computation as plot_five_panels.py's phase-portrait
-    panel, on a smaller/tighter grid.
+  Panel 1 (eigenvector alignment): the TRUE system's unstable eigenvector
+    vs. the LEARNED predictor's own dominant (largest-|eigenvalue|)
+    eigenvector, mapped back to state space via the pseudoinverse of the
+    encoder's own EXACT linear map (no data-fit probe involved) and
+    normalized to unit length -- a direct check of whether the learned
+    dynamics' fastest-growing direction actually points along the true
+    unstable mode, rather than inferring it indirectly from a local
+    vector field. The true stable eigenvector is shown too (grey), so
+    it's visually obvious if "learned" has instead aligned with the wrong
+    mode.
   Panel 2 (region of attraction): for each grid state, ONE deterministic
     (noiseless) closed-loop rollout under the LEARNED controller
     u_t = -K_z * encoder(y_t) on the TRUE system; green = stays below
@@ -45,12 +53,10 @@ import torch
 
 from checkpoint_io import load_checkpoint_with_env
 from jepa_lds.control import design_latent_controller
-from jepa_lds.data import generate_dataset
 from jepa_lds.diagnostics import (
-    fit_state_probe,
     lyapunov_decrease_panel,
-    phase_portrait_panel,
     region_of_attraction_panel,
+    unstable_eigenvector_alignment,
 )
 from jepa_lds.plotting import plot_local_stability_probe
 
@@ -73,11 +79,6 @@ def main():
         help="display/grid angle-like dims in degrees instead of radians (auto: on for cartpole_linear's default angle dims)",
     )
 
-    p.add_argument("--vf-dim0-max", type=float, default=8.0, help="vector-field grid half-width along dims[0]")
-    p.add_argument("--vf-dim1-max", type=float, default=30.0, help="vector-field grid half-width along dims[1]")
-    p.add_argument("--vf-n-dim0", type=int, default=21)
-    p.add_argument("--vf-n-dim1", type=int, default=17)
-
     p.add_argument("--roa-dim0-max", type=float, default=25.0, help="region-of-attraction grid half-width along dims[0]")
     p.add_argument("--roa-dim1-max", type=float, default=80.0, help="region-of-attraction grid half-width along dims[1]")
     p.add_argument("--roa-n-dim0", type=int, default=31)
@@ -93,9 +94,6 @@ def main():
 
     p.add_argument("--q-scale", type=float, default=1.0, help="LQR Q = q_scale * I (both learned-latent and oracle-physical designs)")
     p.add_argument("--r-scale", type=float, default=1.0, help="LQR R = r_scale * I")
-    p.add_argument("--n-probe-episodes", type=int, default=300, help="episodes generated to fit the state ridge probe (panel 1 only)")
-    p.add_argument("--probe-horizon", type=int, default=30)
-    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--threads", type=int, default=4)
     args = p.parse_args()
 
@@ -130,26 +128,15 @@ def main():
     print(f"  rho(A_z - B_z K_z)         = {ctrl['latent_closed_loop_spectral_radius']:.4f}")
     print(f"  rho(A - B K_gt) (oracle)   = {system.closed_loop_spectral_radius(K_gt):.4f}")
 
-    rng = np.random.default_rng(args.seed)
-    probe_batch = generate_dataset(
-        system, obs_model, args.n_probe_episodes, args.probe_horizon, seed=args.seed,
-        x0_std=0.03, action_std=0.3, state_clip=8.0,
-    )
-    beta = fit_state_probe(encoder, probe_batch)
-
-    lo_vf, hi_vf = _lo_hi(args.vf_dim0_max, args.vf_dim1_max)
     lo_roa, hi_roa = _lo_hi(args.roa_dim0_max, args.roa_dim1_max)
     lo_lyap, hi_lyap = _lo_hi(args.lyap_dim0_max, args.lyap_dim1_max)
 
-    print("[panel 1] vector field...")
-    vf_panel = phase_portrait_panel(
-        system, obs_model, encoder, predictor, beta, dims=dims,
-        lo=lo_vf, hi=hi_vf, n_points=(args.vf_n_dim0, args.vf_n_dim1),
-    )
-    _err = np.hypot(vf_panel["U_true"] - vf_panel["U_learned"], vf_panel["V_true"] - vf_panel["V_learned"])
-    _mean_gt_mag = np.hypot(vf_panel["U_true"], vf_panel["V_true"]).mean()
-    _norm_err = float(_err.mean() / _mean_gt_mag) if _mean_gt_mag > 1e-12 else float("nan")
-    print(f"  normalized mean vector-field error = {_norm_err:.3f}")
+    print("[panel 1] unstable eigenvector alignment...")
+    eig_panel = unstable_eigenvector_alignment(system, obs_model, encoder, predictor, dims=dims)
+    print(f"  learned dominant eigenvalue = {eig_panel['learned_dominant_eigval']}")
+    print(f"  cos_sim(learned, true unstable) = {eig_panel['cos_sim_unstable']:.4f}")
+    if "cos_sim_stable" in eig_panel:
+        print(f"  cos_sim(learned, true stable)   = {eig_panel['cos_sim_stable']:.4f}")
 
     print("[panel 2] empirical region of attraction...")
     roa_panel = region_of_attraction_panel(
@@ -170,20 +157,19 @@ def main():
     )
     print(f"  fraction of grid satisfying decrease = {lyap_panel['frac_decrease']*100:.1f}%")
 
+    # eig_panel's vectors are unit-normalized directions in a slice where both plotted
+    # dims share the same rad2deg factor (see _ANGLE_DIMS), so degree-vs-radian display
+    # doesn't change their normalized direction -- nothing to rescale there.
     if use_degrees:
         rad2deg = 180.0 / np.pi
-        for panel in (vf_panel, roa_panel, lyap_panel):
+        for panel in (roa_panel, lyap_panel):
             panel["XX"] = panel["XX"] * rad2deg
             panel["YY"] = panel["YY"] * rad2deg
-        vf_panel["U_true"] = vf_panel["U_true"] * rad2deg
-        vf_panel["V_true"] = vf_panel["V_true"] * rad2deg
-        vf_panel["U_learned"] = vf_panel["U_learned"] * rad2deg
-        vf_panel["V_learned"] = vf_panel["V_learned"] * rad2deg
 
     out_path = args.out or os.path.splitext(args.checkpoint)[0] + "_local_stability.pdf"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     plot_local_stability_probe(
-        vf_panel, roa_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
+        eig_panel, roa_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
     )
     print(f"\nwrote {out_path}")
 

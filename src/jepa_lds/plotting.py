@@ -139,36 +139,50 @@ def _axis_label(dim: int, suffix: str) -> str:
 
 
 def plot_local_stability_probe(
-    vf_panel: dict,
+    eig_panel: dict,
     roa_panel: dict,
     lyap_panel: dict,
     out_path: str,
     unit_suffix: str = "",
 ):
-    """The 3-panel local-stability probe: vector field (ground-truth vs
-    learned drift, near the origin), empirical region of attraction under
-    the learned closed-loop controller (with an optional oracle-LQR
-    boundary overlay), and a Lyapunov-decrease certificate map -- adapted
-    from the real pixel-based project's `probe_local_stability_smwm.py`.
+    """The 3-panel local-stability probe: unstable-eigenvector alignment
+    (true vs. learned, projected back to state space), empirical region of
+    attraction under the learned closed-loop controller (with an optional
+    oracle-LQR boundary overlay), and a Lyapunov-decrease certificate map --
+    adapted from the real pixel-based project's `probe_local_stability_smwm.py`
+    (panel 1 replaces its local vector field with a more direct alignment
+    check: does the learned dynamics' fastest-growing direction actually
+    point along the true unstable mode).
 
     Deliberately title-free (no per-panel title, no figure suptitle) --
-    the quantitative summary (normalized vector-field error, success
-    rates, decrease fraction) is printed to the console by the calling
-    script instead, keeping the figure itself uncluttered."""
+    the quantitative summary (cosine similarities, success rates, decrease
+    fraction) is printed to the console by the calling script instead,
+    keeping the figure itself uncluttered."""
     fig, axes = plt.subplots(1, 3, figsize=(19, 6))
     suffix = f" ({unit_suffix})" if unit_suffix else ""
 
-    # Panel 1: vector field, ground truth (green) vs learned (orange).
+    # Panel 1: unstable eigenvector alignment -- true (green) vs learned (orange),
+    # both unit vectors, with the true stable eigenvector (grey, dashed) as a
+    # reference so it's visually obvious if "learned" has aligned with the wrong mode.
     ax = axes[0]
-    XX, YY = vf_panel["XX"], vf_panel["YY"]
-    d0, d1 = vf_panel["dims"]
-    quiver_kwargs = dict(angles="xy", width=0.0075, headwidth=4.5, headlength=5.5, headaxislength=5)
-    ax.quiver(XX, YY, vf_panel["U_true"], vf_panel["V_true"], color="green", alpha=0.85, label="ground truth", **quiver_kwargs)
-    ax.quiver(XX, YY, vf_panel["U_learned"], vf_panel["V_learned"], color="darkorange", alpha=0.85, label="learned", **quiver_kwargs)
+    d0, d1 = eig_panel["dims"]
+    arrow_kwargs = dict(angles="xy", scale_units="xy", scale=1, width=0.03, headwidth=4, headlength=5)
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(np.cos(theta), np.sin(theta), color="grey", linewidth=0.7, linestyle=":", alpha=0.6)
+    if eig_panel.get("v_true_stable") is not None:
+        vs = eig_panel["v_true_stable"]
+        ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label="ground truth (stable)", **arrow_kwargs)
+    vu = eig_panel["v_true_unstable"]
+    vl = eig_panel["v_learned"]
+    ax.quiver(0, 0, vu[0], vu[1], color="green", label="ground truth (unstable)", **arrow_kwargs)
+    ax.quiver(0, 0, vl[0], vl[1], color="darkorange", label="learned (dominant)", **arrow_kwargs)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.set_aspect("equal")
     ax.set_xlabel(_axis_label(d0, suffix))
     ax.set_ylabel(_axis_label(d1, suffix))
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="upper right")
     ax.tick_params(labelsize=8)
 
     # Panel 2: empirical region of attraction.

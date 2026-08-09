@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .control import encoder_state_to_latent_map
 from .data import EpisodeBatch, ObservationModel
 from .systems import LTISystem
 
@@ -141,6 +142,75 @@ def phase_portrait_panel(
         "V_learned": dx_learned[:, d1].reshape(XX.shape),
         "dims": dims,
     }
+
+
+def unstable_eigenvector_alignment(
+    system: LTISystem, obs_model: ObservationModel, encoder, predictor, dims: tuple[int, int] = (0, 1)
+) -> dict:
+    """Compares the TRUE system's unstable eigenvector against the LEARNED
+    predictor's own dominant (largest-|eigenvalue|) eigenvector, mapped
+    back to state space -- a direct, grid-free check of whether the
+    learned dynamics' fastest-growing direction actually points along the
+    true unstable mode, rather than inferring it indirectly from a local
+    vector field or a closed-loop rollout.
+
+    The state-space direction is recovered via `encoder_state_to_latent_map`
+    (the encoder's EXACT linear map M: x -> z, derived analytically from
+    its weights and the fixed observation matrix -- no data or fitting
+    involved) and its Moore-Penrose pseudoinverse: `pinv(M) @ z_dom` is the
+    minimum-norm state-space direction whose image under M is z_dom. This
+    matters when latent_dim < system.n (as in the "killer collapse"
+    construction): a NOISY, data-fit ridge-regression decode of a
+    lower-dimensional z back to the full state is ill-posed and can pick
+    up spurious correlations from whatever dataset happens to be used to
+    fit it -- the exact pseudoinverse of the encoder's own analytic map has
+    no such degree of freedom.
+
+    Both eigenvectors are projected onto the 2 chosen `dims` (the same
+    slice-and-hold-other-dims-at-zero convention used by the grid panels)
+    and normalized to unit length so their alignment (cosine similarity)
+    is directly comparable regardless of scale.
+
+    For a 2-state system, also returns the true STABLE eigenvector as a
+    reference, so it's visually obvious if the learned direction has
+    instead aligned with the wrong (stable) mode; omitted for n > 2, where
+    "the" stable eigenvector isn't unique."""
+    w, V, _Vinv = system.modal_decomposition()
+    idx_u = system.unstable_mode_index()
+    d0, d1 = dims
+
+    def _project_unit(v: np.ndarray) -> np.ndarray:
+        v2 = np.real(v)[[d0, d1]]
+        norm = np.linalg.norm(v2)
+        return v2 / norm if norm > 1e-12 else v2
+
+    v_true_unstable = _project_unit(V[:, idx_u])
+    v_true_stable = _project_unit(V[:, 1 - idx_u]) if system.n == 2 else None
+
+    A_z, _B_z = predictor.matrices()
+    w_z, V_z = np.linalg.eig(A_z)
+    dom_idx = int(np.argmax(np.abs(w_z)))
+    z_dom = np.real(V_z[:, dom_idx])
+    M = encoder_state_to_latent_map(system, obs_model, encoder)  # (latent_dim, n), z = M @ x
+    x_dom = np.linalg.pinv(M) @ z_dom  # minimum-norm state-space preimage of z_dom
+    v_learned = _project_unit(x_dom)
+    # Eigenvectors are only defined up to sign; canonicalize so a well-aligned "learned"
+    # arrow visually points the SAME way as "ground truth (unstable)" rather than
+    # correctly-but-confusingly appearing as an antiparallel arrow.
+    if np.dot(v_learned, v_true_unstable) < 0:
+        v_learned = -v_learned
+
+    result = {
+        "v_true_unstable": v_true_unstable,
+        "v_true_stable": v_true_stable,
+        "v_learned": v_learned,
+        "dims": dims,
+        "learned_dominant_eigval": complex(w_z[dom_idx]),
+        "cos_sim_unstable": float(np.dot(v_true_unstable, v_learned)),
+    }
+    if v_true_stable is not None:
+        result["cos_sim_stable"] = float(np.dot(v_true_stable, v_learned))
+    return result
 
 
 def _rollout_latent_zero_action(predictor, z0: np.ndarray, m: int, H: int) -> np.ndarray:
