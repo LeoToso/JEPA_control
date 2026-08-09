@@ -106,36 +106,56 @@ def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unsta
         system, sigma_stable=0.3, sigma_unstable_small=0.01, sigma_unstable_large=0.01, contamination_prob=0.0,
     )
     T = 5
+    # action_std=0.01 (rather than a larger value) keeps the variance asymmetry sharp enough
+    # for a clean, near-deterministic split -- see the module docstring in
+    # experiments/run_example3_killer_collapse.py for why larger actions dilute it.
     train_batch = generate_dataset(
-        system, obs_model, 300, T, seed=0, action_std=0.05, process_noise_std=0.0,
+        system, obs_model, 300, T, seed=0, action_std=0.01, process_noise_std=0.0,
         state_clip=50.0, x0_sampler=x0_sampler, mixture={"passive": 0.3, "random": 0.7},
     )
     val_batch = generate_dataset(
-        system, obs_model, 80, T, seed=10_000, action_std=0.05, process_noise_std=0.0,
+        system, obs_model, 80, T, seed=10_000, action_std=0.01, process_noise_std=0.0,
         state_clip=50.0, x0_sampler=x0_sampler, mixture={"passive": 0.3, "random": 0.7},
     )
 
     n_seeds = 5
     n_sigreg_collapsed = 0
     n_actrecon_collapsed = 0
+    sigreg_success_rates, ar_success_rates = [], []
     for seed in range(n_seeds):
         cfg_sigreg = TrainConfig(
             latent_dim=1, horizon=4, outer_rounds=40, inner_epochs=6, batch_size=4096, lr=1e-2,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=25.0, seed=seed,
         )
-        enc_sigreg, _pred, _dec, _hist = train_jepa(system, obs_model, train_batch, cfg_sigreg, verbose=False)
+        enc_sigreg, pred_sigreg, _dec, _hist = train_jepa(system, obs_model, train_batch, cfg_sigreg, verbose=False)
         r2_sigreg = unstable_mode_retention(system, enc_sigreg, train_batch, val_batch)
         n_sigreg_collapsed += int(r2_sigreg < 0.5)
+        ctrl_sigreg = design_latent_controller(pred_sigreg, q_scale=10.0)
+        ev_sigreg = evaluate_controller(
+            system, obs_model, enc_sigreg, ctrl_sigreg["K_z"],
+            n_trials=10, n_steps=100, x0_std=0.05, success_threshold=0.5, hold_steps=15, seed=555,
+        )
+        sigreg_success_rates.append(ev_sigreg["success_rate"])
 
         cfg_ar = TrainConfig(
             latent_dim=1, horizon=4, outer_rounds=40, inner_epochs=6, batch_size=4096, lr=1e-2,
             lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_actrecon_ms=25.0, seed=seed,
         )
-        enc_ar, _pred, _dec, _hist = train_jepa(system, obs_model, train_batch, cfg_ar, verbose=False)
+        enc_ar, pred_ar, _dec, _hist = train_jepa(system, obs_model, train_batch, cfg_ar, verbose=False)
         r2_ar = unstable_mode_retention(system, enc_ar, train_batch, val_batch)
         n_actrecon_collapsed += int(r2_ar < 0.5)
+        ctrl_ar = design_latent_controller(pred_ar, q_scale=10.0)
+        ev_ar = evaluate_controller(
+            system, obs_model, enc_ar, ctrl_ar["K_z"],
+            n_trials=10, n_steps=100, x0_std=0.05, success_threshold=0.5, hold_steps=15, seed=555,
+        )
+        ar_success_rates.append(ev_ar["success_rate"])
 
-    # empirically (see experiments/run_example3_killer_collapse.py) this is 15/15 for sigreg and
-    # 0/15 for actrecon at n_seeds=15; use a conservative margin here to avoid test flakiness.
-    assert n_sigreg_collapsed >= 3
+    # empirically (see experiments/run_example3_killer_collapse.py) this is 15/15 collapsed for
+    # sigreg and 0/15 for actrecon at n_seeds=15, with sigreg's closed-loop success_rate at exactly
+    # 0.0 and actrecon's at exactly 1.0 in every seed -- asserted here with a small margin to avoid
+    # test flakiness at the smaller n_seeds/outer_rounds used for test speed.
+    assert n_sigreg_collapsed >= 4
     assert n_actrecon_collapsed == 0
+    assert np.mean(sigreg_success_rates) < 0.2
+    assert np.mean(ar_success_rates) == 1.0
