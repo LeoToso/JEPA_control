@@ -53,6 +53,7 @@ from jepa_lds.plotting import plot_local_stability_probe
 _DEFAULT_DIMS = {
     "cartpole_linear": (2, 3),  # pole angle, pole angular velocity
     "double_mode": (0, 1),
+    "double_mode_stable": (0, 1),
 }
 _ANGLE_DIMS = {
     "cartpole_linear": {2, 3},

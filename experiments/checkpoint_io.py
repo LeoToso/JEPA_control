@@ -19,10 +19,15 @@ from jepa_lds.systems import make_double_mode_system, make_linearized_cartpole_s
 _SYSTEM_MAKERS = {
     "cartpole_linear": lambda: make_linearized_cartpole_system(dt=0.02),
     "double_mode": make_double_mode_system,
+    # Example 4: same construction as "double_mode" but BOTH modes stable
+    # (unstable_eig=0.25 < 1, stable_eig=0.85 unchanged) -- system is
+    # open-loop stable, so a collapsed mode no longer breaks control.
+    "double_mode_stable": lambda: make_double_mode_system(unstable_eig=0.25, name="double_mode_stable"),
 }
 _OBS_DEFAULTS = {
     "cartpole_linear": dict(obs_dim_signal=10, n_distractor=10, measurement_noise_std=0.002, distractor_std=1.0, seed=0),
     "double_mode": dict(obs_dim_signal=6, n_distractor=8, measurement_noise_std=0.01, distractor_std=1.0, seed=0),
+    "double_mode_stable": dict(obs_dim_signal=6, n_distractor=0, measurement_noise_std=0.0, distractor_std=1.0, seed=0),
 }
 
 
