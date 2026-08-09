@@ -196,14 +196,7 @@ def plot_local_stability_probe(
     ax.pcolormesh(XX2, YY2, roa_panel["success"], cmap="RdYlGn", vmin=0, vmax=1, shading="auto")
     if "success_gt" in roa_panel:
         gt = roa_panel["success_gt"]
-        if np.all(gt > 0.5) or np.all(gt < 0.5):
-            verdict = "succeeds" if np.all(gt > 0.5) else "fails"
-            ax.text(
-                0.5, 0.03, f"oracle-LQR {verdict} everywhere in this range\n(no boundary to draw)",
-                transform=ax.transAxes, ha="center", va="bottom", fontsize=7.5,
-                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="grey", alpha=0.85),
-            )
-        else:
+        if not (np.all(gt > 0.5) or np.all(gt < 0.5)):
             ax.contour(XX2, YY2, gt, levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
     ax.set_xlabel(_axis_label(d0r, suffix))
