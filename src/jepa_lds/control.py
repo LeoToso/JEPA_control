@@ -103,6 +103,40 @@ def closed_loop_rollout(
     return xs
 
 
+def encoder_state_to_latent_map(system: LTISystem, obs_model, encoder) -> np.ndarray:
+    """The encoder's effective linear map M (latent_dim x n) from the TRUE
+    state x to z, through the fixed observation matrix C, with noise and any
+    encoder bias factored out: z = M x + (noise-dependent + bias terms).
+    Obtained by encoding one noiseless observation per standard basis state
+    (y = C @ e_i, distractor channels zero) and subtracting the encoder's
+    bias term (its output on an all-zero observation)."""
+    n = system.n
+    basis_obs = np.zeros((n, obs_model.p))
+    basis_obs[:, : obs_model.signal_dim] = obs_model.C.T
+    with torch.no_grad():
+        z_basis = encoder(torch.tensor(basis_obs, dtype=torch.float32)).numpy()
+        z_bias = encoder(torch.zeros((1, obs_model.p), dtype=torch.float32)).numpy()
+    return (z_basis - z_bias).T
+
+
+def true_closed_loop_eigenvalues(system: LTISystem, obs_model, encoder, K_z: np.ndarray) -> np.ndarray:
+    """Eigenvalues of the closed-loop matrix ACTUALLY simulated on the true
+    state by `closed_loop_rollout` (ignoring noise, which doesn't affect the
+    systematic x-dependent part): x_{t+1} = (A - B K_z M) x_t, where M is
+    `encoder_state_to_latent_map`.
+
+    This is generally NOT the same system as `A_z - B_z K_z` (the learned
+    predictor's own recursive latent dynamics, reported as
+    `latent_closed_loop_spectral_radius` by `design_latent_controller`) --
+    if the encoder's basis doesn't align with what the predictor assumes,
+    the true closed loop can be far more non-normal (poorly conditioned
+    eigenvectors) and ring for a long time before settling even when
+    A_z - B_z K_z's own eigenvalues look comfortably damped."""
+    M = encoder_state_to_latent_map(system, obs_model, encoder)
+    A_cl = system.A - system.B @ K_z @ M
+    return np.linalg.eigvals(A_cl)
+
+
 def evaluate_controller(
     system: LTISystem,
     obs_model,

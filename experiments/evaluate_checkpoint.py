@@ -28,7 +28,7 @@ import numpy as np
 import torch
 
 from checkpoint_io import load_checkpoint_with_env
-from jepa_lds.control import design_latent_controller, evaluate_controller
+from jepa_lds.control import design_latent_controller, evaluate_controller, true_closed_loop_eigenvalues
 
 
 def main():
@@ -88,9 +88,16 @@ def main():
               "eigenvalue is uncontrollable (PBH test failed). Nothing to evaluate.")
         return
     print(
-        f"latent closed-loop spectral radius = {ctrl['latent_closed_loop_spectral_radius']:.4f}  "
-        "(how close eig(A_z - B_z K_z) is to 1 -- closer to 1 means slower, more lightly damped "
-        "settling, even when the trajectory is technically converging)"
+        f"latent closed-loop spectral radius   = {ctrl['latent_closed_loop_spectral_radius']:.4f}  "
+        "(eig(A_z - B_z K_z) -- the LATENT model's own idealized closed loop, NOT what's actually simulated)"
+    )
+    true_eigs = true_closed_loop_eigenvalues(system, obs_model, encoder, ctrl["K_z"])
+    print(
+        f"true closed-loop spectral radius     = {np.max(np.abs(true_eigs)):.4f}  "
+        f"(eig(A - B K_z M) -- the closed loop ACTUALLY run on the true state in closed_loop_rollout; "
+        "can look very different from the latent-only number above if the encoder doesn't align "
+        "with what the predictor assumes -- eigvals: "
+        f"{true_eigs})"
     )
 
     ev = evaluate_controller(

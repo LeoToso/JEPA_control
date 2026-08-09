@@ -33,7 +33,7 @@ import numpy as np
 import torch
 
 from checkpoint_io import load_checkpoint_with_env
-from jepa_lds.control import design_latent_controller, evaluate_controller
+from jepa_lds.control import design_latent_controller, evaluate_controller, true_closed_loop_eigenvalues
 from jepa_lds.plotting import plot_closed_loop_trajectories, plot_robustness_sweep
 
 _CARTPOLE_DEFAULT_DIRECTION = np.array([0.0, 0.0, 1.0, 0.0])  # pole angle axis
@@ -88,12 +88,17 @@ def main():
         direction_desc = direction_desc or f"direction={np.round(direction, 3).tolist()}"
 
         ctrl = design_latent_controller(predictor, q_scale=args.q_scale, r_scale=args.r_scale)
-        radius_str = (
+        latent_radius_str = (
             f"{ctrl['latent_closed_loop_spectral_radius']:.4f}" if ctrl["stabilizable"] else "n/a"
         )
+        true_radius_str = "n/a"
+        if ctrl["stabilizable"]:
+            true_eigs = true_closed_loop_eigenvalues(system, obs_model, encoder, ctrl["K_z"])
+            true_radius_str = f"{np.max(np.abs(true_eigs)):.4f}"
         print(
             f"[{label}] stabilizable(latent)={ctrl['stabilizable']}  "
-            f"latent_closed_loop_spectral_radius={radius_str}"
+            f"latent_closed_loop_spectral_radius={latent_radius_str} (idealized, latent-only)  "
+            f"true_closed_loop_spectral_radius={true_radius_str} (actually simulated, on true state)"
         )
 
         res = {"success_rate": [], "mean_fraction_stable": [], "final_state_distance_avg": []}
