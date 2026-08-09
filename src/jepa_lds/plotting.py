@@ -64,6 +64,44 @@ def plot_closed_loop_trajectories(eval_results: dict[str, dict], out_path: str, 
     return fig
 
 
+def plot_robustness_sweep(
+    magnitudes: list[float],
+    results: dict[str, dict[str, list[float]]],
+    out_path: str,
+    xlabel: str = "perturbation magnitude",
+    title: str = "",
+):
+    """One line per checkpoint/config, one panel per metric, x-axis is the
+    initial-state perturbation magnitude. `results[label]` must have
+    "success_rate", "mean_fraction_stable", "final_state_distance_avg" lists
+    (one entry per `magnitudes` value, e.g. from repeated `evaluate_controller`
+    calls at growing ||x0||) -- makes a basin-of-attraction cliff (success
+    dropping off past some perturbation size) visible as a single figure
+    instead of a table of numbers."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    specs = [
+        ("success_rate", "success rate (%)", 100.0),
+        ("mean_fraction_stable", "mean fraction stable", 1.0),
+        ("final_state_distance_avg", "final state distance (avg)", 1.0),
+    ]
+    for ax, (key, ylabel, scale) in zip(axes, specs):
+        for label, res in results.items():
+            vals = np.array(res[key], dtype=float) * scale
+            vals = np.where(np.isfinite(vals), vals, np.nan)  # inf (no controller / blew up) -> gap, not an axis-breaking spike
+            ax.plot(magnitudes, vals, marker="o", label=label)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.grid(alpha=0.3)
+    axes[0].set_ylim(-5, 105)
+    axes[0].legend(fontsize=8)
+    if title:
+        fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return fig
+
+
 def plot_summary_bars(configs: list[str], r2_values: list[float], success_rates: list[float], out_path: str):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     axes[0].bar(configs, r2_values, color="steelblue")
