@@ -198,10 +198,10 @@ def plot_local_stability_probe(
     ax.set_xlim(-1.08, 1.08)
     ax.set_ylim(-1.08, 1.08)
     ax.set_aspect("equal")
-    ax.set_xlabel(_axis_label(d0, suffix))
-    ax.set_ylabel(_axis_label(d1, suffix))
-    ax.legend(fontsize=8, loc="upper right")
-    ax.tick_params(labelsize=8)
+    ax.set_xlabel(_axis_label(d0, suffix), fontsize=20)
+    ax.set_ylabel(_axis_label(d1, suffix), fontsize=20)
+    ax.legend(fontsize=15, loc="lower left")
+    ax.tick_params(labelsize=15)
 
     # Panel 2: closed-loop trajectories from a handful of marked initial
     # states -- converging to the equilibrium (star) or diverging away from
@@ -225,10 +225,10 @@ def plot_local_stability_probe(
         Line2D([0], [0], marker="o", markerfacecolor="none", markeredgecolor="black", linestyle="none", markersize=8, label="start ($x_0$)"),
         Line2D([0], [0], color="black", linewidth=1.2, label="closed-loop trajectory"),
     ]
-    ax.legend(handles=legend_handles, fontsize=8, loc="upper right")
-    ax.set_xlabel(_axis_label(d0t, suffix))
-    ax.set_ylabel(_axis_label(d1t, suffix))
-    ax.tick_params(labelsize=8)
+    ax.legend(handles=legend_handles, fontsize=15, loc="lower left")
+    ax.set_xlabel(_axis_label(d0t, suffix), fontsize=20)
+    ax.set_ylabel(_axis_label(d1t, suffix), fontsize=20)
+    ax.tick_params(labelsize=15)
 
     # Panel 3: Lyapunov decrease.
     ax = axes[2]
@@ -239,10 +239,12 @@ def plot_local_stability_probe(
     cf = ax.pcolormesh(XX3, YY3, lyap_panel["delta_V"], cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
     ax.contour(XX3, YY3, lyap_panel["delta_V"], levels=[0.0], colors="black", linewidths=1.2)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
-    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04, label=r"$\Delta V = V(x') - V(x)$")
-    ax.set_xlabel(_axis_label(d0l, suffix))
-    ax.set_ylabel(_axis_label(d1l, suffix))
-    ax.tick_params(labelsize=8)
+    cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(r"$\Delta V = V(x') - V(x)$", fontsize=20)
+    cbar.ax.tick_params(labelsize=15)
+    ax.set_xlabel(_axis_label(d0l, suffix), fontsize=20)
+    ax.set_ylabel(_axis_label(d1l, suffix), fontsize=20)
+    ax.tick_params(labelsize=15)
 
     fig.tight_layout()
     fig.savefig(out_path)
