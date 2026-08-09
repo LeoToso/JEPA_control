@@ -166,7 +166,11 @@ def plot_local_stability_probe(
     # reference so it's visually obvious if "learned" has aligned with the wrong mode.
     ax = axes[0]
     d0, d1 = eig_panel["dims"]
-    arrow_kwargs = dict(angles="xy", scale_units="xy", scale=1, width=0.03, headwidth=4, headlength=5)
+    # Thin shafts/heads so two nearly-parallel unit arrows don't visually
+    # merge into one blob; "learned" is drawn semi-transparent (and on top)
+    # so a perfectly-aligned overlap shows as a visibly blended color rather
+    # than fully hiding "ground truth (unstable)" underneath.
+    arrow_kwargs = dict(angles="xy", scale_units="xy", scale=1, width=0.012, headwidth=3.5, headlength=4.5, headaxislength=4)
     theta = np.linspace(0, 2 * np.pi, 200)
     ax.plot(np.cos(theta), np.sin(theta), color="grey", linewidth=0.7, linestyle=":", alpha=0.6)
     if eig_panel.get("v_true_stable") is not None:
@@ -174,11 +178,11 @@ def plot_local_stability_probe(
         ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label="ground truth (stable)", **arrow_kwargs)
     vu = eig_panel["v_true_unstable"]
     vl = eig_panel["v_learned"]
-    ax.quiver(0, 0, vu[0], vu[1], color="green", label="ground truth (unstable)", **arrow_kwargs)
-    ax.quiver(0, 0, vl[0], vl[1], color="darkorange", label="learned (dominant)", **arrow_kwargs)
+    ax.quiver(0, 0, vu[0], vu[1], color="green", label="ground truth (unstable)", zorder=4, **arrow_kwargs)
+    ax.quiver(0, 0, vl[0], vl[1], color="darkorange", alpha=0.6, label="learned (dominant)", zorder=5, **arrow_kwargs)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
-    ax.set_xlim(-1.3, 1.3)
-    ax.set_ylim(-1.3, 1.3)
+    ax.set_xlim(-1.08, 1.08)
+    ax.set_ylim(-1.08, 1.08)
     ax.set_aspect("equal")
     ax.set_xlabel(_axis_label(d0, suffix))
     ax.set_ylabel(_axis_label(d1, suffix))
