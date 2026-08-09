@@ -217,6 +217,65 @@ def make_modal_contaminated_x0_sampler(
     return sample
 
 
+def make_cartpole_modal_contaminated_x0_sampler(
+    system: LTISystem,
+    sigma_cart_pos: float = 0.1,
+    sigma_cart_vel: float = 0.1,
+    sigma_stable: float = 0.3,
+    sigma_unstable: float = 0.01,
+):
+    """Cartpole analogue of `make_modal_contaminated_x0_sampler`'s asymmetric-
+    variance construction, adapted for a system with a DEFECTIVE (non-
+    diagonalizable) marginal eigenvalue pair -- `make_linearized_cartpole_system`'s
+    A has eigenvalues {1, 1, unstable>1, stable<1}: the repeated eigenvalue 1
+    has geometric multiplicity 1 (a genuine 2x2 Jordan block spanning cart
+    position/velocity), so `np.linalg.eig`'s columns for that pair are two
+    near-parallel copies of the SAME eigenvector, not an independent basis --
+    `modal_decomposition`'s generic eigenvector split cannot be used for it.
+
+    Exploits the system's known block structure instead: because the pole
+    sub-dynamics (angle, angular velocity) don't depend on cart state (the
+    linearized cart-pole's pole row/cols are zero in the cart columns), BOTH
+    the pole's 2D eigenspace-pair {unstable, stable} AND the cart's 2D
+    Jordan block {position, velocity} are independently A-invariant, and
+    together span the full state -- so each can be sampled independently:
+      - pole modal coordinates xi_u ~ N(0, sigma_unstable^2), xi_s ~ N(0,
+        sigma_stable^2) via the (well-conditioned, isolated) pole
+        eigenvectors, exactly mirroring the 2-state construction's asymmetry
+        (sigma_stable >> sigma_unstable) so the same closed-form-fit variance
+        bias applies to "keep the unstable pole mode" vs. "keep the stable
+        pole mode" in a latent_dim=3 encoder.
+      - cart position/velocity sampled directly in their own (already-
+        invariant) physical coordinates -- no eigenvector decomposition
+        needed there, since e_pos alone and {e_pos, e_vel} together are each
+        already exactly A-invariant.
+
+    Only defined for `make_linearized_cartpole_system`'s state ordering
+    [cart pos, cart vel, pole angle, pole angular vel]."""
+    if system.n != 4:
+        raise ValueError("cartpole modal-contaminated x0 sampling is only implemented for the 4-state cartpole system")
+    w, V, _Vinv = system.modal_decomposition()
+    idx_u = system.unstable_mode_index()  # argmax|eigenvalue| -- the pole's unstable (>1) mode
+    idx_s = int(np.argmin(np.abs(w)))  # the pole's stable (<1) mode is the unique smallest-magnitude eigenvalue
+    if idx_u == idx_s:
+        raise ValueError("unstable/stable pole eigenvalue indices collided -- unexpected spectrum for this system")
+    v_u = np.real(V[:, idx_u])
+    v_u = v_u / np.linalg.norm(v_u)
+    v_s = np.real(V[:, idx_s])
+    v_s = v_s / np.linalg.norm(v_s)
+    e_pos = np.array([1.0, 0.0, 0.0, 0.0])
+    e_vel = np.array([0.0, 1.0, 0.0, 0.0])
+
+    def sample(rng: np.random.Generator) -> np.ndarray:
+        xi_u = sigma_unstable * rng.standard_normal()
+        xi_s = sigma_stable * rng.standard_normal()
+        c_pos = sigma_cart_pos * rng.standard_normal()
+        c_vel = sigma_cart_vel * rng.standard_normal()
+        return xi_u * v_u + xi_s * v_s + c_pos * e_pos + c_vel * e_vel
+
+    return sample
+
+
 class WindowDataset(Dataset):
     """Sliding windows of length H+1 (observations) / H (actions) for
     multistep-prediction and multistep-action-reconstruction training."""

@@ -1,7 +1,13 @@
 import numpy as np
 
-from jepa_lds.data import WindowDataset, generate_dataset, make_modal_contaminated_x0_sampler, make_observation_model
-from jepa_lds.systems import make_double_mode_system
+from jepa_lds.data import (
+    WindowDataset,
+    generate_dataset,
+    make_cartpole_modal_contaminated_x0_sampler,
+    make_modal_contaminated_x0_sampler,
+    make_observation_model,
+)
+from jepa_lds.systems import make_double_mode_system, make_linearized_cartpole_system
 
 
 def test_generate_dataset_shapes_and_finite():
@@ -90,3 +96,43 @@ def test_generate_dataset_accepts_custom_x0_sampler():
     batch = generate_dataset(s, obs, n_episodes=20, T=5, seed=0, x0_sampler=sampler)
     assert batch.x.shape == (20, 6, s.n)
     assert np.isfinite(batch.x).all()
+
+
+def test_cartpole_modal_contaminated_x0_sampler_variance_asymmetry():
+    """The cart position/velocity draws should match their own configured
+    std, and the pole's unstable modal coordinate should have MUCH smaller
+    variance than the stable one -- the same asymmetry as the 2-state
+    sampler, just restricted to the pole's (well-conditioned) eigenpair
+    while the cart's defective marginal pair is sampled directly in its own
+    (already-invariant) physical coordinates."""
+    s = make_linearized_cartpole_system()
+    sampler = make_cartpole_modal_contaminated_x0_sampler(
+        s, sigma_cart_pos=0.1, sigma_cart_vel=0.1, sigma_stable=0.3, sigma_unstable=0.01,
+    )
+    rng = np.random.default_rng(0)
+    X0 = np.array([sampler(rng) for _ in range(5000)])
+    assert X0.shape == (5000, s.n)
+    assert np.all(np.isfinite(X0))
+
+    w, V, _Vinv = s.modal_decomposition()
+    idx_u = s.unstable_mode_index()
+    idx_s = int(np.argmin(np.abs(w)))
+    v_u = np.real(V[:, idx_u])
+    v_s = np.real(V[:, idx_s])
+    e_pos = np.array([1.0, 0.0, 0.0, 0.0])
+    e_vel = np.array([0.0, 1.0, 0.0, 0.0])
+    basis = np.stack([e_pos, e_vel, v_u / np.linalg.norm(v_u), v_s / np.linalg.norm(v_s)], axis=1)
+    coeffs = np.linalg.solve(basis, X0.T).T  # columns: c_pos, c_vel, xi_u, xi_s
+
+    assert np.isclose(coeffs[:, 0].std(), 0.1, atol=0.02)
+    assert np.isclose(coeffs[:, 1].std(), 0.1, atol=0.02)
+    assert coeffs[:, 2].std() < 0.02  # xi_u ~ N(0, 0.01^2)
+    assert coeffs[:, 3].std() > 0.2  # xi_s ~ N(0, 0.3^2)
+
+
+def test_cartpole_modal_contaminated_x0_sampler_rejects_non_4d_system():
+    import pytest
+
+    s = make_double_mode_system()
+    with pytest.raises(ValueError, match="4-state"):
+        make_cartpole_modal_contaminated_x0_sampler(s)
