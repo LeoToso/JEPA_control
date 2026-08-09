@@ -129,50 +129,68 @@ def plot_collapse_rate_sweep(
     return fig
 
 
+# Shared marker style for the origin/equilibrium point, kept identical across all three
+# panels (and readable against green/red, plasma, and RdBu_r backgrounds alike).
+_EQUILIBRIUM_STYLE = dict(marker="*", s=220, c="white", edgecolors="black", linewidths=1.3, zorder=6)
+
+
+def _axis_label(dim: int, suffix: str) -> str:
+    return f"$x_{{{dim + 1}}}${suffix}"
+
+
 def plot_local_stability_probe(
     vf_panel: dict,
     roa_panel: dict,
     lyap_panel: dict,
     out_path: str,
-    title: str = "",
     unit_suffix: str = "",
 ):
-    """The 3-panel local-stability probe: vector field (true vs learned
-    drift, near the origin), empirical region of attraction under the
-    learned closed-loop controller (with an optional oracle-LQR boundary
-    overlay), and a Lyapunov-decrease certificate map -- adapted from the
-    real pixel-based project's `probe_local_stability_smwm.py`."""
+    """The 3-panel local-stability probe: vector field (ground-truth vs
+    learned drift, near the origin), empirical region of attraction under
+    the learned closed-loop controller (with an optional oracle-LQR
+    boundary overlay), and a Lyapunov-decrease certificate map -- adapted
+    from the real pixel-based project's `probe_local_stability_smwm.py`.
+
+    Deliberately title-free (no per-panel title, no figure suptitle) --
+    the quantitative summary (normalized vector-field error, success
+    rates, decrease fraction) is printed to the console by the calling
+    script instead, keeping the figure itself uncluttered."""
     fig, axes = plt.subplots(1, 3, figsize=(19, 6))
     suffix = f" ({unit_suffix})" if unit_suffix else ""
 
-    # Panel 1: vector field, true (green) vs learned (orange).
+    # Panel 1: vector field, ground truth (green) vs learned (orange).
     ax = axes[0]
     XX, YY = vf_panel["XX"], vf_panel["YY"]
     d0, d1 = vf_panel["dims"]
-    ax.quiver(XX, YY, vf_panel["U_true"], vf_panel["V_true"], color="green", alpha=0.8, label="true", angles="xy")
-    ax.quiver(XX, YY, vf_panel["U_learned"], vf_panel["V_learned"], color="darkorange", alpha=0.8, label="learned", angles="xy")
-    ax.scatter([0], [0], marker="*", s=150, c="red", zorder=5)
-    ax.set_xlabel(f"x[{d0}]{suffix}")
-    ax.set_ylabel(f"x[{d1}]{suffix}")
+    quiver_kwargs = dict(angles="xy", width=0.0075, headwidth=4.5, headlength=5.5, headaxislength=5)
+    ax.quiver(XX, YY, vf_panel["U_true"], vf_panel["V_true"], color="green", alpha=0.85, label="ground truth", **quiver_kwargs)
+    ax.quiver(XX, YY, vf_panel["U_learned"], vf_panel["V_learned"], color="darkorange", alpha=0.85, label="learned", **quiver_kwargs)
+    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    ax.set_xlabel(_axis_label(d0, suffix))
+    ax.set_ylabel(_axis_label(d1, suffix))
     ax.legend(fontsize=8)
-    err = np.hypot(vf_panel["U_true"] - vf_panel["U_learned"], vf_panel["V_true"] - vf_panel["V_learned"])
-    mean_gt_mag = np.hypot(vf_panel["U_true"], vf_panel["V_true"]).mean()
-    norm_err = float(err.mean() / mean_gt_mag) if mean_gt_mag > 1e-12 else float("nan")
-    ax.set_title(f"Vector field (local)\nnormalized mean error = {norm_err:.3f}")
+    ax.tick_params(labelsize=8)
 
     # Panel 2: empirical region of attraction.
     ax = axes[1]
     XX2, YY2 = roa_panel["XX"], roa_panel["YY"]
     d0r, d1r = roa_panel["dims"]
     ax.pcolormesh(XX2, YY2, roa_panel["success"], cmap="RdYlGn", vmin=0, vmax=1, shading="auto")
-    gt_note = ""
     if "success_gt" in roa_panel:
-        ax.contour(XX2, YY2, roa_panel["success_gt"], levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
-        gt_note = f"  (dashed: oracle-LQR, {roa_panel['success_rate_gt']*100:.0f}%)"
-    ax.scatter([0], [0], marker="*", s=150, c="blue", zorder=5)
-    ax.set_xlabel(f"x[{d0r}]{suffix}")
-    ax.set_ylabel(f"x[{d1r}]{suffix}")
-    ax.set_title(f"Empirical region of attraction\nlearned-LQR success rate = {roa_panel['success_rate']*100:.1f}%{gt_note}")
+        gt = roa_panel["success_gt"]
+        if np.all(gt > 0.5) or np.all(gt < 0.5):
+            verdict = "succeeds" if np.all(gt > 0.5) else "fails"
+            ax.text(
+                0.5, 0.03, f"oracle-LQR {verdict} everywhere in this range\n(no boundary to draw)",
+                transform=ax.transAxes, ha="center", va="bottom", fontsize=7.5,
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="grey", alpha=0.85),
+            )
+        else:
+            ax.contour(XX2, YY2, gt, levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
+    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    ax.set_xlabel(_axis_label(d0r, suffix))
+    ax.set_ylabel(_axis_label(d1r, suffix))
+    ax.tick_params(labelsize=8)
 
     # Panel 3: Lyapunov decrease.
     ax = axes[2]
@@ -182,14 +200,12 @@ def plot_local_stability_probe(
     vmax = vmax if vmax > 1e-12 else 1.0
     cf = ax.pcolormesh(XX3, YY3, lyap_panel["delta_V"], cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
     ax.contour(XX3, YY3, lyap_panel["delta_V"], levels=[0.0], colors="black", linewidths=1.2)
-    ax.scatter([0], [0], marker="*", s=150, c="lime", edgecolors="darkgreen", zorder=5)
-    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04, label="delta V = V(x') - V(x)")
-    ax.set_xlabel(f"x[{d0l}]{suffix}")
-    ax.set_ylabel(f"x[{d1l}]{suffix}")
-    ax.set_title(f"Lyapunov certificate (oracle quadratic V)\n{lyap_panel['frac_decrease']*100:.1f}% of grid satisfies decrease")
+    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04, label=r"$\Delta V = V(x') - V(x)$")
+    ax.set_xlabel(_axis_label(d0l, suffix))
+    ax.set_ylabel(_axis_label(d1l, suffix))
+    ax.tick_params(labelsize=8)
 
-    if title:
-        fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)

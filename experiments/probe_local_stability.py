@@ -75,21 +75,21 @@ def main():
 
     p.add_argument("--vf-dim0-max", type=float, default=8.0, help="vector-field grid half-width along dims[0]")
     p.add_argument("--vf-dim1-max", type=float, default=30.0, help="vector-field grid half-width along dims[1]")
-    p.add_argument("--vf-n-dim0", type=int, default=11)
-    p.add_argument("--vf-n-dim1", type=int, default=9)
+    p.add_argument("--vf-n-dim0", type=int, default=21)
+    p.add_argument("--vf-n-dim1", type=int, default=17)
 
     p.add_argument("--roa-dim0-max", type=float, default=25.0, help="region-of-attraction grid half-width along dims[0]")
     p.add_argument("--roa-dim1-max", type=float, default=80.0, help="region-of-attraction grid half-width along dims[1]")
-    p.add_argument("--roa-n-dim0", type=int, default=17)
-    p.add_argument("--roa-n-dim1", type=int, default=13)
+    p.add_argument("--roa-n-dim0", type=int, default=31)
+    p.add_argument("--roa-n-dim1", type=int, default=25)
     p.add_argument("--n-steps", type=int, default=60, help="closed-loop rollout length for the region-of-attraction check")
     p.add_argument("--success-threshold", type=float, default=0.3, help="||x_t|| must stay below this to count as 'stable'")
     p.add_argument("--hold-steps", type=int, default=10, help="state must stay below threshold for the final N steps to count as a success")
 
     p.add_argument("--lyap-dim0-max", type=float, default=15.0, help="Lyapunov grid half-width along dims[0]")
     p.add_argument("--lyap-dim1-max", type=float, default=50.0, help="Lyapunov grid half-width along dims[1]")
-    p.add_argument("--lyap-n-dim0", type=int, default=17)
-    p.add_argument("--lyap-n-dim1", type=int, default=13)
+    p.add_argument("--lyap-n-dim0", type=int, default=31)
+    p.add_argument("--lyap-n-dim1", type=int, default=25)
 
     p.add_argument("--q-scale", type=float, default=1.0, help="LQR Q = q_scale * I (both learned-latent and oracle-physical designs)")
     p.add_argument("--r-scale", type=float, default=1.0, help="LQR R = r_scale * I")
@@ -146,6 +146,10 @@ def main():
         system, obs_model, encoder, predictor, beta, dims=dims,
         lo=lo_vf, hi=hi_vf, n_points=(args.vf_n_dim0, args.vf_n_dim1),
     )
+    _err = np.hypot(vf_panel["U_true"] - vf_panel["U_learned"], vf_panel["V_true"] - vf_panel["V_learned"])
+    _mean_gt_mag = np.hypot(vf_panel["U_true"], vf_panel["V_true"]).mean()
+    _norm_err = float(_err.mean() / _mean_gt_mag) if _mean_gt_mag > 1e-12 else float("nan")
+    print(f"  normalized mean vector-field error = {_norm_err:.3f}")
 
     print("[panel 2] empirical region of attraction...")
     roa_panel = region_of_attraction_panel(
@@ -178,9 +182,8 @@ def main():
 
     out_path = args.out or os.path.splitext(args.checkpoint)[0] + "_local_stability.pdf"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    title = f"{system.name} -- {extra.get('config_name', '?')} ({extra.get('trainer', '?')})"
     plot_local_stability_probe(
-        vf_panel, roa_panel, lyap_panel, out_path, title=title, unit_suffix="deg" if use_degrees else "",
+        vf_panel, roa_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
     )
     print(f"\nwrote {out_path}")
 
