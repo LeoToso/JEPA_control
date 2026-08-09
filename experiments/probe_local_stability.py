@@ -83,7 +83,7 @@ def main():
     p.add_argument("--roa-dim1-max", type=float, default=80.0, help="region-of-attraction grid half-width along dims[1]")
     p.add_argument("--roa-n-dim0", type=int, default=31)
     p.add_argument("--roa-n-dim1", type=int, default=25)
-    p.add_argument("--n-steps", type=int, default=60, help="closed-loop rollout length for the region-of-attraction check")
+    p.add_argument("--n-steps", type=int, default=300, help="closed-loop rollout length for the region-of-attraction check")
     p.add_argument("--success-threshold", type=float, default=0.3, help="||x_t|| must stay below this to count as 'stable'")
     p.add_argument("--hold-steps", type=int, default=10, help="state must stay below threshold for the final N steps to count as a success")
 

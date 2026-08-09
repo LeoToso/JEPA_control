@@ -7,6 +7,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 
 def plot_training_curves(histories: dict[str, list[dict]], out_path: str):
@@ -194,11 +196,17 @@ def plot_local_stability_probe(
     XX2, YY2 = roa_panel["XX"], roa_panel["YY"]
     d0r, d1r = roa_panel["dims"]
     ax.pcolormesh(XX2, YY2, roa_panel["success"], cmap="RdYlGn", vmin=0, vmax=1, shading="auto")
+    legend_handles = [
+        Patch(facecolor="green", edgecolor="none", label="success"),
+        Patch(facecolor="red", edgecolor="none", label="failure"),
+    ]
     if "success_gt" in roa_panel:
         gt = roa_panel["success_gt"]
         if not (np.all(gt > 0.5) or np.all(gt < 0.5)):
             ax.contour(XX2, YY2, gt, levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
+            legend_handles.append(Line2D([0], [0], color="black", linestyle="dashed", linewidth=1.5, label="oracle-LQR boundary"))
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    ax.legend(handles=legend_handles, fontsize=8, loc="upper right")
     ax.set_xlabel(_axis_label(d0r, suffix))
     ax.set_ylabel(_axis_label(d1r, suffix))
     ax.tick_params(labelsize=8)
