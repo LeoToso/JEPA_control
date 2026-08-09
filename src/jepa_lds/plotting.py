@@ -102,6 +102,33 @@ def plot_robustness_sweep(
     return fig
 
 
+def plot_collapse_rate_sweep(
+    horizons: list[int],
+    results: dict[str, list[float]],
+    out_path: str,
+    title: str = "",
+):
+    """One line per config, x-axis is the multistep prediction horizon H,
+    y-axis is the fraction of random-seed reruns (at that H) whose learned
+    encoder ends up collapsing the unstable mode (unstable_mode_retention
+    R^2 below a threshold). `results[label]` is a list of collapse rates in
+    [0, 1], one entry per `horizons` value."""
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    for label, rates in results.items():
+        ax.plot(horizons, [r * 100 for r in rates], marker="o", label=label)
+    ax.set_xlabel("prediction horizon H")
+    ax.set_ylabel("unstable-mode collapse rate (%)")
+    ax.set_ylim(-5, 105)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=9)
+    if title:
+        ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return fig
+
+
 def plot_local_stability_probe(
     vf_panel: dict,
     roa_panel: dict,
