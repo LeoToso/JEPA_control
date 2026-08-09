@@ -139,37 +139,43 @@ def phase_portrait_panel(
     }
 
 
+def _rollout_latent_zero_action(predictor, z0: np.ndarray, m: int, H: int) -> np.ndarray:
+    with torch.no_grad():
+        z = torch.tensor(z0, dtype=torch.float32)
+        zero_a = torch.zeros(z0.shape[0], m)
+        for _ in range(H):
+            z = predictor(z, zero_a)
+        return z.numpy()
+
+
 def h_step_prediction_error_panel(
     system: LTISystem,
     obs_model: ObservationModel,
     encoder,
     predictor,
+    beta: np.ndarray,
     dims: tuple[int, int] = (0, 1),
     lo: tuple[float, float] = (-1.0, -1.0),
     hi: tuple[float, float] = (1.0, 1.0),
     n_points: int = 17,
     H: int = 10,
 ) -> dict:
-    """Panel 2: from each grid state x0, compare the H-step-ahead latent
-    reached by (a) recursively applying the learned predictor with zero
-    actions against (b) re-encoding the true H-step-ahead state, both starting
-    from z0 = encoder(x0). Error is computed IN LATENT SPACE (||.||), not
-    decoded back to state space."""
+    """Panel 2: from each grid state x0, decode the H-step-ahead latent
+    prediction D(f_H(z0, 0)) (recursive predictor rollout with zero actions,
+    decoded back to the ORIGINAL PHYSICAL STATE SPACE via the ridge probe
+    `beta`) and compare it against the true H-step-ahead state x_H = A^H x0
+    -- ||D(f_H(z0,0)) - x_H||, exactly the quantity plotted in
+    plot_checkpoint_summary_physical_smwm.py's panel 2, rather than an error
+    measured in raw latent coordinates."""
     XX, YY = build_2d_grid(lo, hi, n_points)
     states = grid_to_states(XX, YY, dims, system.n)
 
     x_H_true = states @ np.linalg.matrix_power(system.A, H).T
     z0 = _encode_states(obs_model, encoder, states)
-    z_H_true = _encode_states(obs_model, encoder, x_H_true)
+    z_H_pred = _rollout_latent_zero_action(predictor, z0, system.m, H)
+    s_pred = decode_state(z_H_pred, beta)
 
-    with torch.no_grad():
-        z = torch.tensor(z0, dtype=torch.float32)
-        zero_a = torch.zeros(states.shape[0], system.m)
-        for _ in range(H):
-            z = predictor(z, zero_a)
-        z_H_pred = z.numpy()
-
-    error = np.linalg.norm(z_H_pred - z_H_true, axis=1)
+    error = np.linalg.norm(s_pred - x_H_true, axis=1)
     return {"XX": XX, "YY": YY, "error": error.reshape(XX.shape), "dims": dims, "H": H}
 
 
@@ -177,21 +183,30 @@ def planning_cost_panel(
     system: LTISystem,
     obs_model: ObservationModel,
     encoder,
-    P_z: np.ndarray,
+    predictor,
+    beta: np.ndarray,
     dims: tuple[int, int] = (0, 1),
     lo: tuple[float, float] = (-1.0, -1.0),
     hi: tuple[float, float] = (1.0, 1.0),
     n_points: int = 17,
+    H: int = 10,
 ) -> dict:
-    """Panel 3: log10 of the infinite-horizon LQR cost-to-go z^T P_z z under
-    the latent controller's own Riccati solution `P_z`, evaluated at each
-    grid state's encoding -- a stand-in for a learned planner's cost surface."""
+    """Panel 3: log10 ||D(f_H(z0, 0)) - s_goal||^2 -- the squared distance,
+    in the ORIGINAL PHYSICAL STATE SPACE (decoded via the ridge probe
+    `beta`), between the same H-step zero-action latent rollout used in
+    panel 2 and the equilibrium s_goal=0. A simple proxy for "how far does
+    the learned model's own open-loop prediction drift from the goal",
+    matching plot_checkpoint_summary_physical_smwm.py's panel 3 (no LQR
+    value function / Riccati solution needed)."""
     XX, YY = build_2d_grid(lo, hi, n_points)
     states = grid_to_states(XX, YY, dims, system.n)
-    z = _encode_states(obs_model, encoder, states)
-    cost = np.einsum("bi,ij,bj->b", z, P_z, z)
+    z0 = _encode_states(obs_model, encoder, states)
+    z_H = _rollout_latent_zero_action(predictor, z0, system.m, H)
+    s_pred = decode_state(z_H, beta)
+
+    cost = np.sum(s_pred**2, axis=1)
     cost = np.clip(cost, 1e-12, None)
-    return {"XX": XX, "YY": YY, "log_cost": np.log10(cost).reshape(XX.shape), "dims": dims}
+    return {"XX": XX, "YY": YY, "log_cost": np.log10(cost).reshape(XX.shape), "dims": dims, "H": H}
 
 
 def eigenvalue_comparison(system: LTISystem, predictor) -> dict:

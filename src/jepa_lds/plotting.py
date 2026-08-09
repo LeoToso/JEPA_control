@@ -145,12 +145,20 @@ def plot_five_panels(
     cos_over_time: np.ndarray,
     out_path: str,
     title: str = "",
+    unit_suffix: str = "",
 ):
-    """The 5-panel diagnostic figure: phase portrait, H-step latent
-    prediction error, latent LQR planning cost, latent norm divergence, and
-    cosine alignment along the unstable eigenvector -- adapted from the
-    real pixel-based project's `plot_checkpoint_summary_smwm.py`."""
+    """The 5-panel diagnostic figure: phase portrait, H-step prediction
+    error (decoded to the original state space), planning cost (decoded to
+    the original state space), latent norm divergence, and cosine alignment
+    along the unstable eigenvector -- adapted from the real pixel-based
+    project's `plot_checkpoint_summary_physical_smwm.py`.
+
+    `unit_suffix` (e.g. "deg") is appended to the x[dim]/y[dim] axis labels
+    of panels 1-3 for display only -- the panels' own numeric values (grid
+    coordinates, drift vectors, error, cost) must already be in whatever
+    unit that label names; this function does not convert anything."""
     fig, axes = plt.subplots(1, 5, figsize=(34, 6.5))
+    suffix = f" ({unit_suffix})" if unit_suffix else ""
 
     # Panel 1: phase portrait -- true (green) vs learned (plasma) vector field.
     ax = axes[0]
@@ -166,31 +174,31 @@ def plot_five_panels(
         cmap="plasma", alpha=0.9, angles="xy",
     )
     fig.colorbar(q, ax=ax, fraction=0.046, pad=0.04, label="||learned drift||")
-    ax.set_xlabel(f"x[{d0}]")
-    ax.set_ylabel(f"x[{d1}]")
+    ax.set_xlabel(f"x[{d0}]{suffix}")
+    ax.set_ylabel(f"x[{d1}]{suffix}")
     ax.legend(loc="upper right", fontsize=8)
     ax.set_title("Phase portrait: true vs learned drift")
 
-    # Panel 2: H-step latent prediction error.
+    # Panel 2: H-step prediction error, decoded to the original state space.
     ax = axes[1]
     XX2, YY2 = pred_err_panel["XX"], pred_err_panel["YY"]
     d0e, d1e = pred_err_panel["dims"]
     cf = ax.contourf(XX2, YY2, pred_err_panel["error"], levels=20, cmap="YlOrRd")
     ax.contour(XX2, YY2, pred_err_panel["error"], levels=8, colors="k", linewidths=0.3, alpha=0.5)
     fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_xlabel(f"x[{d0e}]")
-    ax.set_ylabel(f"x[{d1e}]")
-    ax.set_title(f"{pred_err_panel['H']}-step latent prediction error")
+    ax.set_xlabel(f"x[{d0e}]{suffix}")
+    ax.set_ylabel(f"x[{d1e}]{suffix}")
+    ax.set_title(f"{pred_err_panel['H']}-step prediction error\n||D(f_H(z,0)) - s_GT|| (state space)")
 
-    # Panel 3: planning cost (log10 z^T P_z z).
+    # Panel 3: planning cost, decoded to the original state space.
     ax = axes[2]
     XX3, YY3 = planning_panel["XX"], planning_panel["YY"]
     d0p, d1p = planning_panel["dims"]
     cf = ax.contourf(XX3, YY3, planning_panel["log_cost"], levels=8, cmap="RdYlBu_r")
     fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_xlabel(f"x[{d0p}]")
-    ax.set_ylabel(f"x[{d1p}]")
-    ax.set_title("log10 planning cost (z^T P_z z)")
+    ax.set_xlabel(f"x[{d0p}]{suffix}")
+    ax.set_ylabel(f"x[{d1p}]{suffix}")
+    ax.set_title(f"log10 ||D(f_{planning_panel['H']}(z,0)) - s_goal||^2 (state space)")
 
     # Panel 4: latent norm divergence.
     ax = axes[3]

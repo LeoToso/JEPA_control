@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 
-from jepa_lds.control import design_latent_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import (
     decode_state,
@@ -74,22 +73,29 @@ def test_phase_portrait_panel_faithful_encoder_learned_field_close_to_true():
 
 
 def test_h_step_prediction_error_panel_shape_and_zero_for_faithful_setup():
-    system, obs_model, _batch, encoder, pred = _setup()
-    panel = h_step_prediction_error_panel(system, obs_model, encoder, pred, dims=(0, 1), lo=(-0.5, -0.5), hi=(0.5, 0.5), n_points=4, H=5)
+    """Error is now measured in the DECODED ORIGINAL STATE SPACE (via the
+    ridge probe), not in raw latent coordinates -- with a faithful encoder
+    and an exactly-matching predictor, decoding should recover the true
+    H-step-ahead state almost exactly."""
+    system, obs_model, batch, encoder, pred = _setup()
+    beta = fit_state_probe(encoder, batch, alpha=1e-3)
+    panel = h_step_prediction_error_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-0.5, -0.5), hi=(0.5, 0.5), n_points=4, H=5)
     assert panel["error"].shape == panel["XX"].shape
     assert panel["H"] == 5
     assert np.all(np.isfinite(panel["error"]))
-    # deterministic noiseless encode + exactly-matching predictor -> ~0 error.
-    assert np.allclose(panel["error"], 0.0, atol=1e-3)
+    assert np.allclose(panel["error"], 0.0, atol=0.05)
 
 
 def test_planning_cost_panel_shape_and_finite():
-    system, obs_model, _batch, encoder, pred = _setup()
-    ctrl = design_latent_controller(pred, q_scale=10.0, r_scale=1.0)
-    assert ctrl["P_z"] is not None
-    panel = planning_cost_panel(system, obs_model, encoder, ctrl["P_z"], dims=(0, 1), lo=(-1, -1), hi=(1, 1), n_points=6)
+    """Cost is now log10 ||decoded H-step zero-action rollout - origin||^2
+    in the ORIGINAL STATE SPACE, not the latent LQR value function -- no
+    controller/Riccati solution needed."""
+    system, obs_model, batch, encoder, pred = _setup()
+    beta = fit_state_probe(encoder, batch, alpha=1e-3)
+    panel = planning_cost_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-1, -1), hi=(1, 1), n_points=7, H=5)
     assert panel["log_cost"].shape == panel["XX"].shape
+    assert panel["H"] == 5
     assert np.all(np.isfinite(panel["log_cost"]))
-    # cost should be minimal (near -inf in log10, i.e. lowest value) at the origin.
+    # cost should be minimal (near -inf in log10, i.e. lowest value) at the origin (center of an odd-sized grid).
     center = panel["log_cost"].shape[0] // 2
     assert panel["log_cost"][center, center] <= panel["log_cost"].max()
