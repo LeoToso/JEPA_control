@@ -8,7 +8,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 
 
 def plot_training_curves(histories: dict[str, list[dict]], out_path: str):
@@ -140,21 +139,26 @@ def _axis_label(dim: int, suffix: str) -> str:
     return f"$x_{{{dim + 1}}}${suffix}"
 
 
+_TRAJ_COLORS = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:cyan", "tab:pink"]
+
+
 def plot_local_stability_probe(
     eig_panel: dict,
-    roa_panel: dict,
+    traj_panel: dict,
     lyap_panel: dict,
     out_path: str,
     unit_suffix: str = "",
 ):
     """The 3-panel local-stability probe: unstable-eigenvector alignment
-    (true vs. learned, projected back to state space), empirical region of
-    attraction under the learned closed-loop controller (with an optional
-    oracle-LQR boundary overlay), and a Lyapunov-decrease certificate map --
-    adapted from the real pixel-based project's `probe_local_stability_smwm.py`
-    (panel 1 replaces its local vector field with a more direct alignment
-    check: does the learned dynamics' fastest-growing direction actually
-    point along the true unstable mode).
+    (true vs. learned, projected back to state space), a handful of
+    closed-loop trajectories under the learned controller starting from
+    marked initial states (converging to the equilibrium vs. diverging away
+    from it), and a Lyapunov-decrease certificate map -- adapted from the
+    real pixel-based project's `probe_local_stability_smwm.py` (panel 1
+    replaces its local vector field with a more direct alignment check: does
+    the learned dynamics' fastest-growing direction actually point along the
+    true unstable mode; panel 2 replaces its region-of-attraction grid with
+    a direct, qualitative view of a few representative trajectories).
 
     Deliberately title-free (no per-panel title, no figure suptitle) --
     the quantitative summary (cosine similarities, success rates, decrease
@@ -191,24 +195,31 @@ def plot_local_stability_probe(
     ax.legend(fontsize=8, loc="upper right")
     ax.tick_params(labelsize=8)
 
-    # Panel 2: empirical region of attraction.
+    # Panel 2: closed-loop trajectories from a handful of marked initial
+    # states -- converging to the equilibrium (star) or diverging away from
+    # it, under the LEARNED controller. Axis limits are set from the
+    # starting points' own extent (with a margin), so a trajectory that
+    # diverges simply exits the visible frame rather than blowing out the
+    # scale for everything else.
     ax = axes[1]
-    XX2, YY2 = roa_panel["XX"], roa_panel["YY"]
-    d0r, d1r = roa_panel["dims"]
-    ax.pcolormesh(XX2, YY2, roa_panel["success"], cmap="RdYlGn", vmin=0, vmax=1, shading="auto")
-    legend_handles = [
-        Patch(facecolor="green", edgecolor="none", label="success"),
-        Patch(facecolor="red", edgecolor="none", label="failure"),
-    ]
-    if "success_gt" in roa_panel:
-        gt = roa_panel["success_gt"]
-        if not (np.all(gt > 0.5) or np.all(gt < 0.5)):
-            ax.contour(XX2, YY2, gt, levels=[0.5], colors="black", linestyles="dashed", linewidths=1.5)
-            legend_handles.append(Line2D([0], [0], color="black", linestyle="dashed", linewidth=1.5, label="oracle-LQR boundary"))
+    d0t, d1t = traj_panel["dims"]
+    for i, (xs, x0) in enumerate(zip(traj_panel["trajectories"], traj_panel["x0s"])):
+        color = _TRAJ_COLORS[i % len(_TRAJ_COLORS)]
+        ax.plot(xs[:, 0], xs[:, 1], color=color, linewidth=1.2, alpha=0.85, zorder=3)
+        ax.scatter([x0[0]], [x0[1]], facecolors="none", edgecolors=color, marker="o", s=90, linewidths=1.8, zorder=4)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    x0s_arr = np.array(traj_panel["x0s"])
+    lim0 = 1.15 * np.max(np.abs(x0s_arr[:, 0])) if np.any(x0s_arr[:, 0] != 0) else 1.0
+    lim1 = 1.15 * np.max(np.abs(x0s_arr[:, 1])) if np.any(x0s_arr[:, 1] != 0) else 1.0
+    ax.set_xlim(-lim0, lim0)
+    ax.set_ylim(-lim1, lim1)
+    legend_handles = [
+        Line2D([0], [0], marker="o", markerfacecolor="none", markeredgecolor="black", linestyle="none", markersize=8, label="start ($x_0$)"),
+        Line2D([0], [0], color="black", linewidth=1.2, label="closed-loop trajectory"),
+    ]
     ax.legend(handles=legend_handles, fontsize=8, loc="upper right")
-    ax.set_xlabel(_axis_label(d0r, suffix))
-    ax.set_ylabel(_axis_label(d1r, suffix))
+    ax.set_xlabel(_axis_label(d0t, suffix))
+    ax.set_ylabel(_axis_label(d1t, suffix))
     ax.tick_params(labelsize=8)
 
     # Panel 3: Lyapunov decrease.

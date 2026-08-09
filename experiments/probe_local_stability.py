@@ -1,5 +1,5 @@
 """Local-stability probe for a saved checkpoint: a 3-panel figure
-(unstable-eigenvector alignment, empirical region of attraction, Lyapunov
+(unstable-eigenvector alignment, closed-loop trajectories, Lyapunov
 certificate), adapted from the real pixel-based project's
 `probe_local_stability_smwm.py`.
 
@@ -13,29 +13,19 @@ certificate), adapted from the real pixel-based project's
     vector field. The true stable eigenvector is shown too (grey), so
     it's visually obvious if "learned" has instead aligned with the wrong
     mode.
-  Panel 2 (region of attraction): for each grid state, ONE deterministic
-    (noiseless) closed-loop rollout under the LEARNED controller
-    u_t = -K_z * encoder(y_t) on the TRUE system; green = stays below
-    --success-threshold for the final --hold-steps of --n-steps, red =
-    fails. The dashed contour overlays the same check for a full-state-
-    feedback ORACLE LQR gain designed directly on the true (A, B) -- the
-    best any linear controller with perfect state access could do.
+  Panel 2 (closed-loop trajectories): one deterministic (up to observation
+    noise) --n-steps closed-loop rollout under the LEARNED controller
+    u_t = -K_z * encoder(y_t) on the TRUE system per starting state (marked
+    with an open circle), defaulting to the 4 corners of a
+    --traj-dim0-max x --traj-dim1-max box (override with --traj-x0). A
+    direct, qualitative "does this large initial deviation actually get
+    driven to the equilibrium" view -- converging trajectories curve back to
+    the star, diverging ones exit the (fixed) visible frame.
   Panel 3 (Lyapunov certificate): pointwise check of whether ONE step under
     the learned controller decreases the oracle's own quadratic Lyapunov
     function V(x) = x^T P_gt x -- an honest, model-free check of whether the
     learned controller's action is a valid descent direction for the TRUE
     system's own cost, independent of what the learned model believes.
-
-IMPORTANT CAVEAT for this exactly-linear, unconstrained toy system (unlike
-the original nonlinear/pixel-based cartpole this was adapted from): a
-genuinely stabilizing LINEAR controller's true region of attraction is the
-WHOLE state space -- nothing here can shrink it structurally. Panel 2
-actually measures "how large an initial deviation decays below a FIXED
-threshold within a FIXED step budget" -- a convergence-speed budget, not a
-structural stability boundary. Still a useful diagnostic (larger initial
-deviations genuinely take longer to decay below a fixed absolute
-threshold), just don't over-read the boundary shape as a literal basin of
-attraction the way you would for the original nonlinear system.
 
     python experiments/probe_local_stability.py \\
         --checkpoint results/example2_cartpole_paper_naive/checkpoint_L_pred_L_SIGReg.pt
@@ -54,8 +44,8 @@ import torch
 from checkpoint_io import load_checkpoint_with_env
 from jepa_lds.control import design_latent_controller
 from jepa_lds.diagnostics import (
+    closed_loop_trajectory_panel,
     lyapunov_decrease_panel,
-    region_of_attraction_panel,
     unstable_eigenvector_alignment,
 )
 from jepa_lds.plotting import plot_local_stability_probe
@@ -79,13 +69,14 @@ def main():
         help="display/grid angle-like dims in degrees instead of radians (auto: on for cartpole_linear's default angle dims)",
     )
 
-    p.add_argument("--roa-dim0-max", type=float, default=25.0, help="region-of-attraction grid half-width along dims[0]")
-    p.add_argument("--roa-dim1-max", type=float, default=80.0, help="region-of-attraction grid half-width along dims[1]")
-    p.add_argument("--roa-n-dim0", type=int, default=31)
-    p.add_argument("--roa-n-dim1", type=int, default=25)
-    p.add_argument("--n-steps", type=int, default=300, help="closed-loop rollout length for the region-of-attraction check")
-    p.add_argument("--success-threshold", type=float, default=0.3, help="||x_t|| must stay below this to count as 'stable'")
-    p.add_argument("--hold-steps", type=int, default=50, help="state must stay below threshold for the final N steps to count as a success")
+    p.add_argument("--traj-dim0-max", type=float, default=25.0, help="default trajectory starting-corner magnitude along dims[0]")
+    p.add_argument("--traj-dim1-max", type=float, default=80.0, help="default trajectory starting-corner magnitude along dims[1]")
+    p.add_argument(
+        "--traj-x0", type=float, nargs=2, action="append", default=None,
+        help="explicit starting state (dims[0], dims[1] value) for panel 2; repeat for multiple trajectories "
+        "(overrides the default 4-corner box from --traj-dim0-max/--traj-dim1-max)",
+    )
+    p.add_argument("--n-steps", type=int, default=300, help="closed-loop rollout length for panel 2's trajectories")
 
     p.add_argument("--lyap-dim0-max", type=float, default=15.0, help="Lyapunov grid half-width along dims[0]")
     p.add_argument("--lyap-dim1-max", type=float, default=50.0, help="Lyapunov grid half-width along dims[1]")
@@ -112,6 +103,18 @@ def main():
             return (-np.deg2rad(max0), -np.deg2rad(max1)), (np.deg2rad(max0), np.deg2rad(max1))
         return (-max0, -max1), (max0, max1)
 
+    def _maybe_deg2rad(v: float) -> float:
+        return np.deg2rad(v) if use_degrees else v
+
+    def _corner_x0s(max0: float, max1: float) -> list[np.ndarray]:
+        x0s = []
+        for s0, s1 in [(1, 1), (-1, 1), (-1, -1), (1, -1)]:
+            x0 = np.zeros(system.n)
+            x0[dims[0]] = s0 * max0
+            x0[dims[1]] = s1 * max1
+            x0s.append(x0)
+        return x0s
+
     print(f"checkpoint: {args.checkpoint}")
     print(f"  system={system.name}  config={extra.get('config_name', '?')}  trainer={extra.get('trainer', '?')}")
     print(f"  dims={dims}  degrees={use_degrees}")
@@ -128,8 +131,17 @@ def main():
     print(f"  rho(A_z - B_z K_z)         = {ctrl['latent_closed_loop_spectral_radius']:.4f}")
     print(f"  rho(A - B K_gt) (oracle)   = {system.closed_loop_spectral_radius(K_gt):.4f}")
 
-    lo_roa, hi_roa = _lo_hi(args.roa_dim0_max, args.roa_dim1_max)
     lo_lyap, hi_lyap = _lo_hi(args.lyap_dim0_max, args.lyap_dim1_max)
+
+    if args.traj_x0 is not None:
+        x0s = []
+        for v0, v1 in args.traj_x0:
+            x0 = np.zeros(system.n)
+            x0[dims[0]] = _maybe_deg2rad(v0)
+            x0[dims[1]] = _maybe_deg2rad(v1)
+            x0s.append(x0)
+    else:
+        x0s = _corner_x0s(_maybe_deg2rad(args.traj_dim0_max), _maybe_deg2rad(args.traj_dim1_max))
 
     print("[panel 1] unstable eigenvector alignment...")
     eig_panel = unstable_eigenvector_alignment(system, obs_model, encoder, predictor, dims=dims)
@@ -138,17 +150,12 @@ def main():
     if "cos_sim_stable" in eig_panel:
         print(f"  cos_sim(learned, true stable)   = {eig_panel['cos_sim_stable']:.4f}")
 
-    print("[panel 2] empirical region of attraction...")
-    roa_panel = region_of_attraction_panel(
-        system, obs_model, encoder, K_z, dims=dims,
-        lo=lo_roa, hi=hi_roa, n_points=(args.roa_n_dim0, args.roa_n_dim1),
-        n_steps=args.n_steps, success_threshold=args.success_threshold, hold_steps=args.hold_steps,
-        K_gt=K_gt,
+    print("[panel 2] closed-loop trajectories...")
+    traj_panel = closed_loop_trajectory_panel(
+        system, obs_model, encoder, K_z, x0s, dims=dims, n_steps=args.n_steps,
     )
-    print(
-        f"  learned-LQR success rate = {roa_panel['success_rate']*100:.1f}%   "
-        f"oracle success rate = {roa_panel['success_rate_gt']*100:.1f}%"
-    )
+    for x0, xs in zip(x0s, traj_panel["trajectories"]):
+        print(f"  x0={x0[list(dims)]}  ->  final in-plane distance={float(np.linalg.norm(xs[-1])):.3g}")
 
     print("[panel 3] Lyapunov certificate...")
     lyap_panel = lyapunov_decrease_panel(
@@ -162,14 +169,15 @@ def main():
     # doesn't change their normalized direction -- nothing to rescale there.
     if use_degrees:
         rad2deg = 180.0 / np.pi
-        for panel in (roa_panel, lyap_panel):
-            panel["XX"] = panel["XX"] * rad2deg
-            panel["YY"] = panel["YY"] * rad2deg
+        lyap_panel["XX"] = lyap_panel["XX"] * rad2deg
+        lyap_panel["YY"] = lyap_panel["YY"] * rad2deg
+        traj_panel["trajectories"] = [xs * rad2deg for xs in traj_panel["trajectories"]]
+        traj_panel["x0s"] = [x0 * rad2deg for x0 in traj_panel["x0s"]]
 
     out_path = args.out or os.path.splitext(args.checkpoint)[0] + "_local_stability.pdf"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     plot_local_stability_probe(
-        eig_panel, roa_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
+        eig_panel, traj_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
     )
     print(f"\nwrote {out_path}")
 

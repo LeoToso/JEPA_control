@@ -4,6 +4,7 @@ import torch
 from jepa_lds.control import design_latent_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import (
+    closed_loop_trajectory_panel,
     decode_state,
     fit_state_probe,
     grid_to_states,
@@ -132,6 +133,22 @@ def test_region_of_attraction_panel_no_gt_key_when_k_gt_omitted():
         n_points=3, n_steps=10, success_threshold=1.0, hold_steps=3,
     )
     assert "success_gt" not in panel
+
+
+def test_closed_loop_trajectory_panel_converges_for_faithful_setup():
+    """With a faithful encoder + exactly-matching predictor, the learned LQR
+    gain should drive a large initial deviation back toward the origin, and
+    the returned trajectories/x0s should be projected onto the requested
+    dims and match the requested rollout length."""
+    system, obs_model, _batch, encoder, pred = _setup()
+    ctrl = design_latent_controller(pred)
+    x0 = np.array([5.0, 5.0])
+    panel = closed_loop_trajectory_panel(system, obs_model, encoder, ctrl["K_z"], [x0], dims=(0, 1), n_steps=60)
+    assert panel["dims"] == (0, 1)
+    xs = panel["trajectories"][0]
+    assert xs.shape == (61, 2)
+    assert np.allclose(panel["x0s"][0], x0)
+    assert np.linalg.norm(xs[-1]) < np.linalg.norm(xs[0])
 
 
 def test_lyapunov_decrease_panel_shape_and_decrease_near_origin():

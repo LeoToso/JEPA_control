@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .control import encoder_state_to_latent_map
+from .control import closed_loop_rollout, encoder_state_to_latent_map
 from .data import EpisodeBatch, ObservationModel
 from .systems import LTISystem
 
@@ -358,6 +358,38 @@ def region_of_attraction_panel(
         result["success_gt"] = success_gt.astype(float).reshape(XX.shape)
         result["success_rate_gt"] = float(success_gt.mean())
     return result
+
+
+def closed_loop_trajectory_panel(
+    system: LTISystem,
+    obs_model: ObservationModel,
+    encoder,
+    K_z: np.ndarray,
+    x0s: list[np.ndarray],
+    dims: tuple[int, int] = (0, 1),
+    n_steps: int = 300,
+    seed: int = 0,
+) -> dict:
+    """Panel 2 (trajectory view): one closed-loop rollout per starting state
+    in `x0s`, under the LEARNED controller u_t = -K_z * encoder(y_t) on the
+    TRUE system, projected onto `dims` -- a direct, qualitative "does this
+    particular starting point actually converge to the equilibrium" view, in
+    contrast to `region_of_attraction_panel`'s exhaustive grid plus
+    fixed-threshold/fixed-step-budget success map. Each x0 is simulated with
+    its own draw from a seeded RNG stream (so results are reproducible, but
+    not identical) for the observation-model measurement noise."""
+    d0, d1 = dims
+    rng = np.random.default_rng(seed)
+    trajectories = []
+    for x0 in x0s:
+        x0_arr = np.asarray(x0, dtype=np.float64)
+        xs = closed_loop_rollout(system, obs_model, encoder, K_z, n_steps, x0_arr, process_noise_std=0.0, rng=rng)
+        trajectories.append(xs[:, [d0, d1]])
+    return {
+        "dims": dims,
+        "trajectories": trajectories,
+        "x0s": [np.asarray(x0, dtype=np.float64)[[d0, d1]] for x0 in x0s],
+    }
 
 
 def lyapunov_decrease_panel(
