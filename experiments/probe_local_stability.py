@@ -175,10 +175,18 @@ def main():
         traj_panel["trajectories"] = [xs * rad2deg for xs in traj_panel["trajectories"]]
         traj_panel["x0s"] = [x0 * rad2deg for x0 in traj_panel["x0s"]]
 
+    if system.is_open_loop_unstable():
+        dominant_mode_label, other_mode_label = "ground truth (unstable)", "ground truth (stable)"
+    else:
+        # Both modes are actually stable (e.g. Example 4's double_mode_stable) --
+        # calling the dominant one "unstable" would be wrong, so number them instead.
+        dominant_mode_label, other_mode_label = "ground truth (stable 2)", "ground truth (stable 1)"
+
     out_path = args.out or os.path.splitext(args.checkpoint)[0] + "_local_stability.pdf"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     plot_local_stability_probe(
         eig_panel, traj_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
+        dominant_mode_label=dominant_mode_label, other_mode_label=other_mode_label,
     )
     print(f"\nwrote {out_path}")
 

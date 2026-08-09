@@ -148,6 +148,8 @@ def plot_local_stability_probe(
     lyap_panel: dict,
     out_path: str,
     unit_suffix: str = "",
+    dominant_mode_label: str = "ground truth (unstable)",
+    other_mode_label: str = "ground truth (stable)",
 ):
     """The 3-panel local-stability probe: unstable-eigenvector alignment
     (true vs. learned, projected back to state space), a handful of
@@ -163,7 +165,13 @@ def plot_local_stability_probe(
     Deliberately title-free (no per-panel title, no figure suptitle) --
     the quantitative summary (cosine similarities, success rates, decrease
     fraction) is printed to the console by the calling script instead,
-    keeping the figure itself uncluttered."""
+    keeping the figure itself uncluttered.
+
+    `dominant_mode_label`/`other_mode_label` name panel 1's two ground-truth
+    eigenvector arrows -- default to "unstable"/"stable" (Example 3, where
+    the dominant mode really is unstable); pass e.g. "ground truth (stable 2)"
+    / "ground truth (stable 1)" for a system where both modes are stable
+    (Example 4), where calling the dominant one "unstable" would be wrong."""
     fig, axes = plt.subplots(1, 3, figsize=(19, 6))
     suffix = f" ({unit_suffix})" if unit_suffix else ""
 
@@ -181,10 +189,10 @@ def plot_local_stability_probe(
     ax.plot(np.cos(theta), np.sin(theta), color="grey", linewidth=0.7, linestyle=":", alpha=0.6)
     if eig_panel.get("v_true_stable") is not None:
         vs = eig_panel["v_true_stable"]
-        ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label="ground truth (stable)", **arrow_kwargs)
+        ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label=other_mode_label, **arrow_kwargs)
     vu = eig_panel["v_true_unstable"]
     vl = eig_panel["v_learned"]
-    ax.quiver(0, 0, vu[0], vu[1], color="green", label="ground truth (unstable)", zorder=4, **arrow_kwargs)
+    ax.quiver(0, 0, vu[0], vu[1], color="green", label=dominant_mode_label, zorder=4, **arrow_kwargs)
     ax.quiver(0, 0, vl[0], vl[1], color="darkorange", alpha=0.6, label="learned (dominant)", zorder=5, **arrow_kwargs)
     ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
     ax.set_xlim(-1.08, 1.08)
