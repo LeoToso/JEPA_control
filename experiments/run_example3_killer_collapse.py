@@ -141,7 +141,7 @@ def main():
     p.add_argument("--T", type=int, default=5, help="episode length (must be > max(horizons))")
     p.add_argument("--n-train-ep", type=int, default=400)
     p.add_argument("--n-val-ep", type=int, default=100)
-    p.add_argument("--action-std", type=float, default=0.01, help="small nonzero actions -- needed for action reconstruction to have signal, negligible enough to preserve the variance asymmetry (larger values dilute the collapse rate)")
+    p.add_argument("--action-std", type=float, default=0.02, help="small nonzero actions -- needed for action reconstruction to have signal, negligible enough to preserve the variance asymmetry. Validated sweet spot: too small (~0.01) starves action reconstruction's signal at short horizons; too large (~0.05+) dilutes the variance asymmetry SIGReg relies on.")
     p.add_argument("--obs-dim-signal", type=int, default=6)
     p.add_argument("--n-distractor", type=int, default=0)
     p.add_argument("--measurement-noise-std", type=float, default=0.0, help="noiseless by design -- keeps L_pred=0 exactly achievable")

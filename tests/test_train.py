@@ -106,15 +106,16 @@ def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unsta
         system, sigma_stable=0.3, sigma_unstable_small=0.01, sigma_unstable_large=0.01, contamination_prob=0.0,
     )
     T = 5
-    # action_std=0.01 (rather than a larger value) keeps the variance asymmetry sharp enough
-    # for a clean, near-deterministic split -- see the module docstring in
-    # experiments/run_example3_killer_collapse.py for why larger actions dilute it.
+    # action_std=0.02 is the validated sweet spot -- see the module docstring in
+    # experiments/run_example3_killer_collapse.py: too small starves action
+    # reconstruction's signal at short horizons, too large dilutes the variance
+    # asymmetry SIGReg's collapse relies on.
     train_batch = generate_dataset(
-        system, obs_model, 300, T, seed=0, action_std=0.01, process_noise_std=0.0,
+        system, obs_model, 300, T, seed=0, action_std=0.02, process_noise_std=0.0,
         state_clip=50.0, x0_sampler=x0_sampler, mixture={"passive": 0.3, "random": 0.7},
     )
     val_batch = generate_dataset(
-        system, obs_model, 80, T, seed=10_000, action_std=0.01, process_noise_std=0.0,
+        system, obs_model, 80, T, seed=10_000, action_std=0.02, process_noise_std=0.0,
         state_clip=50.0, x0_sampler=x0_sampler, mixture={"passive": 0.3, "random": 0.7},
     )
 
