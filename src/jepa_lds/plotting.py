@@ -145,22 +145,23 @@ _TRAJ_COLORS = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:cyan",
 def plot_local_stability_probe(
     eig_panel: dict,
     traj_panel: dict,
-    lyap_panel: dict,
+    lyap_panel: dict | None,
     out_path: str,
     unit_suffix: str = "",
     dominant_mode_label: str = "ground truth (unstable)",
     other_mode_label: str = "ground truth (stable)",
 ):
-    """The 3-panel local-stability probe: unstable-eigenvector alignment
-    (true vs. learned, projected back to state space), a handful of
-    closed-loop trajectories under the learned controller starting from
-    marked initial states (converging to the equilibrium vs. diverging away
-    from it), and a Lyapunov-decrease certificate map -- adapted from the
-    real pixel-based project's `probe_local_stability_smwm.py` (panel 1
-    replaces its local vector field with a more direct alignment check: does
-    the learned dynamics' fastest-growing direction actually point along the
-    true unstable mode; panel 2 replaces its region-of-attraction grid with
-    a direct, qualitative view of a few representative trajectories).
+    """The local-stability probe: unstable-eigenvector alignment (true vs.
+    learned, projected back to state space), a handful of closed-loop
+    trajectories under the learned controller starting from marked initial
+    states (converging to the equilibrium vs. diverging away from it), and
+    -- unless `lyap_panel` is None -- a Lyapunov-decrease certificate map --
+    adapted from the real pixel-based project's `probe_local_stability_smwm.py`
+    (panel 1 replaces its local vector field with a more direct alignment
+    check: does the learned dynamics' fastest-growing direction actually
+    point along the true unstable mode; panel 2 replaces its region-of-
+    attraction grid with a direct, qualitative view of a few representative
+    trajectories).
 
     Deliberately title-free (no per-panel title, no figure suptitle) --
     the quantitative summary (cosine similarities, success rates, decrease
@@ -171,8 +172,12 @@ def plot_local_stability_probe(
     eigenvector arrows -- default to "unstable"/"stable" (Example 3, where
     the dominant mode really is unstable); pass e.g. "ground truth (stable 2)"
     / "ground truth (stable 1)" for a system where both modes are stable
-    (Example 4), where calling the dominant one "unstable" would be wrong."""
-    fig, axes = plt.subplots(1, 3, figsize=(19, 6))
+    (Example 4), where calling the dominant one "unstable" would be wrong.
+
+    Pass `lyap_panel=None` to render only panels 1-2 (a 1x2 figure) and
+    skip the Lyapunov certificate entirely."""
+    n_panels = 3 if lyap_panel is not None else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=(19 if n_panels == 3 else 13, 6))
     suffix = f" ({unit_suffix})" if unit_suffix else ""
 
     # Panel 1: unstable eigenvector alignment -- true (green) vs learned (orange),
@@ -230,21 +235,22 @@ def plot_local_stability_probe(
     ax.set_ylabel(_axis_label(d1t, suffix), fontsize=20)
     ax.tick_params(labelsize=15)
 
-    # Panel 3: Lyapunov decrease.
-    ax = axes[2]
-    XX3, YY3 = lyap_panel["XX"], lyap_panel["YY"]
-    d0l, d1l = lyap_panel["dims"]
-    vmax = float(np.percentile(np.abs(lyap_panel["delta_V"]), 95))
-    vmax = vmax if vmax > 1e-12 else 1.0
-    cf = ax.pcolormesh(XX3, YY3, lyap_panel["delta_V"], cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
-    ax.contour(XX3, YY3, lyap_panel["delta_V"], levels=[0.0], colors="black", linewidths=1.2)
-    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
-    cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(r"$\Delta V = V(x') - V(x)$", fontsize=20)
-    cbar.ax.tick_params(labelsize=15)
-    ax.set_xlabel(_axis_label(d0l, suffix), fontsize=20)
-    ax.set_ylabel(_axis_label(d1l, suffix), fontsize=20)
-    ax.tick_params(labelsize=15)
+    # Panel 3: Lyapunov decrease (skipped entirely when lyap_panel is None).
+    if lyap_panel is not None:
+        ax = axes[2]
+        XX3, YY3 = lyap_panel["XX"], lyap_panel["YY"]
+        d0l, d1l = lyap_panel["dims"]
+        vmax = float(np.percentile(np.abs(lyap_panel["delta_V"]), 95))
+        vmax = vmax if vmax > 1e-12 else 1.0
+        cf = ax.pcolormesh(XX3, YY3, lyap_panel["delta_V"], cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto")
+        ax.contour(XX3, YY3, lyap_panel["delta_V"], levels=[0.0], colors="black", linewidths=1.2)
+        ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+        cbar = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(r"$\Delta V = V(x') - V(x)$", fontsize=20)
+        cbar.ax.tick_params(labelsize=15)
+        ax.set_xlabel(_axis_label(d0l, suffix), fontsize=20)
+        ax.set_ylabel(_axis_label(d1l, suffix), fontsize=20)
+        ax.tick_params(labelsize=15)
 
     fig.tight_layout()
     fig.savefig(out_path)

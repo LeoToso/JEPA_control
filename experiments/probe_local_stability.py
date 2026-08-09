@@ -79,6 +79,7 @@ def main():
     )
     p.add_argument("--n-steps", type=int, default=300, help="closed-loop rollout length for panel 2's trajectories")
 
+    p.add_argument("--skip-lyapunov", action="store_true", help="omit panel 3 (Lyapunov certificate) -- figure has just panels 1-2")
     p.add_argument("--lyap-dim0-max", type=float, default=15.0, help="Lyapunov grid half-width along dims[0]")
     p.add_argument("--lyap-dim1-max", type=float, default=50.0, help="Lyapunov grid half-width along dims[1]")
     p.add_argument("--lyap-n-dim0", type=int, default=31)
@@ -158,20 +159,23 @@ def main():
     for x0, xs in zip(x0s, traj_panel["trajectories"]):
         print(f"  x0={x0[list(dims)]}  ->  final in-plane distance={float(np.linalg.norm(xs[-1])):.3g}")
 
-    print("[panel 3] Lyapunov certificate...")
-    lyap_panel = lyapunov_decrease_panel(
-        system, obs_model, encoder, K_z, P_gt, dims=dims,
-        lo=lo_lyap, hi=hi_lyap, n_points=(args.lyap_n_dim0, args.lyap_n_dim1),
-    )
-    print(f"  fraction of grid satisfying decrease = {lyap_panel['frac_decrease']*100:.1f}%")
+    lyap_panel = None
+    if not args.skip_lyapunov:
+        print("[panel 3] Lyapunov certificate...")
+        lyap_panel = lyapunov_decrease_panel(
+            system, obs_model, encoder, K_z, P_gt, dims=dims,
+            lo=lo_lyap, hi=hi_lyap, n_points=(args.lyap_n_dim0, args.lyap_n_dim1),
+        )
+        print(f"  fraction of grid satisfying decrease = {lyap_panel['frac_decrease']*100:.1f}%")
 
     # eig_panel's vectors are unit-normalized directions in a slice where both plotted
     # dims share the same rad2deg factor (see _ANGLE_DIMS), so degree-vs-radian display
     # doesn't change their normalized direction -- nothing to rescale there.
     if use_degrees:
         rad2deg = 180.0 / np.pi
-        lyap_panel["XX"] = lyap_panel["XX"] * rad2deg
-        lyap_panel["YY"] = lyap_panel["YY"] * rad2deg
+        if lyap_panel is not None:
+            lyap_panel["XX"] = lyap_panel["XX"] * rad2deg
+            lyap_panel["YY"] = lyap_panel["YY"] * rad2deg
         traj_panel["trajectories"] = [xs * rad2deg for xs in traj_panel["trajectories"]]
         traj_panel["x0s"] = [x0 * rad2deg for x0 in traj_panel["x0s"]]
 
