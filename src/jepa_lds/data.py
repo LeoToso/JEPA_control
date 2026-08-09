@@ -98,8 +98,9 @@ def generate_episode(
     state_clip: float | None,
     K_lqr: np.ndarray | None,
     action_std: float,
+    x0_sampler=None,
 ):
-    x0 = x0_std * rng.standard_normal(system.n)
+    x0 = x0_sampler(rng) if x0_sampler is not None else x0_std * rng.standard_normal(system.n)
     xs = np.zeros((T + 1, system.n))
     ys = np.zeros((T + 1, obs_model.p))
     actions = np.zeros((T, system.m))
@@ -139,10 +140,16 @@ def generate_dataset(
     process_noise_std: float = 0.0,
     state_clip: float | None = 10.0,
     action_std: float = 1.0,
+    x0_sampler=None,
 ) -> EpisodeBatch:
     """Generate `n_episodes` open-loop episodes of length `T` from a mixture
     of exploration policies. Defaults mirror the sampling mass reported in
-    the cartpole JEPA notes: 75% open-loop (passive/PRBS/random), 25% LQR."""
+    the cartpole JEPA notes: 75% open-loop (passive/PRBS/random), 25% LQR.
+
+    `x0_sampler`, if given, is a callable `rng -> x0 (n,)` used instead of
+    the default isotropic `x0_std * N(0, I)` draw -- e.g.
+    `make_modal_contaminated_x0_sampler` for a heavy-tailed initial
+    condition on a specific modal coordinate."""
     mixture = mixture or {"passive": 0.25, "prbs": 0.30, "random": 0.20, "lqr": 0.25}
     rng = np.random.default_rng(seed)
     K_lqr, _ = system.dlqr()
@@ -154,12 +161,60 @@ def generate_dataset(
     X, Y, Aacts = [], [], []
     for pol in choice:
         xs, ys, a = generate_episode(
-            system, obs_model, T, pol, x0_std, process_noise_std, rng, state_clip, K_lqr, action_std
+            system, obs_model, T, pol, x0_std, process_noise_std, rng, state_clip, K_lqr, action_std,
+            x0_sampler=x0_sampler,
         )
         X.append(xs)
         Y.append(ys)
         Aacts.append(a)
     return EpisodeBatch(y=np.stack(Y), x=np.stack(X), a=np.stack(Aacts), policy=choice)
+
+
+def make_modal_contaminated_x0_sampler(
+    system: LTISystem,
+    sigma_stable: float = 0.03,
+    sigma_unstable_small: float = 0.01,
+    sigma_unstable_large: float = 3.0,
+    contamination_prob: float = 0.05,
+):
+    """Returns a callable `rng -> x0` that draws the system's two MODAL
+    initial coordinates independently -- the stable one from an ordinary
+    Gaussian (a "safe", SIGReg-friendly direction), the unstable one from a
+    Gaussian SCALE MIXTURE ("contaminated normal": with probability
+    `contamination_prob` draw from N(0, sigma_unstable_large^2), otherwise
+    from N(0, sigma_unstable_small^2)) -- then maps back to raw state
+    coordinates through the system's eigenvector matrix.
+
+    The scale mixture gives the unstable modal coordinate's pooled marginal
+    a large, freely-tunable excess kurtosis (heavy tails) that NO linear
+    reparametrization of z can remove without driving the coefficient on
+    that direction toward 0 -- since a linear combination of a heavy-tailed
+    variable and Gaussian noise stays heavy-tailed for any nonzero
+    coefficient on the heavy-tailed part. That is the mechanism behind an
+    encoder trained with SIGReg collapsing this direction regardless of the
+    prediction horizon H used elsewhere in training: the SIGReg loss is a
+    property of z's marginal distribution alone and never depends on H.
+
+    Only defined for a 2-state system with a real unstable/stable eigenvalue
+    pair (e.g. `make_double_mode_system`)."""
+    if system.n != 2:
+        raise ValueError("modal-contaminated x0 sampling is only implemented for 2-state systems")
+    w, V, _Vinv = system.modal_decomposition()
+    if np.any(np.abs(w.imag) > 1e-9):
+        raise ValueError("modal-contaminated x0 sampling requires a real eigenvalue pair")
+    idx_u = system.unstable_mode_index()
+    idx_s = 1 - idx_u
+    V = V.real
+
+    def sample(rng: np.random.Generator) -> np.ndarray:
+        contaminated = rng.random() < contamination_prob
+        sigma_u = sigma_unstable_large if contaminated else sigma_unstable_small
+        xi = np.zeros(2)
+        xi[idx_u] = sigma_u * rng.standard_normal()
+        xi[idx_s] = sigma_stable * rng.standard_normal()
+        return V @ xi
+
+    return sample
 
 
 class WindowDataset(Dataset):
