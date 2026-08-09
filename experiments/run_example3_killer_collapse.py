@@ -101,10 +101,21 @@ def _static_sigreg_preference(system, train_batch) -> None:
         print(f"  static sigreg_loss({name} modal coord, rescaled to unit variance) = {loss:.5f}")
 
 
-def _run_one(system, obs_model, train_batch, val_batch, cfg: TrainConfig):
+def _run_one(system, obs_model, train_batch, val_batch, cfg: TrainConfig, eval_kwargs: dict):
     enc, pred, dec, hist = train_jepa(system, obs_model, train_batch, cfg, verbose=False)
     r2 = unstable_mode_retention(system, enc, train_batch, val_batch)
-    return enc, pred, dec, hist, r2
+    ctrl = design_latent_controller(pred, q_scale=eval_kwargs["q_scale"], r_scale=eval_kwargs["r_scale"])
+    if ctrl["K_z"] is None:
+        success_rate = 0.0
+    else:
+        ev = evaluate_controller(
+            system, obs_model, enc, ctrl["K_z"],
+            n_trials=eval_kwargs["n_trials"], n_steps=eval_kwargs["n_steps"], x0_std=eval_kwargs["x0_std"],
+            success_threshold=eval_kwargs["success_threshold"], hold_steps=eval_kwargs["hold_steps"],
+            seed=eval_kwargs["seed"],
+        )
+        success_rate = ev["success_rate"]
+    return enc, pred, dec, hist, r2, ctrl["stabilizable"], success_rate
 
 
 def main():
@@ -139,6 +150,15 @@ def main():
     p.add_argument("--inner-epochs", type=int, default=6)
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--lr", type=float, default=1e-2)
+
+    p.add_argument("--q-scale", type=float, default=10.0, help="LQR Q = q_scale * I in latent space")
+    p.add_argument("--r-scale", type=float, default=1.0, help="LQR R = r_scale * I")
+    p.add_argument("--eval-x0-std", type=float, default=0.05, help="isotropic std of the random initial state for closed-loop eval trials (independent of the asymmetric training x0 distribution)")
+    p.add_argument("--eval-n-trials", type=int, default=20)
+    p.add_argument("--eval-n-steps", type=int, default=60)
+    p.add_argument("--eval-success-threshold", type=float, default=0.5)
+    p.add_argument("--eval-hold-steps", type=int, default=15)
+    p.add_argument("--eval-seed", type=int, default=555)
 
     p.add_argument("--data-seed", type=int, default=0)
     p.add_argument("--obs-seed", type=int, default=0)
@@ -199,14 +219,21 @@ def main():
     }
     configs = all_configs if args.config == "both" else {args.config: all_configs[args.config]}
 
+    eval_kwargs = dict(
+        q_scale=args.q_scale, r_scale=args.r_scale, x0_std=args.eval_x0_std,
+        n_trials=args.eval_n_trials, n_steps=args.eval_n_steps,
+        success_threshold=args.eval_success_threshold, hold_steps=args.eval_hold_steps, seed=args.eval_seed,
+    )
+
     collapse_rates: dict[str, list[float]] = {name: [] for name in configs}
     summary = {}
     for horizon in args.horizons:
         print(f"\n=== horizon H={horizon} ===")
         for name, extra_cfg in configs.items():
             n_collapsed = 0
-            r2s = []
-            best = None  # (r2, enc, pred, dec, cfg) for the seed-start run, saved as the representative checkpoint
+            n_stabilizable = 0
+            r2s, success_rates = [], []
+            best = None  # (enc, pred, dec, cfg) for the seed-start run, saved as the representative checkpoint
             for i in range(args.n_seeds):
                 seed = args.seed_start + i
                 cfg = TrainConfig(
@@ -214,20 +241,30 @@ def main():
                     inner_epochs=args.inner_epochs, batch_size=args.batch_size, lr=args.lr,
                     lambda_pred_1step=0.0, lambda_pred_ms=1.0, seed=seed, **extra_cfg,
                 )
-                enc, pred, dec, hist, r2 = _run_one(system, obs_model, train_batch, val_batch, cfg)
+                enc, pred, dec, hist, r2, stabilizable, success_rate = _run_one(
+                    system, obs_model, train_batch, val_batch, cfg, eval_kwargs,
+                )
                 r2s.append(r2)
-                collapsed = r2 < args.collapse_threshold
-                n_collapsed += int(collapsed)
+                success_rates.append(success_rate)
+                n_collapsed += int(r2 < args.collapse_threshold)
+                n_stabilizable += int(stabilizable)
                 if seed == args.seed_start:
                     best = (enc, pred, dec, cfg)
             rate = n_collapsed / args.n_seeds
             collapse_rates[name].append(rate)
             summary[f"{name}_H{horizon}"] = {
                 "collapse_rate": rate, "mean_R2": float(np.mean(r2s)), "R2_values": r2s,
+                "n_stabilizable": n_stabilizable, "mean_success_rate": float(np.mean(success_rates)),
+                "success_rate_values": success_rates,
             }
             print(
                 f"  [{name:9s}] collapsed unstable mode in {n_collapsed}/{args.n_seeds} seeds "
                 f"(mean R2={np.mean(r2s):.3f}, R2 range=[{min(r2s):.3f}, {max(r2s):.3f}])"
+            )
+            print(
+                f"  [{name:9s}] stabilizable(latent) in {n_stabilizable}/{args.n_seeds} seeds "
+                f"-- mean closed-loop success_rate={np.mean(success_rates)*100:.1f}% "
+                f"(range=[{min(success_rates)*100:.0f}%, {max(success_rates)*100:.0f}%])"
             )
 
             enc, pred, dec, cfg = best
@@ -255,12 +292,15 @@ def main():
         f.write("# Example 3: killer collapse construction (double_mode, latent_dim=1)\n\n")
         f.write(f"true eigvals(A): {system.eigvals()}\n\n")
         f.write(f"sigma_stable={args.sigma_stable}  sigma_unstable={args.sigma_unstable}  n_seeds={args.n_seeds}\n\n")
-        f.write("| config | horizon | collapse rate | mean R^2 |\n")
-        f.write("|---|---|---|---|\n")
+        f.write("| config | horizon | collapse rate | mean R^2 | stabilizable (latent) | mean closed-loop success rate |\n")
+        f.write("|---|---|---|---|---|---|\n")
         for horizon in args.horizons:
             for name in configs:
                 s = summary[f"{name}_H{horizon}"]
-                f.write(f"| {name} | {horizon} | {s['collapse_rate']*100:.0f}% | {s['mean_R2']:.3f} |\n")
+                f.write(
+                    f"| {name} | {horizon} | {s['collapse_rate']*100:.0f}% | {s['mean_R2']:.3f} | "
+                    f"{s['n_stabilizable']}/{args.n_seeds} | {s['mean_success_rate']*100:.1f}% |\n"
+                )
     print(f"wrote {md_path}")
 
 
