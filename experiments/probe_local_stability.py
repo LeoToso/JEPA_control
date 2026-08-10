@@ -80,6 +80,7 @@ def main():
     p.add_argument("--n-steps", type=int, default=300, help="closed-loop rollout length for panel 2's trajectories")
 
     p.add_argument("--skip-lyapunov", action="store_true", help="omit panel 3 (Lyapunov certificate) -- figure has just panels 1-2")
+    p.add_argument("--hide-axis-units", action="store_true", help="omit the '(deg)' / unit suffix from axis labels")
     p.add_argument("--lyap-dim0-max", type=float, default=15.0, help="Lyapunov grid half-width along dims[0]")
     p.add_argument("--lyap-dim1-max", type=float, default=50.0, help="Lyapunov grid half-width along dims[1]")
     p.add_argument("--lyap-n-dim0", type=int, default=31)
@@ -188,8 +189,9 @@ def main():
 
     out_path = args.out or os.path.splitext(args.checkpoint)[0] + "_local_stability.pdf"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    unit_suffix = "" if args.hide_axis_units else ("deg" if use_degrees else "")
     plot_local_stability_probe(
-        eig_panel, traj_panel, lyap_panel, out_path, unit_suffix="deg" if use_degrees else "",
+        eig_panel, traj_panel, lyap_panel, out_path, unit_suffix=unit_suffix,
         dominant_mode_label=dominant_mode_label, other_mode_label=other_mode_label,
     )
     print(f"\nwrote {out_path}")
