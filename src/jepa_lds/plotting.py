@@ -142,6 +142,85 @@ def _axis_label(dim: int, suffix: str) -> str:
 _TRAJ_COLORS = ["tab:blue", "tab:orange", "tab:purple", "tab:brown", "tab:cyan", "tab:pink"]
 
 
+def _draw_eigenvector_alignment_panel(
+    ax,
+    eig_panel: dict,
+    suffix: str = "",
+    dominant_mode_label: str = "ground truth (unstable)",
+    other_mode_label: str = "ground truth (stable)",
+    label_fontsize: float = 20,
+    tick_labelsize: float = 15,
+    legend_fontsize: float = 15,
+    legend_loc: str = "lower left",
+):
+    """Draws the eigenvector-alignment panel (true unstable eigenvector vs.
+    learned dominant eigenvector, both unit vectors projected onto
+    `eig_panel["dims"]`, with the true "other" eigenvector as a grey
+    reference when available) onto a single axes -- shared by
+    `plot_local_stability_probe`'s panel 1 and `plot_eigenvector_alignment_grid`.
+
+    Thin shafts/heads so two nearly-parallel unit arrows don't visually
+    merge into one blob; "learned" is drawn semi-transparent (and on top)
+    so a perfectly-aligned overlap shows as a visibly blended color rather
+    than fully hiding the ground-truth arrow underneath."""
+    d0, d1 = eig_panel["dims"]
+    arrow_kwargs = dict(angles="xy", scale_units="xy", scale=1, width=0.012, headwidth=3.5, headlength=4.5, headaxislength=4)
+    theta = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(np.cos(theta), np.sin(theta), color="grey", linewidth=0.7, linestyle=":", alpha=0.6)
+    if eig_panel.get("v_true_stable") is not None:
+        vs = eig_panel["v_true_stable"]
+        ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label=other_mode_label, **arrow_kwargs)
+    vu = eig_panel["v_true_unstable"]
+    vl = eig_panel["v_learned"]
+    ax.quiver(0, 0, vu[0], vu[1], color="green", label=dominant_mode_label, zorder=4, **arrow_kwargs)
+    ax.quiver(0, 0, vl[0], vl[1], color="darkorange", alpha=0.6, label="learned (dominant)", zorder=5, **arrow_kwargs)
+    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
+    ax.set_xlim(-1.08, 1.08)
+    ax.set_ylim(-1.08, 1.08)
+    ax.set_aspect("equal")
+    ax.set_xlabel(_axis_label(d0, suffix), fontsize=label_fontsize)
+    ax.set_ylabel(_axis_label(d1, suffix), fontsize=label_fontsize)
+    ax.legend(fontsize=legend_fontsize, loc=legend_loc)
+    ax.tick_params(labelsize=tick_labelsize)
+
+
+def plot_eigenvector_alignment_grid(
+    eig_panels: list[dict],
+    out_path: str,
+    unit_suffix: str = "",
+    dominant_mode_label: str = "ground truth (unstable)",
+    other_mode_label: str = "ground truth (stable)",
+    ncols: int = 3,
+):
+    """A grid of eigenvector-alignment panels (see `plot_local_stability_probe`'s
+    panel 1 / `_draw_eigenvector_alignment_panel`), one subplot per entry in
+    `eig_panels` -- typically one per (dims[0], dims[1]) pair covering every
+    2D projection of an n-state system, e.g. via
+    `itertools.combinations(range(system.n), 2)`, rather than a single fixed
+    --dims choice. Gives a full picture of where the learned and true
+    dominant directions do (and don't) align across the whole state space."""
+    n = len(eig_panels)
+    if n == 0:
+        raise ValueError("eig_panels must be non-empty")
+    ncols = max(1, min(ncols, n))
+    nrows = -(-n // ncols)  # ceil division
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False)
+    axes_flat = axes.flatten()
+    suffix = f" ({unit_suffix})" if unit_suffix else ""
+    for ax, eig_panel in zip(axes_flat, eig_panels):
+        _draw_eigenvector_alignment_panel(
+            ax, eig_panel, suffix=suffix, dominant_mode_label=dominant_mode_label,
+            other_mode_label=other_mode_label, label_fontsize=14, tick_labelsize=11,
+            legend_fontsize=9, legend_loc="best",
+        )
+    for ax in axes_flat[n:]:
+        ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    return fig
+
+
 def plot_local_stability_probe(
     eig_panel: dict,
     traj_panel: dict,
@@ -183,30 +262,9 @@ def plot_local_stability_probe(
     # Panel 1: unstable eigenvector alignment -- true (green) vs learned (orange),
     # both unit vectors, with the true stable eigenvector (grey, dashed) as a
     # reference so it's visually obvious if "learned" has aligned with the wrong mode.
-    ax = axes[0]
-    d0, d1 = eig_panel["dims"]
-    # Thin shafts/heads so two nearly-parallel unit arrows don't visually
-    # merge into one blob; "learned" is drawn semi-transparent (and on top)
-    # so a perfectly-aligned overlap shows as a visibly blended color rather
-    # than fully hiding "ground truth (unstable)" underneath.
-    arrow_kwargs = dict(angles="xy", scale_units="xy", scale=1, width=0.012, headwidth=3.5, headlength=4.5, headaxislength=4)
-    theta = np.linspace(0, 2 * np.pi, 200)
-    ax.plot(np.cos(theta), np.sin(theta), color="grey", linewidth=0.7, linestyle=":", alpha=0.6)
-    if eig_panel.get("v_true_stable") is not None:
-        vs = eig_panel["v_true_stable"]
-        ax.quiver(0, 0, vs[0], vs[1], color="grey", alpha=0.7, label=other_mode_label, **arrow_kwargs)
-    vu = eig_panel["v_true_unstable"]
-    vl = eig_panel["v_learned"]
-    ax.quiver(0, 0, vu[0], vu[1], color="green", label=dominant_mode_label, zorder=4, **arrow_kwargs)
-    ax.quiver(0, 0, vl[0], vl[1], color="darkorange", alpha=0.6, label="learned (dominant)", zorder=5, **arrow_kwargs)
-    ax.scatter([0], [0], **_EQUILIBRIUM_STYLE)
-    ax.set_xlim(-1.08, 1.08)
-    ax.set_ylim(-1.08, 1.08)
-    ax.set_aspect("equal")
-    ax.set_xlabel(_axis_label(d0, suffix), fontsize=20)
-    ax.set_ylabel(_axis_label(d1, suffix), fontsize=20)
-    ax.legend(fontsize=15, loc="lower left")
-    ax.tick_params(labelsize=15)
+    _draw_eigenvector_alignment_panel(
+        axes[0], eig_panel, suffix=suffix, dominant_mode_label=dominant_mode_label, other_mode_label=other_mode_label,
+    )
 
     # Panel 2: closed-loop trajectories from a handful of marked initial
     # states -- converging to the equilibrium (star) or diverging away from
