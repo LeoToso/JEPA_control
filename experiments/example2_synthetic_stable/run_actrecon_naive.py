@@ -1,17 +1,13 @@
-"""Example 4, SIGReg config, NAIVE joint SGD: same construction as
-run_example4_sigreg.py (see its module docstring for the full motivation --
-unstable_eig=0.25 instead of Example 3's 1.25, so both modes are open-loop
-stable), but trained with train_jepa_naive -- encoder AND predictor
-optimized jointly end-to-end via a single Adam optimizer, no closed-form
-solves, nothing frozen -- instead of the alternating scheme (train_jepa)
-run_example4_sigreg.py uses.
+"""Example 2 (Synthetic, Stable) -- action-reconstruction config, naive
+joint SGD. Same construction as run_sigreg_naive.py in this folder (see its
+module docstring and the top-level README for the full motivation);
+counterpart config included for comparison -- action-reconstruction also
+collapses here (the "amplification" incentive that saves it in Example 1
+relied on genuine instability, which no longer exists), but closed-loop
+success is still ~100% for the same reason as SIGReg: neither mode is
+actually unstable.
 
-Prints per-epoch training losses as it goes (total budget = outer_rounds *
-inner_epochs epochs, matching the alternating scheme's scripts for a fair
-step-for-step comparison), then reports the unstable-mode retention R^2 and
-closed-loop LQR success rate, and saves a checkpoint for further analysis.
-
-    python experiments/run_example4_sigreg_naive.py
+    python experiments/example2_synthetic_stable/run_actrecon_naive.py
 """
 from __future__ import annotations
 
@@ -19,7 +15,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import numpy as np
 import torch
@@ -37,17 +33,17 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--latent-dim", type=int, default=1, help="deliberately < system.n=2 -- forces the L_pred=0 tie between the two eigenspaces")
     p.add_argument("--horizon", type=int, default=4)
-    p.add_argument("--lambda-sigreg", type=float, default=25.0)
+    p.add_argument("--lambda-actrecon", type=float, default=25.0)
     p.add_argument("--collapse-threshold", type=float, default=0.5, help="unstable_mode_retention R^2 below this counts as 'collapsed'")
 
-    p.add_argument("--unstable-eig", type=float, default=0.25, help="Example 3 used 1.25 (unstable); here < 1 so BOTH modes are open-loop stable")
+    p.add_argument("--unstable-eig", type=float, default=0.25, help="Example 1 used 1.25 (unstable); here < 1 so BOTH modes are open-loop stable")
     p.add_argument("--sigma-stable", type=float, default=0.3, help="std of the stable modal coordinate's initial condition")
     p.add_argument("--sigma-unstable", type=float, default=0.01, help="std of the (now also stable) low-variance modal coordinate's initial condition")
 
     p.add_argument("--T", type=int, default=5, help="episode length (must be > horizon)")
     p.add_argument("--n-train-ep", type=int, default=400)
     p.add_argument("--n-val-ep", type=int, default=100)
-    p.add_argument("--action-std", type=float, default=0.02, help="validated sweet spot for the alternating scheme -- may behave differently under naive SGD")
+    p.add_argument("--action-std", type=float, default=0.02)
     p.add_argument("--obs-dim-signal", type=int, default=6)
     p.add_argument("--n-distractor", type=int, default=0)
     p.add_argument("--measurement-noise-std", type=float, default=0.0, help="noiseless by design -- keeps L_pred=0 exactly achievable")
@@ -72,7 +68,7 @@ def main():
     p.add_argument("--threads", type=int, default=4)
     p.add_argument(
         "--out-dir", type=str,
-        default=os.path.join(os.path.dirname(__file__), "..", "results", "example4_sigreg_naive"),
+        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example2_actrecon_naive"),
     )
     args = p.parse_args()
 
@@ -111,15 +107,15 @@ def main():
     xi_u = np.real(x_flat @ Vinv[idx_u].conj())
     xi_s = np.real(x_flat @ Vinv[idx_s].conj())
     print(f"pooled var(dominant modal coord)={xi_u.var():.6f}  var(other modal coord)={xi_s.var():.6f}")
-    print(f"config: L_pred + L_SIGReg (naive joint SGD)  lambda_sigreg={args.lambda_sigreg}  latent_dim={args.latent_dim}  horizon={args.horizon}")
+    print(f"config: L_pred + L_act (naive joint SGD)  lambda_actrecon={args.lambda_actrecon}  latent_dim={args.latent_dim}  horizon={args.horizon}")
 
     cfg = TrainConfig(
         latent_dim=args.latent_dim, horizon=args.horizon, outer_rounds=args.outer_rounds,
         inner_epochs=args.inner_epochs, batch_size=args.batch_size, lr=args.lr,
-        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=args.lambda_sigreg,
-        lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0, seed=args.seed,
+        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=0.0,
+        lambda_actrecon_1step=0.0, lambda_actrecon_ms=args.lambda_actrecon, seed=args.seed,
     )
-    print(f"\n--- training L_pred + L_SIGReg, naive joint SGD (seed={args.seed}) ---")
+    print(f"\n--- training L_pred + L_act, naive joint SGD (seed={args.seed}) ---")
     enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
 
     r2 = unstable_mode_retention(system, enc, train_batch, val_batch)
@@ -142,11 +138,11 @@ def main():
             f"final_state_distance_avg={ev['final_state_distance_avg']:.4f}"
         )
 
-    ckpt_path = os.path.join(args.out_dir, f"checkpoint_sigreg_naive_H{args.horizon}_seed{args.seed}.pt")
+    ckpt_path = os.path.join(args.out_dir, f"checkpoint_actrecon_naive_H{args.horizon}_seed{args.seed}.pt")
     save_checkpoint(
         ckpt_path, enc, pred, dec, cfg,
         extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
-               "config_name": f"L_pred + L_SIGReg naive (open-loop-stable variant, H={args.horizon}, seed={args.seed})",
+               "config_name": f"L_pred + L_act naive (Example 2: synthetic stable, H={args.horizon}, seed={args.seed})",
                "trainer": "naive",
                "obs_dim_signal": args.obs_dim_signal, "n_distractor": args.n_distractor,
                "measurement_noise_std": args.measurement_noise_std, "distractor_std": 1.0,

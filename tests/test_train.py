@@ -89,7 +89,7 @@ def test_strong_sigreg_degrades_unstable_mode_retention_relative_to_action_recon
 
 
 def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unstable_mode():
-    """The 'killer' construction (see experiments/run_example3_killer_collapse.py):
+    """The 'killer' construction used by experiments/example1_synthetic_unstable/:
     with latent_dim=1 (deliberately SMALLER than system.n=2) and a noiseless
     double_mode system, the ONLY 1-D encodings achieving exactly zero
     multistep prediction loss (for any horizon) are the two eigenspaces
@@ -106,8 +106,7 @@ def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unsta
         system, sigma_stable=0.3, sigma_unstable_small=0.01, sigma_unstable_large=0.01, contamination_prob=0.0,
     )
     T = 5
-    # action_std=0.02 is the validated sweet spot -- see the module docstring in
-    # experiments/run_example3_killer_collapse.py: too small starves action
+    # action_std=0.02 is the validated sweet spot: too small starves action
     # reconstruction's signal at short horizons, too large dilutes the variance
     # asymmetry SIGReg's collapse relies on.
     train_batch = generate_dataset(
@@ -152,10 +151,10 @@ def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unsta
         )
         ar_success_rates.append(ev_ar["success_rate"])
 
-    # empirically (see experiments/run_example3_killer_collapse.py) this is 15/15 collapsed for
-    # sigreg and 0/15 for actrecon at n_seeds=15, with sigreg's closed-loop success_rate at exactly
-    # 0.0 and actrecon's at exactly 1.0 in every seed -- asserted here with a small margin to avoid
-    # test flakiness at the smaller n_seeds/outer_rounds used for test speed.
+    # empirically this is 15/15 collapsed for sigreg and 0/15 for actrecon at n_seeds=15, with
+    # sigreg's closed-loop success_rate at exactly 0.0 and actrecon's at exactly 1.0 in every
+    # seed -- asserted here with a small margin to avoid test flakiness at the smaller
+    # n_seeds/outer_rounds used for test speed.
     assert n_sigreg_collapsed >= 4
     assert n_actrecon_collapsed == 0
     assert np.mean(sigreg_success_rates) < 0.2

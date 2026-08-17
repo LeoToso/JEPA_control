@@ -1,20 +1,21 @@
-"""Example 3, SIGReg config, NAIVE joint SGD: same "killer" construction as
-run_example3_sigreg.py (see run_example3_killer_collapse.py's module
-docstring for the full derivation), but trained with train_jepa_naive --
-encoder AND predictor optimized jointly end-to-end via a single Adam
-optimizer, no closed-form solves, nothing frozen -- instead of the
-alternating scheme (train_jepa) the other Example 3 scripts use.
+"""Example 1 (Synthetic, Unstable) -- SIGReg config, naive joint SGD.
 
-Same 2-state `double_mode` system, latent_dim=1 (deliberately smaller than
-the true state dimension), and an initial state distribution biased toward
-the stable modal coordinate having much larger variance than the unstable
-one. Prints per-epoch training losses as it goes (total budget =
-outer_rounds * inner_epochs epochs, matching the alternating scheme's
-scripts for a fair step-for-step comparison), then reports the unstable-
-mode retention R^2 and closed-loop LQR success rate, and saves a
-checkpoint for further analysis.
+A minimal 2-state system (`make_double_mode_system`: one open-loop-unstable
+real mode, one stable real mode) with `latent_dim=1` (deliberately smaller
+than the true state dimension, forcing an exact L_pred=0 tie between
+"keep only the unstable mode" and "keep only the stable mode") and an
+initial-condition distribution biased toward the stable modal coordinate
+having much larger variance than the unstable one (see the top-level
+README for the full motivation).
 
-    python experiments/run_example3_sigreg_naive.py
+Trained with `train_jepa_naive`: encoder AND predictor optimized jointly
+end-to-end via a single Adam optimizer, no closed-form solves, nothing
+frozen. Prints per-epoch training losses as it goes (total budget =
+outer_rounds * inner_epochs epochs), then reports the unstable-mode
+retention R^2 and closed-loop LQR success rate, and saves a checkpoint for
+further analysis with probe_local_stability.py.
+
+    python experiments/example1_synthetic_unstable/run_sigreg_naive.py
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 import numpy as np
 import torch
@@ -49,7 +50,7 @@ def main():
     p.add_argument("--T", type=int, default=5, help="episode length (must be > horizon)")
     p.add_argument("--n-train-ep", type=int, default=400)
     p.add_argument("--n-val-ep", type=int, default=100)
-    p.add_argument("--action-std", type=float, default=0.02, help="validated sweet spot for the alternating scheme -- see run_example3_killer_collapse.py's module docstring; may behave differently under naive SGD")
+    p.add_argument("--action-std", type=float, default=0.02)
     p.add_argument("--obs-dim-signal", type=int, default=6)
     p.add_argument("--n-distractor", type=int, default=0)
     p.add_argument("--measurement-noise-std", type=float, default=0.0, help="noiseless by design -- keeps L_pred=0 exactly achievable")
@@ -74,7 +75,7 @@ def main():
     p.add_argument("--threads", type=int, default=4)
     p.add_argument(
         "--out-dir", type=str,
-        default=os.path.join(os.path.dirname(__file__), "..", "results", "example3_sigreg_naive"),
+        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example1_sigreg_naive"),
     )
     args = p.parse_args()
 
@@ -148,7 +149,7 @@ def main():
     save_checkpoint(
         ckpt_path, enc, pred, dec, cfg,
         extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
-               "config_name": f"L_pred + L_SIGReg naive (killer collapse, H={args.horizon}, seed={args.seed})",
+               "config_name": f"L_pred + L_SIGReg naive (Example 1: synthetic unstable, H={args.horizon}, seed={args.seed})",
                "trainer": "naive",
                "obs_dim_signal": args.obs_dim_signal, "n_distractor": args.n_distractor,
                "measurement_noise_std": args.measurement_noise_std, "distractor_std": 1.0,

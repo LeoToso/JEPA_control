@@ -1,7 +1,7 @@
 """Shared helper for reconstructing the ground-truth system + observation
-model that a saved checkpoint was trained with, so evaluation/plotting
-scripts (`evaluate_checkpoint.py`, `plot_five_panels.py`, ...) don't each
-duplicate the same `_SYSTEM_MAKERS`/`_OBS_DEFAULTS` bookkeeping.
+model that a saved checkpoint was trained with, so analysis scripts
+(`probe_local_stability.py`, `probe_eigenvector_alignment_grid.py`) don't
+each duplicate the same `_SYSTEM_MAKERS`/`_OBS_DEFAULTS` bookkeeping.
 """
 from __future__ import annotations
 
@@ -19,9 +19,10 @@ from jepa_lds.systems import make_double_mode_system, make_linearized_cartpole_s
 _SYSTEM_MAKERS = {
     "cartpole_linear": lambda: make_linearized_cartpole_system(dt=0.02),
     "double_mode": make_double_mode_system,
-    # Example 4: same construction as "double_mode" but BOTH modes stable
-    # (unstable_eig=0.25 < 1, stable_eig=0.85 unchanged) -- system is
-    # open-loop stable, so a collapsed mode no longer breaks control.
+    # Example 2 (synthetic, stable): same construction as "double_mode" but
+    # BOTH modes stable (unstable_eig=0.25 < 1, stable_eig=0.85 unchanged)
+    # -- system is open-loop stable, so a collapsed mode no longer breaks
+    # control.
     "double_mode_stable": lambda: make_double_mode_system(unstable_eig=0.25, name="double_mode_stable"),
 }
 _OBS_DEFAULTS = {

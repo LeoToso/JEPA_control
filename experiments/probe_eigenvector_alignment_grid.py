@@ -11,7 +11,7 @@ For an n-state system this produces C(n,2) subplots (e.g. 6 for the
 angle, pole angular velocity).
 
     python experiments/probe_eigenvector_alignment_grid.py \\
-        --checkpoint results/example5_actrecon_naive/checkpoint_actrecon_naive_H8_seed0.pt
+        --checkpoint results/example3_actrecon_naive/checkpoint_actrecon_naive_H8_seed0.pt
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def main():
     if system.is_open_loop_unstable():
         dominant_mode_label, other_mode_label = "ground truth (unstable)", "ground truth (stable)"
     else:
-        # Both modes are actually stable (e.g. Example 4's double_mode_stable) --
+        # Both modes are actually stable (e.g. Example 2's double_mode_stable) --
         # calling the dominant one "unstable" would be wrong, so number them instead.
         dominant_mode_label, other_mode_label = "ground truth (stable 2)", "ground truth (stable 1)"
 

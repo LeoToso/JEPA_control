@@ -1,7 +1,7 @@
 """Diagnostics that quantify *why* a trained representation does or does not
 support a stabilizing controller: a ridge-probe measure of how much of the
-true unstable modal coordinate survives in z, plus the norm-divergence and
-cosine-alignment rollout panels described in the notes (Panels 4 and 5).
+true unstable modal coordinate survives in z, an eigenvector-alignment
+check, and the two panels used by `probe_local_stability.py`.
 """
 from __future__ import annotations
 
@@ -58,20 +58,6 @@ def unstable_mode_retention(
     return r2_score(xi_val, xi_pred)
 
 
-def fit_state_probe(encoder, batch: EpisodeBatch, alpha: float = 1e-2) -> np.ndarray:
-    """Ridge-regress the FULL ground-truth state x (not just the unstable
-    modal coordinate) from z = encoder(y). Used to decode a state-space
-    quantity (position in the phase portrait, etc.) out of the latent for
-    plotting, the same way `unstable_mode_retention` probes a single
-    coordinate."""
-    Z, x = _encode_flat(encoder, batch)
-    return ridge_fit(Z, x, alpha=alpha)
-
-
-def decode_state(Z: np.ndarray, beta: np.ndarray) -> np.ndarray:
-    return ridge_predict(Z, beta)
-
-
 def build_2d_grid(lo: tuple[float, float], hi: tuple[float, float], n_points: int | tuple[int, int] = 21):
     """Meshgrid over [lo[0], hi[0]] x [lo[1], hi[1]]. `n_points` is either a
     single resolution shared by both axes, or a (n0, n1) pair for
@@ -103,45 +89,6 @@ def _encode_states(obs_model: ObservationModel, encoder, states: np.ndarray) -> 
         y = y_signal
     with torch.no_grad():
         return encoder(torch.tensor(y, dtype=torch.float32)).numpy()
-
-
-def phase_portrait_panel(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    predictor,
-    beta: np.ndarray,
-    dims: tuple[int, int] = (0, 1),
-    lo: tuple[float, float] = (-1.0, -1.0),
-    hi: tuple[float, float] = (1.0, 1.0),
-    n_points: int = 17,
-) -> dict:
-    """Panel 1: at each grid state x, compare the true one-step drift
-    (A - I) x against the learned drift obtained by encoding x, applying the
-    latent predictor with zero action, and decoding back to state space with
-    the ridge probe `beta`."""
-    XX, YY = build_2d_grid(lo, hi, n_points)
-    states = grid_to_states(XX, YY, dims, system.n)
-    dx_true = states @ (system.A - np.eye(system.n)).T
-
-    z = _encode_states(obs_model, encoder, states)
-    with torch.no_grad():
-        z_next = predictor(
-            torch.tensor(z, dtype=torch.float32), torch.zeros(states.shape[0], system.m)
-        ).numpy()
-    x_hat_next = decode_state(z_next, beta)
-    dx_learned = x_hat_next - states
-
-    d0, d1 = dims
-    return {
-        "XX": XX,
-        "YY": YY,
-        "U_true": dx_true[:, d0].reshape(XX.shape),
-        "V_true": dx_true[:, d1].reshape(XX.shape),
-        "U_learned": dx_learned[:, d0].reshape(XX.shape),
-        "V_learned": dx_learned[:, d1].reshape(XX.shape),
-        "dims": dims,
-    }
 
 
 def unstable_eigenvector_alignment(
@@ -213,153 +160,6 @@ def unstable_eigenvector_alignment(
     return result
 
 
-def _rollout_latent_zero_action(predictor, z0: np.ndarray, m: int, H: int) -> np.ndarray:
-    with torch.no_grad():
-        z = torch.tensor(z0, dtype=torch.float32)
-        zero_a = torch.zeros(z0.shape[0], m)
-        for _ in range(H):
-            z = predictor(z, zero_a)
-        return z.numpy()
-
-
-def h_step_prediction_error_panel(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    predictor,
-    beta: np.ndarray,
-    dims: tuple[int, int] = (0, 1),
-    lo: tuple[float, float] = (-1.0, -1.0),
-    hi: tuple[float, float] = (1.0, 1.0),
-    n_points: int = 17,
-    H: int = 10,
-) -> dict:
-    """Panel 2: from each grid state x0, decode the H-step-ahead latent
-    prediction D(f_H(z0, 0)) (recursive predictor rollout with zero actions,
-    decoded back to the ORIGINAL PHYSICAL STATE SPACE via the ridge probe
-    `beta`) and compare it against the true H-step-ahead state x_H = A^H x0
-    -- ||D(f_H(z0,0)) - x_H||, exactly the quantity plotted in
-    plot_checkpoint_summary_physical_smwm.py's panel 2, rather than an error
-    measured in raw latent coordinates."""
-    XX, YY = build_2d_grid(lo, hi, n_points)
-    states = grid_to_states(XX, YY, dims, system.n)
-
-    x_H_true = states @ np.linalg.matrix_power(system.A, H).T
-    z0 = _encode_states(obs_model, encoder, states)
-    z_H_pred = _rollout_latent_zero_action(predictor, z0, system.m, H)
-    s_pred = decode_state(z_H_pred, beta)
-
-    error = np.linalg.norm(s_pred - x_H_true, axis=1)
-    return {"XX": XX, "YY": YY, "error": error.reshape(XX.shape), "dims": dims, "H": H}
-
-
-def planning_cost_panel(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    predictor,
-    beta: np.ndarray,
-    dims: tuple[int, int] = (0, 1),
-    lo: tuple[float, float] = (-1.0, -1.0),
-    hi: tuple[float, float] = (1.0, 1.0),
-    n_points: int = 17,
-    H: int = 10,
-) -> dict:
-    """Panel 3: log10 ||D(f_H(z0, 0)) - s_goal||^2 -- the squared distance,
-    in the ORIGINAL PHYSICAL STATE SPACE (decoded via the ridge probe
-    `beta`), between the same H-step zero-action latent rollout used in
-    panel 2 and the equilibrium s_goal=0. A simple proxy for "how far does
-    the learned model's own open-loop prediction drift from the goal",
-    matching plot_checkpoint_summary_physical_smwm.py's panel 3 (no LQR
-    value function / Riccati solution needed)."""
-    XX, YY = build_2d_grid(lo, hi, n_points)
-    states = grid_to_states(XX, YY, dims, system.n)
-    z0 = _encode_states(obs_model, encoder, states)
-    z_H = _rollout_latent_zero_action(predictor, z0, system.m, H)
-    s_pred = decode_state(z_H, beta)
-
-    cost = np.sum(s_pred**2, axis=1)
-    cost = np.clip(cost, 1e-12, None)
-    return {"XX": XX, "YY": YY, "log_cost": np.log10(cost).reshape(XX.shape), "dims": dims, "H": H}
-
-
-def _batched_deterministic_success(
-    x_next_fn, X0: np.ndarray, n_steps: int, success_threshold: float, hold_steps: int
-) -> np.ndarray:
-    """Runs `x_next_fn(x) -> x_next` for `n_steps` on the WHOLE batch `X0`
-    (batch, n) at once (noiseless/deterministic -- one trial per grid point,
-    not a Monte-Carlo average), and applies the same success criterion as
-    `evaluate_controller`: state norm stays below `success_threshold` for the
-    final `hold_steps` of the trajectory."""
-    x = X0.copy()
-    norms = np.zeros((X0.shape[0], n_steps + 1))
-    norms[:, 0] = np.linalg.norm(x, axis=1)
-    for t in range(n_steps):
-        x = x_next_fn(x)
-        norms[:, t + 1] = np.linalg.norm(x, axis=1)
-    finite = np.isfinite(norms)
-    stable = finite & (norms < success_threshold)
-    tail = stable[:, -hold_steps:] if norms.shape[1] >= hold_steps else np.zeros((X0.shape[0], 0), dtype=bool)
-    return np.all(tail, axis=1) if tail.shape[1] > 0 else np.zeros(X0.shape[0], dtype=bool)
-
-
-def region_of_attraction_panel(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    K_z: np.ndarray,
-    dims: tuple[int, int] = (0, 1),
-    lo: tuple[float, float] = (-1.0, -1.0),
-    hi: tuple[float, float] = (1.0, 1.0),
-    n_points: int | tuple[int, int] = 17,
-    n_steps: int = 60,
-    success_threshold: float = 0.3,
-    hold_steps: int = 10,
-    K_gt: np.ndarray | None = None,
-) -> dict:
-    """Panel 2 of the local-stability probe: for each grid state x0, a
-    single deterministic (noiseless) closed-loop rollout under the LEARNED
-    controller u_t = -K_z * encoder(observe(x_t)) on the TRUE system;
-    "success" uses the same criterion as `evaluate_controller`. If `K_gt` is
-    given (a full-state-feedback oracle gain designed directly on the true
-    (A, B), e.g. from `system.dlqr`), also computes its success map for
-    comparison (u_t = -K_gt x_t directly, no encoder involved).
-
-    CAVEAT specific to this exactly-linear, unconstrained toy system: a
-    genuinely stabilizing linear controller's true region of attraction is
-    the WHOLE state space -- there is no nonlinearity or actuator
-    saturation to shrink it (unlike the original pixel-based/nonlinear
-    cartpole this probe was adapted from). What this panel actually measures
-    is "how large an initial deviation decays below a FIXED threshold within
-    a FIXED step budget" -- a convergence-speed budget, not a structural
-    stability boundary. Still informative (larger deviations take
-    proportionally longer to decay below an absolute threshold), just don't
-    over-read the boundary shape as a literal basin of attraction."""
-    XX, YY = build_2d_grid(lo, hi, n_points)
-    states = grid_to_states(XX, YY, dims, system.n)
-
-    def learned_step(x):
-        z = _encode_states(obs_model, encoder, x)
-        u = -(K_z @ z.T).T
-        return x @ system.A.T + u @ system.B.T
-
-    success = _batched_deterministic_success(learned_step, states, n_steps, success_threshold, hold_steps)
-    result = {
-        "XX": XX, "YY": YY, "dims": dims,
-        "success": success.astype(float).reshape(XX.shape),
-        "success_rate": float(success.mean()),
-    }
-    if K_gt is not None:
-        def gt_step(x):
-            u = -(K_gt @ x.T).T
-            return x @ system.A.T + u @ system.B.T
-
-        success_gt = _batched_deterministic_success(gt_step, states, n_steps, success_threshold, hold_steps)
-        result["success_gt"] = success_gt.astype(float).reshape(XX.shape)
-        result["success_rate_gt"] = float(success_gt.mean())
-    return result
-
-
 def closed_loop_trajectory_panel(
     system: LTISystem,
     obs_model: ObservationModel,
@@ -373,11 +173,10 @@ def closed_loop_trajectory_panel(
     """Panel 2 (trajectory view): one closed-loop rollout per starting state
     in `x0s`, under the LEARNED controller u_t = -K_z * encoder(y_t) on the
     TRUE system, projected onto `dims` -- a direct, qualitative "does this
-    particular starting point actually converge to the equilibrium" view, in
-    contrast to `region_of_attraction_panel`'s exhaustive grid plus
-    fixed-threshold/fixed-step-budget success map. Each x0 is simulated with
-    its own draw from a seeded RNG stream (so results are reproducible, but
-    not identical) for the observation-model measurement noise."""
+    particular starting point actually converge to the equilibrium" view.
+    Each x0 is simulated with its own draw from a seeded RNG stream (so
+    results are reproducible, but not identical) for the observation-model
+    measurement noise."""
     d0, d1 = dims
     rng = np.random.default_rng(seed)
     trajectories = []
@@ -425,90 +224,3 @@ def lyapunov_decrease_panel(
         "delta_V": delta_V.reshape(XX.shape),
         "frac_decrease": float(np.mean(delta_V < 0)),
     }
-
-
-def eigenvalue_comparison(system: LTISystem, predictor) -> dict:
-    A_z, _B_z = predictor.matrices()
-    return {
-        "true_eigvals": system.eigvals(),
-        "latent_eigvals": np.linalg.eigvals(A_z),
-        "true_spectral_radius": system.spectral_radius(),
-        "latent_spectral_radius": float(np.max(np.abs(np.linalg.eigvals(A_z)))),
-    }
-
-
-def latent_norm_divergence(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    predictor,
-    x0: np.ndarray,
-    n_steps: int,
-    rng: np.random.Generator,
-):
-    """Passive (zero-action) rollout: compare ||z_t|| from re-encoding the
-    true trajectory each step against ||z_t_hat|| from recursively applying
-    the learned predictor starting only from z_0 (Panel 4 in the notes)."""
-    x = x0.copy()
-    y0 = obs_model.observe(x, rng)
-    with torch.no_grad():
-        z_true = encoder(torch.tensor(y0, dtype=torch.float32).unsqueeze(0))
-    z_rec = z_true.clone()
-    zero_a = torch.zeros(1, system.m)
-
-    true_norms = [float(z_true.norm())]
-    rec_norms = [float(z_rec.norm())]
-    for _t in range(n_steps):
-        x = system.step(x, np.zeros(system.m))
-        y = obs_model.observe(x, rng)
-        with torch.no_grad():
-            z_true = encoder(torch.tensor(y, dtype=torch.float32).unsqueeze(0))
-            z_rec = predictor(z_rec, zero_a)
-        true_norms.append(float(z_true.norm()))
-        rec_norms.append(float(z_rec.norm()))
-    return np.array(true_norms), np.array(rec_norms)
-
-
-def cosine_alignment_unstable_direction(
-    system: LTISystem,
-    obs_model: ObservationModel,
-    encoder,
-    predictor,
-    n_steps: int,
-    perturbation_scales: list[float],
-    rng: np.random.Generator,
-):
-    """Perturb the origin along the true unstable *right*-eigenvector, run
-    both a ground-truth and a learned-latent passive rollout, and measure
-    cos(Delta z_true, Delta z_pred) over time (Panel 5 in the notes). High
-    cosine = the learned model predicts the correct *direction* of
-    divergence, not just a numerically small residual."""
-    w, V, _Vinv = system.modal_decomposition()
-    idx = system.unstable_mode_index()
-    v_u = np.real(V[:, idx])
-    v_u = v_u / np.linalg.norm(v_u)
-
-    y0 = obs_model.observe(np.zeros(system.n), rng)
-    with torch.no_grad():
-        z0 = encoder(torch.tensor(y0, dtype=torch.float32).unsqueeze(0))
-    zero_a = torch.zeros(1, system.m)
-
-    cos_over_time = np.zeros((len(perturbation_scales), n_steps))
-    for i, scale in enumerate(perturbation_scales):
-        x = scale * v_u
-        y = obs_model.observe(x, rng)
-        with torch.no_grad():
-            z_true0 = encoder(torch.tensor(y, dtype=torch.float32).unsqueeze(0))
-        z_pred = z_true0.clone()
-        for t in range(n_steps):
-            x = system.step(x, np.zeros(system.m))
-            y = obs_model.observe(x, rng)
-            with torch.no_grad():
-                z_true = encoder(torch.tensor(y, dtype=torch.float32).unsqueeze(0))
-                z_pred = predictor(z_pred, zero_a)
-            dz_true = (z_true - z0).squeeze(0)
-            dz_pred = (z_pred - z0).squeeze(0)
-            denom = dz_true.norm() * dz_pred.norm()
-            cos = float((dz_true @ dz_pred) / denom) if denom > 1e-9 else 0.0
-            cos_over_time[i, t] = cos
-    return cos_over_time

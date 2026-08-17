@@ -5,14 +5,8 @@ from jepa_lds.control import design_latent_controller
 from jepa_lds.data import generate_dataset, make_observation_model
 from jepa_lds.diagnostics import (
     closed_loop_trajectory_panel,
-    decode_state,
-    fit_state_probe,
     grid_to_states,
-    h_step_prediction_error_panel,
     lyapunov_decrease_panel,
-    phase_portrait_panel,
-    planning_cost_panel,
-    region_of_attraction_panel,
     unstable_eigenvector_alignment,
 )
 from jepa_lds.models import FixedLinearEncoder, LinearLatentPredictor
@@ -31,18 +25,6 @@ def _setup(seed=0):
     return system, obs_model, batch, encoder, pred
 
 
-def test_fit_state_probe_recovers_state_from_faithful_encoder():
-    system, _obs_model, batch, encoder, _pred = _setup()
-    beta = fit_state_probe(encoder, batch, alpha=1e-3)
-    assert beta.shape == (system.n + 1, system.n)
-    y = batch.y.reshape(-1, batch.y.shape[-1])
-    x = batch.x.reshape(-1, batch.x.shape[-1])
-    with torch.no_grad():
-        z = encoder(torch.tensor(y, dtype=torch.float32)).numpy()
-    x_hat = decode_state(z, beta)
-    assert np.allclose(x_hat, x, atol=0.2)
-
-
 def test_grid_to_states_places_grid_in_selected_dims_and_zeros_elsewhere():
     XX, YY = np.meshgrid(np.linspace(-1, 1, 3), np.linspace(-1, 1, 3))
     states = grid_to_states(XX, YY, dims=(1, 3), n=4)
@@ -51,88 +33,6 @@ def test_grid_to_states_places_grid_in_selected_dims_and_zeros_elsewhere():
     assert np.all(states[:, 2] == 0.0)
     assert np.allclose(states[:, 1], XX.ravel())
     assert np.allclose(states[:, 3], YY.ravel())
-
-
-def test_phase_portrait_panel_true_field_matches_analytic_drift():
-    system, obs_model, batch, encoder, pred = _setup()
-    beta = fit_state_probe(encoder, batch, alpha=1e-3)
-    panel = phase_portrait_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-1, -1), hi=(1, 1), n_points=5)
-    for key in ("U_true", "V_true", "U_learned", "V_learned"):
-        assert panel[key].shape == panel["XX"].shape
-        assert np.all(np.isfinite(panel[key]))
-    # true drift at grid state x is exactly (A - I) x -- check one grid point.
-    x = np.array([panel["XX"][0, 0], panel["YY"][0, 0]])
-    dx = (system.A - np.eye(2)) @ x
-    assert np.isclose(panel["U_true"][0, 0], dx[0])
-    assert np.isclose(panel["V_true"][0, 0], dx[1])
-
-
-def test_phase_portrait_panel_faithful_encoder_learned_field_close_to_true():
-    """A faithful encoder + a predictor that exactly matches the true
-    dynamics should produce a learned drift field close to the true one."""
-    system, obs_model, batch, encoder, pred = _setup()
-    beta = fit_state_probe(encoder, batch, alpha=1e-3)
-    panel = phase_portrait_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-1, -1), hi=(1, 1), n_points=5)
-    assert np.allclose(panel["U_true"], panel["U_learned"], atol=0.3)
-    assert np.allclose(panel["V_true"], panel["V_learned"], atol=0.3)
-
-
-def test_h_step_prediction_error_panel_shape_and_zero_for_faithful_setup():
-    """Error is now measured in the DECODED ORIGINAL STATE SPACE (via the
-    ridge probe), not in raw latent coordinates -- with a faithful encoder
-    and an exactly-matching predictor, decoding should recover the true
-    H-step-ahead state almost exactly."""
-    system, obs_model, batch, encoder, pred = _setup()
-    beta = fit_state_probe(encoder, batch, alpha=1e-3)
-    panel = h_step_prediction_error_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-0.5, -0.5), hi=(0.5, 0.5), n_points=4, H=5)
-    assert panel["error"].shape == panel["XX"].shape
-    assert panel["H"] == 5
-    assert np.all(np.isfinite(panel["error"]))
-    assert np.allclose(panel["error"], 0.0, atol=0.05)
-
-
-def test_planning_cost_panel_shape_and_finite():
-    """Cost is now log10 ||decoded H-step zero-action rollout - origin||^2
-    in the ORIGINAL STATE SPACE, not the latent LQR value function -- no
-    controller/Riccati solution needed."""
-    system, obs_model, batch, encoder, pred = _setup()
-    beta = fit_state_probe(encoder, batch, alpha=1e-3)
-    panel = planning_cost_panel(system, obs_model, encoder, pred, beta, dims=(0, 1), lo=(-1, -1), hi=(1, 1), n_points=7, H=5)
-    assert panel["log_cost"].shape == panel["XX"].shape
-    assert panel["H"] == 5
-    assert np.all(np.isfinite(panel["log_cost"]))
-    # cost should be minimal (near -inf in log10, i.e. lowest value) at the origin (center of an odd-sized grid).
-    center = panel["log_cost"].shape[0] // 2
-    assert panel["log_cost"][center, center] <= panel["log_cost"].max()
-
-
-def test_region_of_attraction_panel_shape_and_success_near_origin():
-    """With a faithful encoder + exactly-matching predictor, the learned LQR
-    gain should coincide with the oracle full-state gain, and small enough
-    perturbations near the origin should all be classified as successes by
-    both under a generous threshold."""
-    system, obs_model, _batch, encoder, pred = _setup()
-    ctrl = design_latent_controller(pred)
-    assert ctrl["stabilizable"]
-    K_gt, _P_gt = system.dlqr()
-    panel = region_of_attraction_panel(
-        system, obs_model, encoder, ctrl["K_z"], dims=(0, 1), lo=(-0.05, -0.05), hi=(0.05, 0.05),
-        n_points=3, n_steps=30, success_threshold=1.0, hold_steps=5, K_gt=K_gt,
-    )
-    assert panel["success"].shape == panel["XX"].shape
-    assert panel["success_rate"] == 1.0
-    assert "success_gt" in panel and "success_rate_gt" in panel
-    assert panel["success_rate_gt"] == 1.0
-
-
-def test_region_of_attraction_panel_no_gt_key_when_k_gt_omitted():
-    system, obs_model, _batch, encoder, pred = _setup()
-    ctrl = design_latent_controller(pred)
-    panel = region_of_attraction_panel(
-        system, obs_model, encoder, ctrl["K_z"], dims=(0, 1), lo=(-0.05, -0.05), hi=(0.05, 0.05),
-        n_points=3, n_steps=10, success_threshold=1.0, hold_steps=3,
-    )
-    assert "success_gt" not in panel
 
 
 def test_closed_loop_trajectory_panel_converges_for_faithful_setup():

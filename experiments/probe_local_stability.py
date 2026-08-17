@@ -28,7 +28,7 @@ certificate), adapted from the real pixel-based project's
     system's own cost, independent of what the learned model believes.
 
     python experiments/probe_local_stability.py \\
-        --checkpoint results/example2_cartpole_paper_naive/checkpoint_L_pred_L_SIGReg.pt
+        --checkpoint results/example1_sigreg_naive/checkpoint_sigreg_naive_H4_seed0.pt
 """
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ def main():
     if system.is_open_loop_unstable():
         dominant_mode_label, other_mode_label = "ground truth (unstable)", "ground truth (stable)"
     else:
-        # Both modes are actually stable (e.g. Example 4's double_mode_stable) --
+        # Both modes are actually stable (e.g. Example 2's double_mode_stable) --
         # calling the dominant one "unstable" would be wrong, so number them instead.
         dominant_mode_label, other_mode_label = "ground truth (stable 2)", "ground truth (stable 1)"
 
