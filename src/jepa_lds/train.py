@@ -38,6 +38,7 @@ from torch.utils.data import DataLoader
 
 from .data import EpisodeBatch, WindowDataset
 from .losses import (
+    action_reconstruction_endpoint_loss,
     action_reconstruction_loss,
     encode_window,
     multistep_prediction_loss,
@@ -45,7 +46,7 @@ from .losses import (
     one_step_prediction_loss,
     sigreg_loss,
 )
-from .models import LinearEncoder, LinearLatentPredictor, MultistepActionDecoder, OneStepActionDecoder
+from .models import EndpointActionDecoder, LinearEncoder, LinearLatentPredictor, MultistepActionDecoder, OneStepActionDecoder
 
 
 @dataclass
@@ -61,6 +62,7 @@ class TrainConfig:
     lambda_sigreg: float = 0.0
     lambda_actrecon_1step: float = 0.0
     lambda_actrecon_ms: float = 0.0
+    lambda_actrecon_endpoint: float = 0.0
     sigreg_directions: int = 16
     weight_decay: float = 0.0
     seed: int = 0
@@ -100,6 +102,7 @@ def train_jepa(
     predictor = LinearLatentPredictor(cfg.latent_dim, system.m)
     predictor.requires_grad_(False)  # always updated in closed form, never by gradient
     ms_decoder = MultistepActionDecoder(cfg.latent_dim, system.m, cfg.horizon) if cfg.lambda_actrecon_ms > 0 else None
+    endpoint_decoder = EndpointActionDecoder(cfg.latent_dim, system.m, cfg.horizon) if cfg.lambda_actrecon_endpoint > 0 else None
     one_step_decoder = OneStepActionDecoder(cfg.latent_dim, system.m) if cfg.lambda_actrecon_1step > 0 else None
 
     Y1 = torch.tensor(train_batch.y[:, :-1, :].reshape(-1, obs_model.p), dtype=torch.float32)
@@ -114,6 +117,8 @@ def train_jepa(
         params += list(encoder.parameters())
     if ms_decoder is not None:
         params += list(ms_decoder.parameters())
+    if endpoint_decoder is not None:
+        params += list(endpoint_decoder.parameters())
     if one_step_decoder is not None:
         params += list(one_step_decoder.parameters())
     opt = torch.optim.Adam(params, lr=cfg.lr, weight_decay=cfg.weight_decay) if params else None
@@ -147,6 +152,10 @@ def train_jepa(
                     loss_ar_ms = action_reconstruction_loss(ms_decoder, z, a_window)
                     loss = loss + cfg.lambda_actrecon_ms * loss_ar_ms
                     loss_ar = loss_ar + loss_ar_ms.detach()
+                if endpoint_decoder is not None:
+                    loss_ar_ep = action_reconstruction_endpoint_loss(endpoint_decoder, z, a_window)
+                    loss = loss + cfg.lambda_actrecon_endpoint * loss_ar_ep
+                    loss_ar = loss_ar + loss_ar_ep.detach()
                 if one_step_decoder is not None:
                     loss_ar_1s = one_step_action_reconstruction_loss(one_step_decoder, z, a_window)
                     loss = loss + cfg.lambda_actrecon_1step * loss_ar_1s
@@ -175,7 +184,7 @@ def train_jepa(
     # final closed-form refit of the predictor against the fully-trained encoder
     _closed_form_predictor_fit(encoder, predictor, Y1, Y2, A_pairs)
 
-    decoder = ms_decoder if ms_decoder is not None else one_step_decoder
+    decoder = ms_decoder or endpoint_decoder or one_step_decoder
     return encoder, predictor, decoder, history
 
 
@@ -204,6 +213,7 @@ def train_jepa_naive(
     encoder = LinearEncoder(obs_model.p, cfg.latent_dim, bias=False)
     predictor = LinearLatentPredictor(cfg.latent_dim, system.m)
     ms_decoder = MultistepActionDecoder(cfg.latent_dim, system.m, cfg.horizon) if cfg.lambda_actrecon_ms > 0 else None
+    endpoint_decoder = EndpointActionDecoder(cfg.latent_dim, system.m, cfg.horizon) if cfg.lambda_actrecon_endpoint > 0 else None
     one_step_decoder = OneStepActionDecoder(cfg.latent_dim, system.m) if cfg.lambda_actrecon_1step > 0 else None
 
     train_ds = WindowDataset(train_batch, cfg.horizon)
@@ -212,6 +222,8 @@ def train_jepa_naive(
     params = list(encoder.parameters()) + list(predictor.parameters())
     if ms_decoder is not None:
         params += list(ms_decoder.parameters())
+    if endpoint_decoder is not None:
+        params += list(endpoint_decoder.parameters())
     if one_step_decoder is not None:
         params += list(one_step_decoder.parameters())
     opt = torch.optim.Adam(params, lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -239,6 +251,10 @@ def train_jepa_naive(
                 loss_ar_ms = action_reconstruction_loss(ms_decoder, z, a_window)
                 loss = loss + cfg.lambda_actrecon_ms * loss_ar_ms
                 loss_ar = loss_ar + loss_ar_ms.detach()
+            if endpoint_decoder is not None:
+                loss_ar_ep = action_reconstruction_endpoint_loss(endpoint_decoder, z, a_window)
+                loss = loss + cfg.lambda_actrecon_endpoint * loss_ar_ep
+                loss_ar = loss_ar + loss_ar_ep.detach()
             if one_step_decoder is not None:
                 loss_ar_1s = one_step_action_reconstruction_loss(one_step_decoder, z, a_window)
                 loss = loss + cfg.lambda_actrecon_1step * loss_ar_1s
@@ -264,5 +280,5 @@ def train_jepa_naive(
                 f"predms={t['pred_ms']:.4f} sigreg={t['sigreg']:.4f} ar={t['actrecon']:.4f}"
             )
 
-    decoder = ms_decoder if ms_decoder is not None else one_step_decoder
+    decoder = ms_decoder or endpoint_decoder or one_step_decoder
     return encoder, predictor, decoder, history

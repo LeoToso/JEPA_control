@@ -164,3 +164,4 @@ def test_evaluate_controller_rejects_hold_steps_longer_than_trajectory():
 
     with pytest.raises(ValueError, match="hold_steps"):
         evaluate_controller(system, obs_model, encoder, K_z, n_trials=2, n_steps=10, hold_steps=500)
+

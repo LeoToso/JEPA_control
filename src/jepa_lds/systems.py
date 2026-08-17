@@ -191,3 +191,4 @@ def make_linearized_cartpole_system(
     Bc = np.array([[0.0], [1.0 / M], [0.0], [-1.0 / (M * l)]])
     Ad, Bd, _, _, _ = cont2discrete((Ac, Bc, np.eye(4), np.zeros((4, 1))), dt, method="zoh")
     return LTISystem(Ad, Bd, name=name)
+

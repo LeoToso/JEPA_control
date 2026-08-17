@@ -72,3 +72,4 @@ def test_action_reconstruction_loss_zero_when_decoder_matches():
         a_window = decoder(z_window)
     loss = action_reconstruction_loss(decoder, z_window, a_window)
     assert loss.item() < 1e-10
+

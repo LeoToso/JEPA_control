@@ -224,3 +224,4 @@ def lyapunov_decrease_panel(
         "delta_V": delta_V.reshape(XX.shape),
         "frac_decrease": float(np.mean(delta_V < 0)),
     }
+

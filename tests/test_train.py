@@ -159,3 +159,4 @@ def test_undercomplete_latent_ties_pred_loss_and_sigreg_reliably_collapses_unsta
     assert n_actrecon_collapsed == 0
     assert np.mean(sigreg_success_rates) < 0.2
     assert np.mean(ar_success_rates) == 1.0
+

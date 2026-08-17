@@ -9,7 +9,7 @@ import os
 
 import torch
 
-from .models import LinearEncoder, LinearLatentPredictor, MultistepActionDecoder, OneStepActionDecoder
+from .models import EndpointActionDecoder, LinearEncoder, LinearLatentPredictor, MultistepActionDecoder, OneStepActionDecoder
 from .train import TrainConfig
 
 
@@ -49,6 +49,8 @@ def load_checkpoint(path: str, obs_dim: int, action_dim: int):
     if ckpt["decoder_state_dict"] is not None:
         if ckpt["decoder_class"] == "MultistepActionDecoder":
             decoder = MultistepActionDecoder(cfg.latent_dim, action_dim, cfg.horizon)
+        elif ckpt["decoder_class"] == "EndpointActionDecoder":
+            decoder = EndpointActionDecoder(cfg.latent_dim, action_dim, cfg.horizon)
         elif ckpt["decoder_class"] == "OneStepActionDecoder":
             decoder = OneStepActionDecoder(cfg.latent_dim, action_dim)
         else:

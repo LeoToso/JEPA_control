@@ -187,3 +187,4 @@ def plot_local_stability_probe(
     fig.savefig(out_path)
     plt.close(fig)
     return fig
+

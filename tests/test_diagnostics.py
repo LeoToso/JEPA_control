@@ -111,3 +111,4 @@ def test_unstable_eigenvector_alignment_detects_collapse_to_stable_mode():
     # closer to" question we actually care about.
     assert abs(result["cos_sim_stable"]) > abs(result["cos_sim_unstable"])
     assert abs(result["cos_sim_stable"]) > 0.99
+

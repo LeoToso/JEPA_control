@@ -51,6 +51,15 @@ def action_reconstruction_loss(decoder, z_window: torch.Tensor, a_window: torch.
     return ((a_hat - a_window) ** 2).sum(dim=-1).mean()
 
 
+def action_reconstruction_endpoint_loss(decoder, z_window: torch.Tensor, a_window: torch.Tensor):
+    """Multistep action reconstruction from ONLY the window's two endpoints
+    (z_t, z_{t+H}) -- the decoder never sees, and is never given access to,
+    any intermediate latent z_{t+1}..z_{t+H-1}."""
+    z_endpoints = torch.cat([z_window[:, 0], z_window[:, -1]], dim=-1)
+    a_hat = decoder(z_endpoints)
+    return ((a_hat - a_window) ** 2).sum(dim=-1).mean()
+
+
 def one_step_action_reconstruction_loss(decoder, z: torch.Tensor, a_window: torch.Tensor) -> torch.Tensor:
     """Recover a_t from (z_t, z_{t+1}) at every consecutive pair in the
     window."""

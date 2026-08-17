@@ -200,3 +200,4 @@ def evaluate_controller(
         "final_state_distance_avg": float(np.mean(finite_final)) if finite_final else float("inf"),
         "trajectories": trajectories,
     }
+

@@ -71,3 +71,4 @@ def load_checkpoint_with_env(path: str):
 
     encoder, predictor, decoder, cfg, extra = load_checkpoint(path, obs_dim=obs_model.p, action_dim=system.m)
     return system, obs_model, encoder, predictor, decoder, cfg, extra
+

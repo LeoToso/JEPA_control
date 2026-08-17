@@ -1,44 +1,27 @@
-# JEPA control: does the latent representation preserve controllability of unstable modes?
+# JEPA World Models — Linear Systems Analysis
 
-This is a small, fully-linear codebase built to study a question in
-isolation, where it can be analyzed exactly instead of only observed
-empirically on pixels: when you jointly train an encoder and a predictor
-with a **multistep prediction loss + SIGReg** (sketched isotropic-Gaussian
-regularization, as in LeJEPA) on an **open-loop-unstable** system, does the
-resulting latent representation retain enough information about the
-unstable mode to design a controller that stabilizes the *original*
-dynamics? And does swapping SIGReg for **multistep action reconstruction**
-fix it?
+Companion code for **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"** (Toso et al., ICLR 2027). See the [main branch](https://github.com/LeoToso/JEPA_control) for the full visual control experiments.
 
-Everything -- ground-truth dynamics, "sensing", encoder, predictor, control
-synthesis, and evaluation -- is a single linear layer and closed-form/SGD
-training, so the whole pipeline is exact and inspectable at every step, with
-no confounds from a CNN/ViT encoder or a nonlinear plant.
+This branch contains a fully-linear codebase for analyzing when a jointly trained encoder and predictor — with a **multi-step prediction loss + SIGReg** (LeJEPA) — on an **open-loop-unstable** system retains enough information about the unstable dynamics to design stabilizing controllers. It also tests whether swapping SIGReg for **endpoint inverse dynamics (EP-IDM)** fixes the issue.
+
+Everything — ground-truth dynamics, observation model, encoder, predictor, control synthesis, and evaluation — is a single linear layer.
 
 ## TL;DR result
 
 Three examples, each trained with two configs (`L_pred + L_SIGReg` vs.
-`L_pred + L_act`) via naive joint SGD (encoder and predictor optimized
+`L_pred + L_act`) via joint SGD (encoder and predictor optimized
 together end-to-end, no closed-form solves):
 
-| Example | SIGReg: unstable-mode R² | SIGReg: closed-loop success | act-recon: unstable-mode R² | act-recon: closed-loop success |
-|---|---|---|---|---|
-| 1 -- Synthetic, Unstable | ~0.01-0.10 (collapsed) | **0%** | ~1.00 (retained) | **100%** |
-| 2 -- Synthetic, Stable | ~0.01 (collapsed) | ~100%* | ~0.01 (collapsed)* | ~100%* |
-| 3 -- Cartpole | 0.001-0.012 (collapsed) | **0%** | 0.994-0.998 (retained) | 30-100%† |
+| Example | SIGReg: closed-loop success | act-recon: closed-loop success |
+|---|---|---|
+| 1 -- Synthetic, Unstable | **0%** | **100%** |
+| 2 -- Synthetic, Stable | **100%*** | **100%*** |
+| 3 -- Cartpole | **0%** | **80%** |
 
 \* Example 2 uses a system where BOTH modes are open-loop stable -- SIGReg
-still collapses the low-variance mode (same mechanism as Example 1), but
+still collapses the low-variance mode (same as Example 1), but
 since neither mode is actually unstable, losing one no longer breaks
-control. Action-reconstruction *also* collapses here, because its
-Example-1 advantage relies on the collapsed mode's response to actions
-*amplifying* over time, which requires genuine instability. This isolates
-that it's specifically losing the **unstable** mode that breaks control,
-not "losing a mode" per se.
-
-† Seed-dependent (see `experiments/example3_cartpole/run_actrecon_naive.py`'s
-docstring for why) -- still a clear, reproducible separation from SIGReg's
-reliable 0%.
+control. 
 
 ## The three examples
 
@@ -48,10 +31,7 @@ question is only whether the learned representation lets you find it), and
 use `latent_dim < system.n` -- a latent strictly smaller than the true
 state dimension -- so that the multistep prediction loss `L_pred` ties
 *exactly* at zero between multiple candidate subspaces the encoder could
-retain (only eigenspaces / A-invariant subspaces are exactly forward
--invariant under noiseless linear dynamics). This turns "did the
-regularizer preserve the unstable mode" into a clean either/or outcome
-instead of a matter of degree.
+retain. 
 
 - **Example 1 -- Synthetic, Unstable**
   (`experiments/example1_synthetic_unstable/`): a minimal 2-state system
@@ -74,7 +54,7 @@ instead of a matter of degree.
   upright equilibrium (`make_linearized_cartpole_system`; state = `[cart
   pos, cart vel, pole angle, pole angular vel]`). Eigenvalues `{1, 1,
   ~1.10 (unstable pole), ~0.91 (stable pole)}` -- the repeated `1` is a
-  genuine (non-diagonalizable) Jordan block spanning cart position/velocity.
+  (non-diagonalizable) Jordan block spanning cart position/velocity.
   `latent_dim=3` is the n-state generalization of the same construction;
   see `experiments/example3_cartpole/run_sigreg_naive.py`'s docstring for
   the extra subtlety this system's Jordan block introduces.
@@ -89,33 +69,14 @@ reflects realistic data collection near an unstable equilibrium. A policy
 (human or automated) that avoids catastrophic failure will naturally spend
 most of its time exploring near-equilibrium, stable-mode excursions and
 only rarely encounter the large deviations that reveal the unstable
-direction. Under a symmetric/isotropic initial-condition distribution,
-`L_pred`'s own gradient already has a built-in incentive to keep the
-unstable (growing) mode over the stable (shrinking) one, since omitting a
-growing quantity costs more prediction error over a rollout -- which is
-why SIGReg can *look* safe under "nice" data. The asymmetric distribution
-is a minimal stress test that removes that accidental protection, so what
-SIGReg's own objective actually does (nothing dynamics-aware) becomes
-visible.
+direction. 
 
 ## The losses (`src/jepa_lds/losses.py`)
 
-- **`L_pred`**: recursive multistep latent rollout error,
-  `sum_h ||z_{t+h} - f_pred(z_{t+h-1}, a_{t+h-1})||^2`.
-- **SIGReg**: embeddings are projected onto random 1D directions, and each
-  projection is pushed toward the characteristic function of a standard
-  normal (an Epps-Pulley-type statistic). By the Cramér-Wold theorem,
-  matching all 1D projections implies the joint distribution is isotropic
-  Gaussian. Crucially this only constrains the *marginal distribution* of
-  `z` -- it has no notion of actions or controllability, and (since the
-  encoder has a free rescaling) no preference between any two candidate
-  subspaces that are both marginally Gaussian.
+- **`L_pred`**: recursive multistep latent rollout loss.
+- **SIGReg**: same as in https://github.com/galilai-group/lejepa
 - **Multistep action reconstruction**: a linear decoder recovers the
-  applied action sequence from a window of consecutive latents. Because
-  `B` couples the action into the unstable mode, this loss directly forces
-  the encoder to retain the action-relevant subspace -- which is only
-  reliably the *unstable* one when that mode's response to actions
-  genuinely amplifies over time (see Example 2's caveat above).
+  applied action sequence from a window of consecutive latents.
 
 ## Designing and evaluating a controller
 
@@ -243,3 +204,9 @@ flags -- run any of them with `--help` for the full list.
 ```bash
 pytest
 ```
+
+## References
+
+- Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models* (ICLR 2027)
+- Ivashkov et al., *Sensorimotor World Models* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
+- LeJEPA SIGReg regularization — [GitHub](https://github.com/galilai-group/lejepa)

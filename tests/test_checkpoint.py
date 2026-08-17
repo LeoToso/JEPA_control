@@ -69,3 +69,4 @@ def test_save_load_round_trip_with_decoder():
         a1 = dec(z_window)
         a2 = dec2(z_window)
     assert torch.allclose(a1, a2)
+

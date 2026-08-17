@@ -1,3 +1,4 @@
+"""Tests for src/jepa_lds/systems.py."""
 import numpy as np
 import pytest
 

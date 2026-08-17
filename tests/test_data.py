@@ -136,3 +136,4 @@ def test_cartpole_modal_contaminated_x0_sampler_rejects_non_4d_system():
     s = make_double_mode_system()
     with pytest.raises(ValueError, match="4-state"):
         make_cartpole_modal_contaminated_x0_sampler(s)
+

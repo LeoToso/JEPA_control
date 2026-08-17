@@ -1,44 +1,16 @@
-"""Example 3 (Cartpole) -- SIGReg config, naive joint SGD.
+"""Example 3 (Cartpole) -- action-reconstruction-from-ENDPOINTS config,
+naive joint SGD.
 
-A "killer collapse" construction on the linearized cartpole (4-state, 1
-unstable pole mode + 1 stable pole mode + a 2-state marginal cart Jordan
-block at eigenvalue 1) -- the n-state generalization of Examples 1/2's
-2-state `double_mode` construction.
+The counterpart to run_actrecon_naive.py in this folder, on the same
+cartpole "killer collapse" construction -- see run_sigreg_naive.py's module
+docstring for the full derivation (system, latent_dim=3, IC asymmetry, and
+the cart-position-exclusion caveat in the success criterion), and
+experiments/example1_synthetic_unstable/run_actreconendpoint_naive.py's
+module docstring for what "endpoints only" means: the decoder is given ONLY
+(z_t, z_{t+H}), never any intermediate latent, and must still reconstruct
+the FULL action subsequence (a_t, ..., a_{t+H-1}).
 
-  System: `make_linearized_cartpole_system` (state = [cart pos, cart vel,
-    pole angle, pole angular vel]). Eigenvalues {1, 1, ~1.10 (unstable
-    pole), ~0.91 (stable pole)}; the repeated eigenvalue 1 is a genuine
-    Jordan block (NOT diagonalizable) spanning cart position/velocity, but
-    is still exactly A-invariant as a 2D block (and cart position ALONE is
-    also exactly A-invariant, since A@e_pos=e_pos and nothing else in the
-    dynamics depends on cart position at all -- see
-    `make_cartpole_modal_contaminated_x0_sampler`'s docstring).
-
-  latent_dim=3 (< system.n=4): forces the same exact L_pred=0 tie as
-    Examples 1/2, now between whichever 3D A-invariant subspace the
-    encoder's 1D kernel excludes. IMPORTANT CAVEAT discovered while
-    validating this example: cart position is a "free" degenerate option
-    too -- since nothing else in the dynamics depends on it, DROPPING IT
-    costs ~zero L_pred regardless of its own IC variance, and both SIGReg
-    and (to a lesser extent) action-reconstruction have some tendency to
-    drop it. This is harmless for the pedagogical point (cart position
-    doesn't affect anything else, so losing it doesn't threaten POLE
-    stability), but it does mean a naive full-state success criterion is
-    dominated by an irrelevant, physically-inert "the cart drifts along an
-    infinite track" mode rather than the unstable-pole-collapse story. This
-    script's closed-loop success check (see `_evaluate_success`) therefore
-    excludes cart position from the state norm by default
-    (--success-dims 1,2,3), matching the common "keep the pole up, don't
-    worry about absolute cart position" relaxation used in most cartpole
-    benchmarks.
-
-  Validated (3 seeds, default settings): SIGReg reliably collapses the
-    unstable pole's modal-coordinate retention (R^2 ~ 0.001-0.012) and
-    reliably fails closed-loop control (0% success across all 3 seeds).
-    See run_actrecon_naive.py in this folder for the counterpart that
-    retains it.
-
-    python experiments/example3_cartpole/run_sigreg_naive.py
+    python experiments/example3_cartpole/run_actreconendpoint_naive.py
 """
 from __future__ import annotations
 
@@ -62,8 +34,8 @@ from jepa_lds.train import TrainConfig, train_jepa_naive
 def _evaluate_success(system, obs_model, encoder, K_z, dims, n_trials, n_steps, x0_std, threshold, hold_steps, seed):
     """Same success criterion as `control.evaluate_controller` (state norm
     below `threshold` for the final `hold_steps` steps), but computed only
-    over `dims` -- see this module's docstring for why cart position
-    (dim 0) is excluded by default."""
+    over `dims` -- see run_sigreg_naive.py's module docstring for why cart
+    position (dim 0) is excluded by default."""
     rng = np.random.default_rng(seed)
     successes = 0
     for _ in range(n_trials):
@@ -81,7 +53,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--latent-dim", type=int, default=3, help="deliberately < system.n=4 -- forces the L_pred=0 tie between candidate 3D invariant subspaces")
     p.add_argument("--horizon", type=int, default=8)
-    p.add_argument("--lambda-sigreg", type=float, default=25.0)
+    p.add_argument("--lambda-actrecon", type=float, default=25.0)
     p.add_argument("--collapse-threshold", type=float, default=0.5, help="unstable_mode_retention R^2 below this counts as 'collapsed'")
 
     p.add_argument("--sigma-cart-pos", type=float, default=0.6, help="std of cart position's initial condition")
@@ -114,7 +86,7 @@ def main():
     p.add_argument(
         "--success-dims", type=int, nargs="+", default=[1, 2, 3],
         help="state dims included in the closed-loop success norm (default: cart velocity, pole angle, pole angular "
-        "velocity -- excludes cart position, dim 0, which is dynamically inert; see module docstring)",
+        "velocity -- excludes cart position, dim 0, which is dynamically inert; see run_sigreg_naive.py)",
     )
 
     p.add_argument("--data-seed", type=int, default=0)
@@ -122,7 +94,7 @@ def main():
     p.add_argument("--threads", type=int, default=4)
     p.add_argument(
         "--out-dir", type=str,
-        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example3_sigreg_naive"),
+        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example3_actreconendpoint_naive"),
     )
     args = p.parse_args()
 
@@ -154,15 +126,16 @@ def main():
     )
 
     print(f"eigvals(A) = {system.eigvals()}  spectral_radius = {system.spectral_radius():.4f}")
-    print(f"config: L_pred + L_SIGReg (naive joint SGD)  lambda_sigreg={args.lambda_sigreg}  latent_dim={args.latent_dim}  horizon={args.horizon}")
+    print(f"config: L_pred + L_act_endpoint (naive joint SGD)  lambda_actrecon={args.lambda_actrecon}  latent_dim={args.latent_dim}  horizon={args.horizon}")
 
     cfg = TrainConfig(
         latent_dim=args.latent_dim, horizon=args.horizon, outer_rounds=args.outer_rounds,
         inner_epochs=args.inner_epochs, batch_size=args.batch_size, lr=args.lr,
-        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=args.lambda_sigreg,
-        lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0, seed=args.seed,
+        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=0.0,
+        lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0,
+        lambda_actrecon_endpoint=args.lambda_actrecon, seed=args.seed,
     )
-    print(f"\n--- training L_pred + L_SIGReg, naive joint SGD (seed={args.seed}) ---")
+    print(f"\n--- training L_pred + L_act_endpoint, naive joint SGD (seed={args.seed}) ---")
     enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
 
     r2 = unstable_mode_retention(system, enc, train_batch, val_batch)
@@ -181,11 +154,11 @@ def main():
         )
         print(f"closed-loop success_rate (dims={args.success_dims}) = {success*100:.1f}%")
 
-    ckpt_path = os.path.join(args.out_dir, f"checkpoint_sigreg_naive_H{args.horizon}_seed{args.seed}.pt")
+    ckpt_path = os.path.join(args.out_dir, f"checkpoint_actreconendpoint_naive_H{args.horizon}_seed{args.seed}.pt")
     save_checkpoint(
         ckpt_path, enc, pred, dec, cfg,
         extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
-               "config_name": f"L_pred + L_SIGReg naive (Example 3: cartpole, H={args.horizon}, seed={args.seed})",
+               "config_name": f"L_pred + L_act_endpoint naive (Example 3: cartpole, H={args.horizon}, seed={args.seed})",
                "trainer": "naive",
                "obs_dim_signal": args.obs_dim_signal, "n_distractor": args.n_distractor,
                "measurement_noise_std": args.measurement_noise_std, "distractor_std": 1.0,
@@ -196,4 +169,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

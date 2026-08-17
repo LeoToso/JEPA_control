@@ -299,3 +299,4 @@ class WindowDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.y[idx], self.a[idx]
+

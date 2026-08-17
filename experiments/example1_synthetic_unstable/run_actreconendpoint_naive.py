@@ -1,26 +1,27 @@
-"""Example 2 (Synthetic, Stable) -- SIGReg config, naive joint SGD.
+"""Example 1 (Synthetic, Unstable) -- action-reconstruction-from-ENDPOINTS
+config, naive joint SGD. Same construction as run_sigreg_naive.py /
+run_actrecon_naive.py in this folder (see their module docstrings and the
+top-level README for the full motivation).
 
-Same construction as Example 1 (`experiments/example1_synthetic_unstable/`)
-except `unstable_eig=0.25` instead of Example 1's 1.25, so BOTH modes of
-the 2-state system are open-loop stable (spectral_radius = max(0.25, 0.85)
-= 0.85 < 1) -- see the top-level README for the full motivation.
+The difference from run_actrecon_naive.py: there, the action decoder sees
+the WHOLE latent window (z_t, z_{t+1}, ..., z_{t+H}) concatenated. Here, the
+decoder is given ONLY the two endpoints (z_t, z_{t+H}) -- it never sees, and
+has no access to, any intermediate latent -- yet must still reconstruct the
+FULL action subsequence (a_t, ..., a_{t+H-1}). This is a strictly harder
+reconstruction problem (H-1 fewer latents' worth of information), but the
+underlying incentive is the same: recovering a_t..a_{t+H-1} from (z_t,
+z_{t+H}) alone requires the encoder to retain enough of the actuated
+(controllable, here unstable) subspace that its effect on z_t is still
+decodable purely from where the trajectory ends up H steps later.
 
-The collapse mechanism itself is unaffected by this change: the closed-form
-predictor fit + SIGReg still has no incentive to keep the low-variance
-modal coordinate, so it still gets collapsed (unstable_mode_retention R^2
-stays low, exactly as in Example 1). What changes is the CONSEQUENCE: since
-neither mode is actually unstable, a state that decays on its own doesn't
-need to be observed or controlled for the closed loop to stay bounded, so
-the closed-loop LQR success rate should now be ~100% despite the collapse
--- demonstrating that it's specifically losing the *unstable* mode that
-breaks control, not "losing a mode" per se.
+Trained with `train_jepa_naive`: encoder AND predictor optimized jointly
+end-to-end via a single Adam optimizer, no closed-form solves, nothing
+frozen. Prints per-epoch training losses as it goes (total budget =
+outer_rounds * inner_epochs epochs), then reports the unstable-mode
+retention R^2 and closed-loop LQR success rate, and saves a checkpoint for
+further analysis with probe_local_stability.py.
 
-Note on terminology: `unstable_mode_retention`/`unstable_mode_index`/etc.
-are named for the general case and operate on the DOMINANT
-(largest-|eigenvalue|) mode regardless of whether it's actually >1; here
-that just means "the mode with eigenvalue 0.85" (still stable).
-
-    python experiments/example2_synthetic_stable/run_sigreg_naive.py
+    python experiments/example1_synthetic_unstable/run_actreconendpoint_naive.py
 """
 from __future__ import annotations
 
@@ -46,12 +47,11 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--latent-dim", type=int, default=1, help="deliberately < system.n=2 -- forces the L_pred=0 tie between the two eigenspaces")
     p.add_argument("--horizon", type=int, default=4)
-    p.add_argument("--lambda-sigreg", type=float, default=25.0)
+    p.add_argument("--lambda-actrecon", type=float, default=25.0)
     p.add_argument("--collapse-threshold", type=float, default=0.5, help="unstable_mode_retention R^2 below this counts as 'collapsed'")
 
-    p.add_argument("--unstable-eig", type=float, default=0.25, help="Example 1 used 1.25 (unstable); here < 1 so BOTH modes are open-loop stable")
     p.add_argument("--sigma-stable", type=float, default=0.3, help="std of the stable modal coordinate's initial condition")
-    p.add_argument("--sigma-unstable", type=float, default=0.01, help="std of the (now also stable) low-variance modal coordinate's initial condition")
+    p.add_argument("--sigma-unstable", type=float, default=0.01, help="std of the unstable modal coordinate's initial condition")
 
     p.add_argument("--T", type=int, default=5, help="episode length (must be > horizon)")
     p.add_argument("--n-train-ep", type=int, default=400)
@@ -81,14 +81,14 @@ def main():
     p.add_argument("--threads", type=int, default=4)
     p.add_argument(
         "--out-dir", type=str,
-        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example2_sigreg_naive"),
+        default=os.path.join(os.path.dirname(__file__), "..", "..", "results", "example1_actreconendpoint_naive"),
     )
     args = p.parse_args()
 
     torch.set_num_threads(args.threads)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    system = make_double_mode_system(unstable_eig=args.unstable_eig, name="double_mode_stable")
+    system = make_double_mode_system()
     if args.T <= args.horizon:
         raise SystemExit(f"--T={args.T} must be > --horizon={args.horizon}")
 
@@ -112,23 +112,24 @@ def main():
         x0_sampler=x0_sampler, mixture=mixture,
     )
 
-    print(f"eigvals(A) = {system.eigvals()}  spectral_radius = {system.spectral_radius():.4f}  open_loop_unstable={system.is_open_loop_unstable()}")
+    print(f"eigvals(A) = {system.eigvals()}  spectral_radius = {system.spectral_radius():.4f}")
     _w, _V, Vinv = system.modal_decomposition()
-    idx_u = system.unstable_mode_index()  # dominant (largest-|eigenvalue|) mode -- both are stable here
+    idx_u = system.unstable_mode_index()
     idx_s = 1 - idx_u
     x_flat = train_batch.x.reshape(-1, system.n)
     xi_u = np.real(x_flat @ Vinv[idx_u].conj())
     xi_s = np.real(x_flat @ Vinv[idx_s].conj())
-    print(f"pooled var(dominant modal coord)={xi_u.var():.6f}  var(other modal coord)={xi_s.var():.6f}")
-    print(f"config: L_pred + L_SIGReg (naive joint SGD)  lambda_sigreg={args.lambda_sigreg}  latent_dim={args.latent_dim}  horizon={args.horizon}")
+    print(f"pooled var(unstable modal coord)={xi_u.var():.6f}  var(stable modal coord)={xi_s.var():.6f}")
+    print(f"config: L_pred + L_act_endpoint (naive joint SGD)  lambda_actrecon={args.lambda_actrecon}  latent_dim={args.latent_dim}  horizon={args.horizon}")
 
     cfg = TrainConfig(
         latent_dim=args.latent_dim, horizon=args.horizon, outer_rounds=args.outer_rounds,
         inner_epochs=args.inner_epochs, batch_size=args.batch_size, lr=args.lr,
-        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=args.lambda_sigreg,
-        lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0, seed=args.seed,
+        lambda_pred_1step=0.0, lambda_pred_ms=1.0, lambda_sigreg=0.0,
+        lambda_actrecon_1step=0.0, lambda_actrecon_ms=0.0,
+        lambda_actrecon_endpoint=args.lambda_actrecon, seed=args.seed,
     )
-    print(f"\n--- training L_pred + L_SIGReg, naive joint SGD (seed={args.seed}) ---")
+    print(f"\n--- training L_pred + L_act_endpoint, naive joint SGD (seed={args.seed}) ---")
     enc, pred, dec, hist = train_jepa_naive(system, obs_model, train_batch, cfg, verbose=True, log_every=args.log_every)
 
     r2 = unstable_mode_retention(system, enc, train_batch, val_batch)
@@ -151,11 +152,11 @@ def main():
             f"final_state_distance_avg={ev['final_state_distance_avg']:.4f}"
         )
 
-    ckpt_path = os.path.join(args.out_dir, f"checkpoint_sigreg_naive_H{args.horizon}_seed{args.seed}.pt")
+    ckpt_path = os.path.join(args.out_dir, f"checkpoint_actreconendpoint_naive_H{args.horizon}_seed{args.seed}.pt")
     save_checkpoint(
         ckpt_path, enc, pred, dec, cfg,
         extra={"obs_dim": obs_model.p, "action_dim": system.m, "system_name": system.name,
-               "config_name": f"L_pred + L_SIGReg naive (Example 2: synthetic stable, H={args.horizon}, seed={args.seed})",
+               "config_name": f"L_pred + L_act_endpoint naive (Example 1: synthetic unstable, H={args.horizon}, seed={args.seed})",
                "trainer": "naive",
                "obs_dim_signal": args.obs_dim_signal, "n_distractor": args.n_distractor,
                "measurement_noise_std": args.measurement_noise_std, "distractor_std": 1.0,
@@ -166,4 +167,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

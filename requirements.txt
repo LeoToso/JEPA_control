@@ -1,3 +1,4 @@
+# Core dependencies for JEPA LDS analysis (Toso et al., ICLR 2027)
 torch>=2.0
 numpy
 scipy

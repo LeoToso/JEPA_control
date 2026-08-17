@@ -87,3 +87,21 @@ class MultistepActionDecoder(nn.Module):
         b = z_window.shape[0]
         out = self.linear(z_window.reshape(b, -1))
         return out.reshape(b, self.horizon, self.action_dim)
+
+
+class EndpointActionDecoder(nn.Module):
+    """Reconstructs the action sequence a_t..a_{t+H-1} from ONLY the two
+    endpoint latents (z_t, z_{t+H}), concatenated -- no intermediate latent
+    in the window is ever passed to the decoder. Same single-linear-layer
+    depth as `MultistepActionDecoder`, just a narrower input."""
+
+    def __init__(self, latent_dim: int, action_dim: int, horizon: int):
+        super().__init__()
+        self.horizon = horizon
+        self.action_dim = action_dim
+        self.linear = nn.Linear(latent_dim * 2, action_dim * horizon)
+
+    def forward(self, z_endpoints: torch.Tensor) -> torch.Tensor:
+        b = z_endpoints.shape[0]
+        out = self.linear(z_endpoints.reshape(b, -1))
+        return out.reshape(b, self.horizon, self.action_dim)

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jepa-lds"
 version = "0.1.0"
-description = "Toy discrete-time LTI examples for studying JEPA representation collapse of unstable modes"
+description = "Linear systems analysis for JEPA world models (Toso et al., ICLR 2027)"
 requires-python = ">=3.8"
 dependencies = [
     "torch>=2.0",
