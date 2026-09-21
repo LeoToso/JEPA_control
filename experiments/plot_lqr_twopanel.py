@@ -47,20 +47,22 @@ LABEL_SIZE  = 17
 TITLE_SIZE  = 17
 LEGEND_SIZE = 13
 
-COLOR_SIG    = '#2166ac'                          # blue  — SIG (checked first)
-COLOR_IDM    = ['#e07b00', '#c45a00']             # two oranges for IDM
-COLOR_OTHER  = ['#2ca02c', '#9467bd', '#17becf',
-                '#8c564b', '#bcbd22']             # green, purple, teal, brown, olive
-COLOR_DINOWM = '#111111'                          # near-black for DINO-WM baseline
+COLOR_SIG        = '#2166ac'   # blue  — SIG
+COLOR_IDM        = '#d4b100'   # golden yellow — PR-IDM (standard 1-step)
+COLOR_EP_IDM_MSP = '#d62728'   # red   — MSP + PR-EP-IDM
+COLOR_EP_IDM_1SP = '#e07b00'   # orange — 1SP + PR-EP-IDM
+COLOR_OTHER      = ['#2ca02c', '#9467bd', '#8c564b', '#bcbd22', '#e377c2']
+COLOR_DINOWM     = '#17becf'   # teal  — DINO-WM baseline
 
 
 def _label_color(label: str) -> str:
-    """Base color for a label — IDM returns the first orange by default."""
     u = label.upper()
     if 'SIG' in u:
         return COLOR_SIG
+    if 'EP-IDM' in u:
+        return COLOR_EP_IDM_1SP if u.startswith('1SP') else COLOR_EP_IDM_MSP
     if 'IDM' in u:
-        return COLOR_IDM[0]
+        return COLOR_IDM
     return COLOR_OTHER[0]
 
 
@@ -96,12 +98,10 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     """Overlay multiple models on one axis.
 
     entries: list of (label, json_path_str)
-    Color priority: IDM first (orange), then SIG (blue), then other (green).
-    A label with both IDM and SIG is treated as IDM (orange).
-    Second SIG-only model gets a dashed line; second IDM gets the alternate orange.
+    Color priority: DINO-WM (teal) → EP-IDM (red/orange by MSP/1SP) → IDM (yellow)
+                    → SIG (blue) → other (green cycle).
     """
     sig_count:   int = 0
-    idm_count:   int = 0
     other_count: int = 0
     threshold_val = None
 
@@ -116,13 +116,15 @@ def plot_panel(ax, entries, panel_title: str | None = None,
             threshold_val = threshold
 
         u = label.upper()
-        if 'DINO-WM' in u or label.upper().replace('-', '') == 'DINOWM':
+        if 'DINO-WM' in u or u.replace('-', '') == 'DINOWM':
             color     = COLOR_DINOWM
             linestyle = '-'
-        elif 'IDM' in u:                          # IDM takes priority over SIG
-            color     = COLOR_IDM[min(idm_count, len(COLOR_IDM) - 1)]
+        elif 'EP-IDM' in u:
+            color     = COLOR_EP_IDM_1SP if u.startswith('1SP') else COLOR_EP_IDM_MSP
             linestyle = '-'
-            idm_count += 1
+        elif 'IDM' in u:
+            color     = COLOR_IDM
+            linestyle = '-'
         elif 'SIG' in u:
             color     = COLOR_SIG
             linestyle = '--' if sig_count > 0 else '-'
