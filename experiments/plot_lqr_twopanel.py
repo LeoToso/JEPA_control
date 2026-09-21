@@ -91,7 +91,7 @@ def load_trials(json_path):
 
 def plot_panel(ax, entries, panel_title: str | None = None,
                legend_loc: str = 'outside bottom', show_ylabel: bool = True,
-               legend_ncol: int = 2):
+               legend_ncol: int = 3):
     """Overlay multiple models on one axis.
 
     entries: list of (label, json_path_str)
@@ -199,10 +199,10 @@ def main():
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
     p.add_argument('--right-legend-loc', default='outside bottom',
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
-    p.add_argument('--legend-ncol', type=int, default=2,
+    p.add_argument('--legend-ncol', type=int, default=3,
                    help='Columns in outside-bottom legends')
     p.add_argument('--out', required=True)
-    p.add_argument('--width',  type=float, default=10.0, help='Figure width in inches')
+    p.add_argument('--width',  type=float, default=13.0, help='Figure width in inches')
     p.add_argument('--height', type=float, default=5.0,  help='Figure height in inches')
     args = p.parse_args()
 
