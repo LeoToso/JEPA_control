@@ -1,0 +1,20 @@
+# conf/env/cartpole.yaml  — copy to <dino_wm_repo>/conf/env/cartpole.yaml
+name: cartpole
+args: []
+kwargs: {}
+
+dataset:
+  _target_: "datasets.cartpole_dset.load_cartpole_slice_train_val"
+  n_rollout: null
+  normalize_action: ${normalize_action}
+  data_path: ${oc.env:DATASET_DIR}/dinowm_cartpole
+  split_ratio: 0.9
+  num_hist: ${num_hist}
+  num_pred: ${num_pred}
+  frameskip: ${frameskip}
+  transform:
+    _target_: "datasets.img_transforms.default_transform"
+    img_size: ${img_size}
+
+decoder_path: null
+num_workers: 4

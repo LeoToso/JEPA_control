@@ -1,0 +1,234 @@
+#!/usr/bin/env python
+"""Two-panel LQR figure: each panel overlays multiple models as mean ± 95 % CI.
+
+Usage — "from scratch" figure
+------------------------------
+python experiments/plot_lqr_twopanel.py \\
+    --left  "1SP + SIG:results/lqr_1step_pred1act_sigreg.json" \\
+            "1SP + EP-IDM:results/lqr_1act_endpoint.json" \\
+            "1SP + IDM + MS-IDM:results/lqr_1steppred_MS_AR_1stepAR.json" \\
+    --right "MSP + SIG:results/lqr_1act_sigreg.json" \\
+            "MSP + EP-IDM + SIG:results/MSpred_EndpointAR_weight05_predloss_SIGREG_act1.json" \\
+    --left-title "1-Step Prediction" --right-title "Multi-Step Prediction" \\
+    --title "From Scratch" \\
+    --out   results/lqr_from_scratch.pdf
+
+Usage — "pre-trained" figure
+-----------------------------
+python experiments/plot_lqr_twopanel.py \\
+    --left  "DINOv2 + SIG:results/lqr_dino_sigreg.json" \\
+            "DINOv2 + IDM:results/lqr_dino_idm.json" \\
+    --right "iBOT + SIG:results/lqr_ibot_sigreg.json" \\
+            "iBOT + IDM:results/lqr_ibot_idm.json" \\
+    --title "Pre-trained" \\
+    --out   results/lqr_pretrained.pdf
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+_here = Path(__file__).resolve().parent
+sys.path.insert(0, str(_here.parent))
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+
+# ── style constants ────────────────────────────────────────────────────────────
+PANEL_COLOR = 'white'
+GRID_KW     = dict(color='#cccccc', linewidth=0.8, alpha=0.9)
+LINEWIDTH   = 2.4
+TICK_SIZE   = 13
+LABEL_SIZE  = 14
+TITLE_SIZE  = 15
+LEGEND_SIZE = 11
+
+COLOR_SIG    = '#2166ac'          # blue  — SIG (checked first)
+COLOR_IDM    = ['#e07b00', '#c45a00']  # two oranges for first / second IDM
+COLOR_OTHER  = '#2ca02c'          # green  — other / GT
+
+
+def _label_color(label: str) -> str:
+    """Base color for a label — IDM returns the first orange by default."""
+    u = label.upper()
+    if 'SIG' in u:
+        return COLOR_SIG
+    if 'IDM' in u:
+        return COLOR_IDM[0]
+    return COLOR_OTHER
+
+
+# ── data loading ───────────────────────────────────────────────────────────────
+
+def load_trials(json_path):
+    """Return (label, success_rate, threshold, trials).
+
+    Handles both compare_lqr_smwm.py and lqr_dinowm_cartpole.py formats.
+    """
+    with open(json_path) as f:
+        data = json.load(f)
+
+    threshold = data.get('protocol', {}).get('success_threshold', 0.7)
+
+    if 'models' in data:
+        m = data['models'][0]
+        return m['label'], float(m.get('success_rate', 0.0)), threshold, m['trials']
+
+    if 'trials' in data:
+        trials = data['trials']
+        sr = float(np.mean([t['success'] for t in trials]))
+        return data.get('label', Path(json_path).stem), sr, threshold, trials
+
+    raise ValueError(f'Unknown JSON format: {json_path}')
+
+
+# ── panel plotting ─────────────────────────────────────────────────────────────
+
+def plot_panel(ax, entries, panel_title: str | None = None,
+               legend_loc: str = 'best', show_ylabel: bool = True):
+    """Overlay multiple models on one axis.
+
+    entries: list of (label, json_path_str)
+    Color priority: IDM first (orange), then SIG (blue), then other (green).
+    A label with both IDM and SIG is treated as IDM (orange).
+    Second SIG-only model gets a dashed line; second IDM gets the alternate orange.
+    """
+    sig_count: int = 0
+    idm_count: int = 0
+    threshold_val = None
+
+    for label, json_path in entries:
+        path = Path(json_path)
+        if not path.exists():
+            print(f'  [warn] missing {path}, skipping.')
+            continue
+
+        _, sr, threshold, trials = load_trials(path)
+        if threshold_val is None:
+            threshold_val = threshold
+
+        u = label.upper()
+        if 'IDM' in u:                            # IDM takes priority over SIG
+            color     = COLOR_IDM[min(idm_count, len(COLOR_IDM) - 1)]
+            linestyle = '-'
+            idm_count += 1
+        elif 'SIG' in u:
+            color     = COLOR_SIG
+            linestyle = '--' if sig_count > 0 else '-'
+            sig_count += 1
+        else:
+            color     = COLOR_OTHER
+            linestyle = '-'
+
+        # Build norm matrix, padding shorter trials
+        T = max(len(t['states']) for t in trials)
+        norms = []
+        for trial in trials:
+            s = np.array(trial['states'])
+            n = np.linalg.norm(s, axis=1)
+            if len(n) < T:
+                n = np.concatenate([n, np.full(T - len(n), n[-1])])
+            norms.append(n)
+        norms = np.array(norms)
+
+        t         = np.arange(T)
+        log_norms = np.log(np.maximum(norms, 1e-12))
+        log_mean  = log_norms.mean(axis=0)
+        log_sem   = log_norms.std(axis=0) / np.sqrt(len(trials))
+        mean = np.exp(log_mean)
+        lo   = np.exp(log_mean - 1.96 * log_sem)
+        hi   = np.exp(log_mean + 1.96 * log_sem)
+
+        ax.plot(t, mean, color=color, linewidth=LINEWIDTH,
+                linestyle=linestyle, label=label)
+        ax.fill_between(t, lo, hi, color=color, alpha=0.15)
+
+    if threshold_val is not None:
+        ax.axhline(threshold_val, color='#444444', linestyle=':', linewidth=1.8,
+                   alpha=0.8, label='_nolegend_')
+
+    ax.set_facecolor(PANEL_COLOR)
+    ax.set_axisbelow(True)
+    ax.grid(True, **GRID_KW)
+    ax.set_yscale('log')
+    ax.set_xlabel('Step $t$', fontsize=LABEL_SIZE)
+    if show_ylabel:
+        ax.set_ylabel(r'$\|\mathbf{x}_t\|$', fontsize=LABEL_SIZE)
+    ax.tick_params(labelsize=TICK_SIZE)
+    ax.spines[['top', 'right']].set_visible(False)
+
+    if panel_title:
+        ax.set_title(panel_title, fontsize=TITLE_SIZE, fontweight='bold', pad=6)
+
+    ax.legend(fontsize=LEGEND_SIZE, framealpha=0.9, loc=legend_loc,
+              borderpad=0.5, labelspacing=0.3, handlelength=1.6)
+
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    p = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument('--left', nargs='+', required=True, metavar='LABEL:PATH',
+                   help='Models for the left panel, each as "Label:path/to.json"')
+    p.add_argument('--right', nargs='+', required=True, metavar='LABEL:PATH',
+                   help='Models for the right panel, each as "Label:path/to.json"')
+    p.add_argument('--left-title',  default=None,
+                   help='Title for the left panel (auto from labels if omitted)')
+    p.add_argument('--right-title', default=None,
+                   help='Title for the right panel (auto from labels if omitted)')
+    p.add_argument('--title', default=None,
+                   help='Overall figure suptitle')
+    p.add_argument('--left-legend-loc',  default='center right',
+                   help='Legend location for the left panel (matplotlib loc string)')
+    p.add_argument('--right-legend-loc', default='center right',
+                   help='Legend location for the right panel (matplotlib loc string)')
+    p.add_argument('--out', required=True)
+    p.add_argument('--width',  type=float, default=10.0, help='Figure width in inches')
+    p.add_argument('--height', type=float, default=4.0,  help='Figure height in inches')
+    args = p.parse_args()
+
+    def parse_specs(specs):
+        out = []
+        for spec in specs:
+            label, path = spec.split(':', 1)
+            out.append((label.strip(), path.strip()))
+        return out
+
+    left_entries  = parse_specs(args.left)
+    right_entries = parse_specs(args.right)
+
+    fig, (ax_l, ax_r) = plt.subplots(1, 2,
+                                      figsize=(args.width, args.height),
+                                      sharey=False)
+
+    # auto-derive panel titles from the common prefix of labels
+    def _auto_title(entries):
+        labels = [lbl for lbl, _ in entries]
+        # use first model's label minus the architecture-specific suffix
+        return labels[0].rsplit('+', 1)[0].strip() if '+' in labels[0] else labels[0]
+
+    left_title  = args.left_title  or _auto_title(left_entries)
+    right_title = args.right_title or _auto_title(right_entries)
+
+    plot_panel(ax_l, left_entries,  panel_title=left_title,
+               legend_loc=args.left_legend_loc)
+    plot_panel(ax_r, right_entries, panel_title=right_title,
+               legend_loc=args.right_legend_loc, show_ylabel=False)
+
+    if args.title:
+        fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold', y=1.02)
+
+    fig.tight_layout()
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=180, bbox_inches='tight')
+    print(f'[done] {out}')
+
+
+if __name__ == '__main__':
+    main()
