@@ -90,7 +90,8 @@ def load_trials(json_path):
 # ── panel plotting ─────────────────────────────────────────────────────────────
 
 def plot_panel(ax, entries, panel_title: str | None = None,
-               legend_loc: str = 'best', show_ylabel: bool = True):
+               legend_loc: str = 'outside right', show_ylabel: bool = True,
+               legend_ncol: int = 1):
     """Overlay multiple models on one axis.
 
     entries: list of (label, json_path_str)
@@ -167,8 +168,15 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     if panel_title:
         ax.set_title(panel_title, fontsize=TITLE_SIZE, fontweight='bold', pad=6)
 
-    ax.legend(fontsize=LEGEND_SIZE, framealpha=0.9, loc=legend_loc,
-              borderpad=0.5, labelspacing=0.3, handlelength=1.6)
+    kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
+              borderpad=0.5, labelspacing=0.3, handlelength=1.6, ncol=legend_ncol)
+    if legend_loc == 'outside right':
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
+                  borderaxespad=0, **kw)
+    elif legend_loc == 'outside bottom':
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.18), **kw)
+    else:
+        ax.legend(loc=legend_loc, **kw)
 
 
 # ── main ───────────────────────────────────────────────────────────────────────
@@ -186,10 +194,12 @@ def main():
                    help='Title for the right panel (auto from labels if omitted)')
     p.add_argument('--title', default=None,
                    help='Overall figure suptitle')
-    p.add_argument('--left-legend-loc',  default='center right',
-                   help='Legend location for the left panel (matplotlib loc string)')
-    p.add_argument('--right-legend-loc', default='center right',
-                   help='Legend location for the right panel (matplotlib loc string)')
+    p.add_argument('--left-legend-loc',  default='outside right',
+                   help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
+    p.add_argument('--right-legend-loc', default='outside right',
+                   help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
+    p.add_argument('--legend-ncol', type=int, default=1,
+                   help='Number of legend columns (useful with outside bottom)')
     p.add_argument('--out', required=True)
     p.add_argument('--width',  type=float, default=10.0, help='Figure width in inches')
     p.add_argument('--height', type=float, default=4.0,  help='Figure height in inches')
@@ -213,9 +223,11 @@ def main():
     right_title = args.right_title
 
     plot_panel(ax_l, left_entries,  panel_title=left_title,
-               legend_loc=args.left_legend_loc)
+               legend_loc=args.left_legend_loc,
+               legend_ncol=args.legend_ncol)
     plot_panel(ax_r, right_entries, panel_title=right_title,
-               legend_loc=args.right_legend_loc, show_ylabel=False)
+               legend_loc=args.right_legend_loc, show_ylabel=False,
+               legend_ncol=args.legend_ncol)
 
     if args.title:
         fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold', y=1.02)
