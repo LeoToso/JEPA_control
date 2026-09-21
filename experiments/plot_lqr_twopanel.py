@@ -217,7 +217,8 @@ def main():
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2,
                                       figsize=(args.width, args.height),
-                                      sharey=False)
+                                      sharey=False,
+                                      constrained_layout=True)
 
     left_title  = args.left_title
     right_title = args.right_title
@@ -232,7 +233,6 @@ def main():
     if args.title:
         fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold', y=1.02)
 
-    fig.tight_layout()
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=180, bbox_inches='tight')
