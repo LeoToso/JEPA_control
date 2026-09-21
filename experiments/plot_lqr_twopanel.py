@@ -52,7 +52,7 @@ COLOR_IDM        = '#d4b100'   # golden yellow — PR-IDM (standard 1-step)
 COLOR_EP_IDM_MSP = '#d62728'   # red   — MSP + PR-EP-IDM
 COLOR_EP_IDM_1SP = '#e07b00'   # orange — 1SP + PR-EP-IDM
 COLOR_OTHER      = ['#2ca02c', '#9467bd', '#8c564b', '#bcbd22', '#e377c2']
-COLOR_DINOWM     = '#17becf'   # teal  — DINO-WM baseline
+COLOR_DINOWM     = '#74c476'   # light green — DINO-WM baseline
 
 
 def _label_color(label: str) -> str:
