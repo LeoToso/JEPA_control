@@ -90,8 +90,8 @@ def load_trials(json_path):
 # ── panel plotting ─────────────────────────────────────────────────────────────
 
 def plot_panel(ax, entries, panel_title: str | None = None,
-               legend_loc: str = 'outside right', show_ylabel: bool = True,
-               legend_ncol: int = 1):
+               legend_loc: str = 'outside bottom', show_ylabel: bool = True,
+               legend_ncol: int = 2):
     """Overlay multiple models on one axis.
 
     entries: list of (label, json_path_str)
@@ -170,11 +170,12 @@ def plot_panel(ax, entries, panel_title: str | None = None,
 
     kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
               borderpad=0.5, labelspacing=0.3, handlelength=1.6, ncol=legend_ncol)
-    if legend_loc == 'outside right':
+    if legend_loc == 'outside bottom':
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22),
+                  borderaxespad=0, **kw)
+    elif legend_loc == 'outside right':
         ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
                   borderaxespad=0, **kw)
-    elif legend_loc == 'outside bottom':
-        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.18), **kw)
     else:
         ax.legend(loc=legend_loc, **kw)
 
@@ -194,15 +195,15 @@ def main():
                    help='Title for the right panel (auto from labels if omitted)')
     p.add_argument('--title', default=None,
                    help='Overall figure suptitle')
-    p.add_argument('--left-legend-loc',  default='outside right',
+    p.add_argument('--left-legend-loc',  default='outside bottom',
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
-    p.add_argument('--right-legend-loc', default='outside right',
+    p.add_argument('--right-legend-loc', default='outside bottom',
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
-    p.add_argument('--legend-ncol', type=int, default=1,
-                   help='Number of legend columns (useful with outside bottom)')
+    p.add_argument('--legend-ncol', type=int, default=2,
+                   help='Columns in outside-bottom legends')
     p.add_argument('--out', required=True)
     p.add_argument('--width',  type=float, default=10.0, help='Figure width in inches')
-    p.add_argument('--height', type=float, default=4.0,  help='Figure height in inches')
+    p.add_argument('--height', type=float, default=5.0,  help='Figure height in inches')
     args = p.parse_args()
 
     def parse_specs(specs):
@@ -217,8 +218,7 @@ def main():
 
     fig, (ax_l, ax_r) = plt.subplots(1, 2,
                                       figsize=(args.width, args.height),
-                                      sharey=False,
-                                      constrained_layout=True)
+                                      sharey=False)
 
     left_title  = args.left_title
     right_title = args.right_title
@@ -231,7 +231,14 @@ def main():
                legend_ncol=args.legend_ncol)
 
     if args.title:
-        fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold', y=1.02)
+        fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold')
+
+    # leave vertical room for the bottom legends
+    bottom_locs = {'outside bottom'}
+    has_bottom = (args.left_legend_loc in bottom_locs or
+                  args.right_legend_loc in bottom_locs)
+    fig.subplots_adjust(bottom=0.32 if has_bottom else 0.12,
+                        wspace=0.25, left=0.10, right=0.97, top=0.95)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
