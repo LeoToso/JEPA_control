@@ -234,8 +234,8 @@ def main():
     bottom_locs = {'outside bottom'}
     has_bottom = (args.left_legend_loc in bottom_locs or
                   args.right_legend_loc in bottom_locs)
-    fig.subplots_adjust(bottom=0.30 if has_bottom else 0.12,
-                        wspace=0.25, left=0.10, right=0.97, top=0.95)
+    bot = 0.22 if has_bottom else 0.12
+    fig.subplots_adjust(bottom=bot, wspace=0.25, left=0.10, right=0.97, top=0.95)
 
     # Place outside legends at figure level so they stay under their own panel
     leg_kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
@@ -248,9 +248,8 @@ def main():
         pos = ax.get_position()           # figure-fraction bbox
         cx  = (pos.x0 + pos.x1) / 2
         if loc == 'outside bottom':
-            cx = (pos.x0 + pos.x1) / 2
             fig.legend(handles, labels, loc='upper center',
-                       bbox_to_anchor=(cx, 0.01), **leg_kw)
+                       bbox_to_anchor=(cx, bot - 0.02), **leg_kw)
         else:  # outside right
             fig.legend(handles, labels, loc='upper left',
                        bbox_to_anchor=(pos.x1 + 0.01, pos.y1), **leg_kw)
