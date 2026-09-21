@@ -91,7 +91,7 @@ def load_trials(json_path):
 
 def plot_panel(ax, entries, panel_title: str | None = None,
                legend_loc: str = 'outside bottom', show_ylabel: bool = True,
-               legend_ncol: int = 3):
+               legend_ncol: int = 2):
     """Overlay multiple models on one axis.
 
     entries: list of (label, json_path_str)
@@ -193,7 +193,7 @@ def main():
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
     p.add_argument('--right-legend-loc', default='outside bottom',
                    help='Legend location: matplotlib loc string or "outside right"/"outside bottom"')
-    p.add_argument('--legend-ncol', type=int, default=3,
+    p.add_argument('--legend-ncol', type=int, default=2,
                    help='Columns in outside-bottom legends')
     p.add_argument('--out', required=True)
     p.add_argument('--width',  type=float, default=13.0, help='Figure width in inches')
@@ -244,8 +244,8 @@ def main():
         pos = ax.get_position()           # figure-fraction bbox
         cx  = (pos.x0 + pos.x1) / 2
         if loc == 'outside bottom':
-            fig.legend(handles, labels, loc='upper center',
-                       bbox_to_anchor=(cx, 0.01), **leg_kw)
+            fig.legend(handles, labels, loc='upper left',
+                       bbox_to_anchor=(pos.x0, 0.01), **leg_kw)
         else:  # outside right
             fig.legend(handles, labels, loc='upper left',
                        bbox_to_anchor=(pos.x1 + 0.01, pos.y1), **leg_kw)
