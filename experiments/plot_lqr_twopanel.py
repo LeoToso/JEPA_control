@@ -42,10 +42,10 @@ import numpy as np
 PANEL_COLOR = 'white'
 GRID_KW     = dict(color='#cccccc', linewidth=0.8, alpha=0.9)
 LINEWIDTH   = 2.4
-TICK_SIZE   = 13
-LABEL_SIZE  = 14
-TITLE_SIZE  = 15
-LEGEND_SIZE = 11
+TICK_SIZE   = 15
+LABEL_SIZE  = 17
+TITLE_SIZE  = 17
+LEGEND_SIZE = 13
 
 COLOR_SIG    = '#2166ac'          # blue  — SIG (checked first)
 COLOR_IDM    = ['#e07b00', '#c45a00']  # two oranges for first / second IDM
@@ -155,9 +155,9 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     ax.set_axisbelow(True)
     ax.grid(True, **GRID_KW)
     ax.set_yscale('log')
-    ax.set_xlabel('Step $t$', fontsize=LABEL_SIZE)
+    ax.set_xlabel('Time step $t$', fontsize=LABEL_SIZE)
     if show_ylabel:
-        ax.set_ylabel(r'$\|\mathbf{x}_t\|$', fontsize=LABEL_SIZE)
+        ax.set_ylabel('State norm', fontsize=LABEL_SIZE)
     ax.tick_params(labelsize=TICK_SIZE)
     ax.spines[['top', 'right']].set_visible(False)
 
@@ -206,14 +206,8 @@ def main():
                                       figsize=(args.width, args.height),
                                       sharey=False)
 
-    # auto-derive panel titles from the common prefix of labels
-    def _auto_title(entries):
-        labels = [lbl for lbl, _ in entries]
-        # use first model's label minus the architecture-specific suffix
-        return labels[0].rsplit('+', 1)[0].strip() if '+' in labels[0] else labels[0]
-
-    left_title  = args.left_title  or _auto_title(left_entries)
-    right_title = args.right_title or _auto_title(right_entries)
+    left_title  = args.left_title
+    right_title = args.right_title
 
     plot_panel(ax_l, left_entries,  panel_title=left_title,
                legend_loc=args.left_legend_loc)
