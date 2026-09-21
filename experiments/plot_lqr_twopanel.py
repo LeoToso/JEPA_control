@@ -157,7 +157,7 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     ax.set_yscale('log')
     ax.set_xlabel('Time step $t$', fontsize=LABEL_SIZE)
     if show_ylabel:
-        ax.set_ylabel('State norm', fontsize=LABEL_SIZE)
+        ax.set_ylabel(r'$\|\mathbf{x}_t\|_2$', fontsize=LABEL_SIZE)
     ax.tick_params(labelsize=TICK_SIZE)
     ax.spines[['top', 'right']].set_visible(False)
 
