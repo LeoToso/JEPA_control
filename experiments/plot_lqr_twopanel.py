@@ -47,9 +47,10 @@ LABEL_SIZE  = 17
 TITLE_SIZE  = 17
 LEGEND_SIZE = 13
 
-COLOR_SIG    = '#2166ac'          # blue  — SIG (checked first)
-COLOR_IDM    = ['#e07b00', '#c45a00']  # two oranges for first / second IDM
-COLOR_OTHER  = '#2ca02c'          # green  — other / GT
+COLOR_SIG   = '#2166ac'                          # blue  — SIG (checked first)
+COLOR_IDM   = ['#e07b00', '#c45a00']             # two oranges for IDM
+COLOR_OTHER = ['#2ca02c', '#9467bd', '#17becf',
+               '#8c564b', '#bcbd22']             # green, purple, teal, brown, olive
 
 
 def _label_color(label: str) -> str:
@@ -59,7 +60,7 @@ def _label_color(label: str) -> str:
         return COLOR_SIG
     if 'IDM' in u:
         return COLOR_IDM[0]
-    return COLOR_OTHER
+    return COLOR_OTHER[0]
 
 
 # ── data loading ───────────────────────────────────────────────────────────────
@@ -97,8 +98,9 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     A label with both IDM and SIG is treated as IDM (orange).
     Second SIG-only model gets a dashed line; second IDM gets the alternate orange.
     """
-    sig_count: int = 0
-    idm_count: int = 0
+    sig_count:   int = 0
+    idm_count:   int = 0
+    other_count: int = 0
     threshold_val = None
 
     for label, json_path in entries:
@@ -121,8 +123,9 @@ def plot_panel(ax, entries, panel_title: str | None = None,
             linestyle = '--' if sig_count > 0 else '-'
             sig_count += 1
         else:
-            color     = COLOR_OTHER
+            color     = COLOR_OTHER[other_count % len(COLOR_OTHER)]
             linestyle = '-'
+            other_count += 1
 
         # Build norm matrix, padding shorter trials
         T = max(len(t['states']) for t in trials)
