@@ -1,0 +1,134 @@
+"""Convert flat single-file HDF5 (from generate_data.py) to per-split episode files.
+
+The flat format stores all transitions contiguously:
+  obs, next_obs, actions, states, next_states  — shape (N, ...)
+  episode_ids                                   — shape (N,) episode membership
+  splits/train, splits/val, splits/test         — episode indices per split
+
+This script groups transitions back into episodes and writes:
+  <out-dir>/train.hdf5
+  <out-dir>/val.hdf5
+  <out-dir>/test.hdf5
+
+compatible with DiscreteHDF5TrajectoryDataset / make_discrete_dataloaders.
+
+Usage:
+    python experiments/convert_flat_to_split_hdf5.py \\
+        --src  data/cartpole_visual_runs_BE/cartpole_v2_ep_fs1_seed42.h5 \\
+        --out  data/cartpole_visual_runs_BE
+"""
+from __future__ import annotations
+import argparse, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import h5py
+import numpy as np
+
+
+def convert(src_path: str, out_dir: str) -> None:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(src_path, 'r') as f:
+        obs         = f['obs'][:]           # (N, H, W, C) uint8
+        next_obs    = f['next_obs'][:]      # (N, H, W, C) uint8
+        actions     = f['actions'][:]       # (N,) or (N, action_dim)
+        states      = f['states'][:]        # (N, 4)
+        next_states = f['next_states'][:]   # (N, 4)
+        episode_ids = f['episode_ids'][:]   # (N,)
+        trajectory_types = (f['trajectory_types'][:]
+                            if 'trajectory_types' in f
+                            else np.full(len(episode_ids), b'unknown', dtype='S16'))
+
+    print(f'[convert] {src_path}')
+    print(f'[convert] {len(obs):,} transitions  '
+          f'episodes={len(set(episode_ids.tolist()))}  '
+          f'obs_shape={obs.shape[1:]}')
+
+    # Split whole episodes within each trajectory family while spreading the
+    # signed mean-theta distribution across all splits. For each angle-sorted
+    # block of ten episodes: one goes to val, one to test, and eight to train.
+    rng = np.random.RandomState(42)
+    splits = {'train': set(), 'val': set(), 'test': set()}
+    for typ in np.unique(trajectory_types):
+        type_eps = np.unique(episode_ids[trajectory_types == typ])
+        rng.shuffle(type_eps)
+        angle_score = {
+            int(ep): float(states[episode_ids == ep, 2].mean())
+            for ep in type_eps
+        }
+        type_eps = np.array(sorted(type_eps, key=lambda ep: angle_score[int(ep)]))
+        assigned = {'train': [], 'val': [], 'test': []}
+        for rank, ep in enumerate(type_eps):
+            slot = rank % 10
+            split_name = 'val' if slot == 0 else ('test' if slot == 5 else 'train')
+            assigned[split_name].append(int(ep))
+        # Tiny families still need all splits when at least three episodes exist.
+        if len(type_eps) >= 3:
+            for split_name in ('val', 'test'):
+                if not assigned[split_name]:
+                    assigned[split_name].append(assigned['train'].pop())
+        for split_name in splits:
+            splits[split_name].update(assigned[split_name])
+        label = typ.decode() if isinstance(typ, bytes) else str(typ)
+        print(f'[convert] {label}: '
+              f'train={len(assigned["train"])} '
+              f'val={len(assigned["val"])} '
+              f'test={len(assigned["test"])}')
+    print(f'[convert] episode split: train={len(splits["train"])}  '
+          f'val={len(splits["val"])}  test={len(splits["test"])} episodes')
+
+    for split_name, ep_id_set in splits.items():
+        mask = np.array([eid in ep_id_set for eid in episode_ids])
+        if not mask.any():
+            print(f'[convert] {split_name}: 0 transitions — skipping')
+            continue
+
+        # Group transitions into episodes preserving order
+        ep_dict: dict[int, dict] = {}
+        for i in np.where(mask)[0]:
+            eid = int(episode_ids[i])
+            if eid not in ep_dict:
+                ep_dict[eid] = {
+                    'obs':     [obs[i]],
+                    'actions': [],
+                    'states':  [states[i]],
+                    'trajectory_type': trajectory_types[i],
+                }
+            ep_dict[eid]['obs'].append(next_obs[i])
+            ep_dict[eid]['actions'].append(actions[i])
+            ep_dict[eid]['states'].append(next_states[i])
+
+        dst = out / f'{split_name}.hdf5'
+        opts = dict(compression='gzip', compression_opts=4)
+        n_trans = 0
+        with h5py.File(str(dst), 'w') as fout:
+            grp = fout.require_group('episodes')
+            for new_idx, (_, ep) in enumerate(sorted(ep_dict.items())):
+                g = grp.require_group(str(new_idx))
+                obs_arr = np.stack(ep['obs']).astype(np.uint8)     # (T+1, H, W, C)
+                act_arr = np.stack(ep['actions'])                   # (T,) or (T, d)
+                st_arr  = np.stack(ep['states']).astype(np.float32) # (T+1, 4)
+                g.create_dataset('observations', data=obs_arr, **opts)
+                g.create_dataset('actions',      data=act_arr, **opts)
+                g.create_dataset('states',       data=st_arr,  **opts)
+                typ = ep['trajectory_type']
+                g.attrs['trajectory_type'] = typ.decode() if isinstance(typ, bytes) else str(typ)
+                n_trans += len(ep['actions'])
+            fout.attrs['n_episodes']    = len(ep_dict)
+            fout.attrs['n_transitions'] = n_trans
+        print(f'[convert] {split_name}: {len(ep_dict)} episodes  '
+              f'{n_trans:,} transitions  → {dst}')
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--src', required=True, help='Source flat .h5 file')
+    p.add_argument('--out', required=True, help='Output directory for split HDF5 files')
+    args = p.parse_args()
+    convert(args.src, args.out)
+
+
+if __name__ == '__main__':
+    main()

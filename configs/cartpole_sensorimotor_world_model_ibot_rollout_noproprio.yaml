@@ -1,0 +1,44 @@
+model:
+  encoder_type: ibot
+  ibot_ckpt: /mnt/t7shield/pretrained/ibot_vits16.pth
+  ibot_arch: vit_small_patch16_224           # ViT-S/16, embed_dim=384
+  image_size: 224
+  use_frame_diff: false                      # iBOT expects 3-channel RGB
+  use_proprio: false
+  history_size: 1
+  action_context_dim: 5
+  use_action_history: true
+  predictor_hidden_dim: 384                  # match iBOT embed_dim
+  predictor_depth: 6
+  predictor_heads: 16
+  predictor_dim_head: 64
+  predictor_mlp_dim: 2048
+  predictor_dropout: 0.1
+  use_inverse_model: false
+  use_state_decoder: false
+
+training:
+  epochs: 200
+  batch_size: 64
+  num_workers: 2
+  lr: 1.0e-4
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-3
+  lambda_fwd: 0.0
+  lambda_inverse: 0.0
+  lambda_sigreg: 0.0
+  lambda_state_recon: 0.0
+  lambda_rollout: 1.0
+  horizon: 3
+  normalize_actions: true
+  balanced_sampling: true
+  trajectory_type_sampling_weights:
+    angle_sweep: 0.10
+    eq_lqr: 0.05
+    lqr: 0.10
+    passive: 0.25
+    prbs: 0.30
+    random: 0.20
+  checkpoint_every: 10
+  probe_every: 10

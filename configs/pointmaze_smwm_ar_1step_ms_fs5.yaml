@@ -1,0 +1,44 @@
+model:
+  encoder_type: vit
+  image_size: 64
+  patch_size: 8
+  use_frame_diff: true
+  use_proprio: true
+  proprio_dim: 4
+  vit_embed_dim: 192
+  vit_depth: 4
+  vit_heads: 3
+  latent_dim: 192
+  history_size: 1
+  action_context_dim: 10       # frame_skip=5 × 2-D sub-actions per step
+  use_action_history: false    # multi-action: expand_action repeats at eval
+  predictor_hidden_dim: 192
+  predictor_depth: 6
+  predictor_heads: 16
+  predictor_dim_head: 64
+  predictor_mlp_dim: 2048
+  predictor_dropout: 0.1
+  use_inverse_model: true
+  inverse_seq_len: 4           # horizon+1 = 3+1
+  use_inverse_model_1step: true
+  use_state_decoder: false
+
+training:
+  epochs: 200
+  batch_size: 64
+  num_workers: 2
+  lr: 1.0e-4
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-3
+  lambda_fwd: 1.0
+  lambda_inverse: 1.0
+  lambda_sigreg: 0.0
+  lambda_state_recon: 0.0
+  lambda_rollout: 0.0
+  lambda_inverse_1step: 1.0
+  horizon: 3
+  normalize_actions: true
+  balanced_sampling: false
+  checkpoint_every: 10
+  probe_every: 10

@@ -1,0 +1,50 @@
+model:
+  encoder_type: ibot
+  ibot_ckpt: /mnt/t7shield/pretrained/ibot_vits16.pth
+  ibot_arch: vit_small_patch16_224
+  image_size: 224
+  use_frame_diff: false
+  use_proprio: true
+  proprio_dim: 4
+  use_projector: true          # trainable MLP: (384+4) → 192
+  latent_dim: 192
+  history_size: 1
+  action_context_dim: 5
+  use_action_history: true
+  predictor_hidden_dim: 192
+  predictor_depth: 2           # small predictor
+  predictor_heads: 3
+  predictor_dim_head: 64
+  predictor_mlp_dim: 512       # small predictor
+  predictor_dropout: 0.1
+  use_inverse_model: false
+  use_endpoint_inverse: true          # decoder sees only (z_0, z_H), not intermediate latents
+  inverse_hidden_dim: 256
+  endpoint_inverse_horizon: 3        # must equal training.horizon
+
+training:
+  epochs: 200
+  batch_size: 64
+  num_workers: 2
+  lr: 1.0e-4
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-3
+  lambda_fwd: 1.0
+  lambda_inverse: 1.0
+  lambda_sigreg: 0.0
+  lambda_state_recon: 0.0
+  lambda_rollout: 0.0
+  lambda_inverse_1step: 0.0
+  horizon: 3
+  normalize_actions: true
+  balanced_sampling: true
+  trajectory_type_sampling_weights:
+    angle_sweep: 0.10
+    eq_lqr: 0.05
+    lqr: 0.10
+    passive: 0.25
+    prbs: 0.30
+    random: 0.20
+  checkpoint_every: 10
+  probe_every: 10
