@@ -47,10 +47,11 @@ LABEL_SIZE  = 17
 TITLE_SIZE  = 17
 LEGEND_SIZE = 13
 
-COLOR_SIG   = '#2166ac'                          # blue  — SIG (checked first)
-COLOR_IDM   = ['#e07b00', '#c45a00']             # two oranges for IDM
-COLOR_OTHER = ['#2ca02c', '#9467bd', '#17becf',
-               '#8c564b', '#bcbd22']             # green, purple, teal, brown, olive
+COLOR_SIG    = '#2166ac'                          # blue  — SIG (checked first)
+COLOR_IDM    = ['#e07b00', '#c45a00']             # two oranges for IDM
+COLOR_OTHER  = ['#2ca02c', '#9467bd', '#17becf',
+                '#8c564b', '#bcbd22']             # green, purple, teal, brown, olive
+COLOR_DINOWM = '#111111'                          # near-black for DINO-WM baseline
 
 
 def _label_color(label: str) -> str:
@@ -115,7 +116,10 @@ def plot_panel(ax, entries, panel_title: str | None = None,
             threshold_val = threshold
 
         u = label.upper()
-        if 'IDM' in u:                            # IDM takes priority over SIG
+        if 'DINO-WM' in u or label.upper().replace('-', '') == 'DINOWM':
+            color     = COLOR_DINOWM
+            linestyle = '-'
+        elif 'IDM' in u:                          # IDM takes priority over SIG
             color     = COLOR_IDM[min(idm_count, len(COLOR_IDM) - 1)]
             linestyle = '-'
             idm_count += 1
@@ -244,8 +248,9 @@ def main():
         pos = ax.get_position()           # figure-fraction bbox
         cx  = (pos.x0 + pos.x1) / 2
         if loc == 'outside bottom':
-            fig.legend(handles, labels, loc='upper left',
-                       bbox_to_anchor=(pos.x0, 0.01), **leg_kw)
+            cx = (pos.x0 + pos.x1) / 2
+            fig.legend(handles, labels, loc='upper center',
+                       bbox_to_anchor=(cx, 0.01), **leg_kw)
         else:  # outside right
             fig.legend(handles, labels, loc='upper left',
                        bbox_to_anchor=(pos.x1 + 0.01, pos.y1), **leg_kw)
