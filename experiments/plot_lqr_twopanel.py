@@ -135,11 +135,13 @@ def plot_panel(ax, entries, panel_title: str | None = None,
             norms.append(n)
         norms = np.array(norms)
 
-        t    = np.arange(T)
-        mean = norms.mean(axis=0)
-        sem  = norms.std(axis=0) / np.sqrt(len(trials))
-        lo   = mean - 1.96 * sem
-        hi   = mean + 1.96 * sem
+        t         = np.arange(T)
+        log_norms = np.log(np.maximum(norms, 1e-12))
+        log_mean  = log_norms.mean(axis=0)
+        log_sem   = log_norms.std(axis=0) / np.sqrt(len(trials))
+        mean = np.exp(log_mean)
+        lo   = np.exp(log_mean - 1.96 * log_sem)
+        hi   = np.exp(log_mean + 1.96 * log_sem)
 
         ax.plot(t, mean, color=color, linewidth=LINEWIDTH,
                 linestyle=linestyle, label=label)
