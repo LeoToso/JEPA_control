@@ -166,16 +166,12 @@ def plot_panel(ax, entries, panel_title: str | None = None,
     if panel_title:
         ax.set_title(panel_title, fontsize=TITLE_SIZE, fontweight='bold', pad=6)
 
-    kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
-              borderpad=0.5, labelspacing=0.3, handlelength=1.6, ncol=legend_ncol)
-    if legend_loc == 'outside bottom':
-        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.22),
-                  borderaxespad=0, **kw)
-    elif legend_loc == 'outside right':
-        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1),
-                  borderaxespad=0, **kw)
-    else:
+    if legend_loc not in ('outside bottom', 'outside right'):
+        kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
+                  borderpad=0.5, labelspacing=0.3, handlelength=1.6, ncol=legend_ncol)
         ax.legend(loc=legend_loc, **kw)
+    # 'outside bottom' and 'outside right': legend created by main() using
+    # figure-level coordinates so multiple panels can't overlap.
 
 
 # ── main ───────────────────────────────────────────────────────────────────────
@@ -231,12 +227,28 @@ def main():
     if args.title:
         fig.suptitle(args.title, fontsize=TITLE_SIZE + 2, fontweight='bold')
 
-    # leave vertical room for the bottom legends
     bottom_locs = {'outside bottom'}
     has_bottom = (args.left_legend_loc in bottom_locs or
                   args.right_legend_loc in bottom_locs)
-    fig.subplots_adjust(bottom=0.32 if has_bottom else 0.12,
+    fig.subplots_adjust(bottom=0.30 if has_bottom else 0.12,
                         wspace=0.25, left=0.10, right=0.97, top=0.95)
+
+    # Place outside legends at figure level so they stay under their own panel
+    leg_kw = dict(fontsize=LEGEND_SIZE, framealpha=0.9,
+                  borderpad=0.5, labelspacing=0.3, handlelength=1.6,
+                  ncol=args.legend_ncol)
+    for ax, loc in [(ax_l, args.left_legend_loc), (ax_r, args.right_legend_loc)]:
+        if loc not in ('outside bottom', 'outside right'):
+            continue
+        handles, labels = ax.get_legend_handles_labels()
+        pos = ax.get_position()           # figure-fraction bbox
+        cx  = (pos.x0 + pos.x1) / 2
+        if loc == 'outside bottom':
+            fig.legend(handles, labels, loc='upper center',
+                       bbox_to_anchor=(cx, 0.01), **leg_kw)
+        else:  # outside right
+            fig.legend(handles, labels, loc='upper left',
+                       bbox_to_anchor=(pos.x1 + 0.01, pos.y1), **leg_kw)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
