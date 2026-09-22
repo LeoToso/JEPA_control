@@ -26,7 +26,8 @@ import scipy.linalg
 import torch
 
 from sensorimotor_probe_utils import (
-    encode_obs, encode_rendered_state, local_jacobians, load_bundle, make_env)
+    encode_obs, encode_rendered_state, local_jacobians, load_bundle, make_env,
+    make_frame_buffer, push_frame)
 
 
 def checkpoint_label(checkpoint):
@@ -76,7 +77,7 @@ def lqr_trial(bundle, K, z_goal, initial_state, n_steps,
     env = make_env(bundle['env_cfg'], seed=0)
     obs, state, _ = env.reset_to_state(
         np.asarray(initial_state, dtype=np.float64))
-    prev_obs = obs.copy()
+    frame_buf = make_frame_buffer(bundle, obs)
 
     goal_state = np.zeros(4)
     states = [state.copy()]
@@ -85,14 +86,15 @@ def lqr_trial(bundle, K, z_goal, initial_state, n_steps,
 
     for _ in range(n_steps):
         with torch.no_grad():
-            z = encode_obs(bundle, obs, prev_obs, state)
+            z = encode_obs(bundle, frame_buf, obs, state)
             z_np = z.cpu().numpy().flatten()
 
         u = float(-(K @ (z_np - z_goal)).item())
         u = float(np.clip(u, -action_scale, action_scale))
 
-        prev_obs = obs.copy()
+        prev_obs = obs
         obs, state, _, done, _ = env.step(u)
+        push_frame(frame_buf, obs)
         states.append(state.copy())
         actions.append(u)
         if done:
