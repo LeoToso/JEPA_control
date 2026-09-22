@@ -37,6 +37,36 @@ def obs_tensor(obs, device):
             .unsqueeze(0).to(device) / 255.)
 
 
+def _build_obs_input(bundle, obs, prev_obs):
+    """Return the observation tensor the encoder expects.
+
+    frame_stack > 1: `obs` may be a list/tuple of frame_stack HxWxC arrays
+                     (oldest first).  A bare array is repeated frame_stack times
+                     (correct for initialisation / equilibrium).
+    use_frame_diff:  single obs + prev_obs; handled downstream in model.encode.
+    default (stack=1, no diff): single frame.
+    """
+    model = bundle['model']
+    device = bundle['device']
+    fs = int(model.frame_stack)
+    if fs > 1:
+        frames = list(obs) if isinstance(obs, (list, tuple)) else [obs] * fs
+        return torch.cat([obs_tensor(f, device) for f in frames], dim=1)
+    return obs_tensor(obs, device)
+
+
+def make_frame_buffer(bundle, initial_obs):
+    """Return a list of frame_stack copies of initial_obs (oldest first)."""
+    fs = int(bundle['model'].frame_stack)
+    return [initial_obs] * fs
+
+
+def push_frame(frame_buffer, new_obs):
+    """Append new_obs to frame_buffer and drop the oldest frame in-place."""
+    frame_buffer.pop(0)
+    frame_buffer.append(new_obs)
+
+
 def load_bundle(checkpoint_path, config_path, device_name='cuda'):
     device = torch.device(
         device_name if torch.cuda.is_available() else 'cpu')
@@ -67,23 +97,34 @@ def normalize_state(state, bundle):
 
 @torch.no_grad()
 def encode_obs(bundle, obs, prev_obs, state):
+    """Encode an observation into a latent vector.
+
+    obs      : HxWxC ndarray, OR a list of frame_stack such arrays (oldest first)
+               when model.frame_stack > 1.  A bare array is repeated frame_stack
+               times (suitable for initialisation).
+    prev_obs : used only when model.use_frame_diff is True (frame_stack == 1).
+    """
+    model = bundle['model']
+    device = bundle['device']
     proprio = None
-    if bundle['model'].use_proprio:
+    if model.use_proprio:
         norm = normalize_state(state, bundle)
-        idx = bundle['model'].proprio_indices
+        idx = model.proprio_indices
         if idx is not None:
             norm = norm[idx]
-        proprio = torch.as_tensor(norm, device=bundle['device']).float().reshape(1, -1)
-    return bundle['model'].encode(
-        obs_tensor(obs, bundle['device']),
-        obs_tensor(prev_obs, bundle['device']), proprio)
+        proprio = torch.as_tensor(norm, device=device).float().reshape(1, -1)
+    obs_in = _build_obs_input(bundle, obs, prev_obs)
+    prev_in = (obs_tensor(prev_obs, device)
+               if model.use_frame_diff and model.frame_stack == 1 else None)
+    return model.encode(obs_in, prev_in, proprio)
 
 
 def equilibrium_latent(bundle):
     env = make_env(bundle['env_cfg'], 987)
     state = np.zeros(4, dtype=np.float32)
     obs, _, _ = env.reset_to_state(state)
-    z = encode_obs(bundle, obs, obs, state)
+    buf = make_frame_buffer(bundle, obs)
+    z = encode_obs(bundle, buf, obs, state)
     env.close()
     return z.detach()
 
@@ -180,7 +221,8 @@ def fit_state_probe(bundle, data_path, n_samples=4000, batch_size=128,
 def encode_rendered_state(bundle, state):
     env = make_env(bundle['env_cfg'], 321)
     obs, _, _ = env.reset_to_state(np.asarray(state, dtype=np.float32))
-    z = encode_obs(bundle, obs, obs, state)
+    buf = make_frame_buffer(bundle, obs)
+    z = encode_obs(bundle, buf, obs, state)
     env.close()
     return z
 
@@ -189,16 +231,16 @@ def gt_rollout(bundle, initial_state, steps, action=0.):
     env = make_env(bundle['env_cfg'], 654)
     obs, state, _ = env.reset_to_state(
         np.asarray(initial_state, dtype=np.float32))
-    prev_obs = obs
+    frame_buf = make_frame_buffer(bundle, obs)
     states = [state.copy()]
-    latents = [encode_obs(bundle, obs, prev_obs, state).cpu().numpy()[0]]
+    latents = [encode_obs(bundle, frame_buf, obs, state).cpu().numpy()[0]]
     for _ in range(steps):
-        old_obs = obs
+        prev_obs = obs
         obs, state, _, done, _ = env.step(float(action))
-        prev_obs = old_obs
+        push_frame(frame_buf, obs)
         states.append(state.copy())
         latents.append(
-            encode_obs(bundle, obs, prev_obs, state).cpu().numpy()[0])
+            encode_obs(bundle, frame_buf, prev_obs, state).cpu().numpy()[0])
         if done:
             break
     env.close()
