@@ -252,14 +252,12 @@ def main():
             ax.spines[['top', 'right']].set_visible(False)
             ax.tick_params(labelsize=13)
 
-        _color_seen: dict = {}
         for i, res in enumerate(saved_models):
             mean_err = np.array(res['mean_err'])
             sem_err  = np.array(res['sem_err'])
             label    = res['label']
             color    = _label_color(label)
-            _color_seen[color] = _color_seen.get(color, 0) + 1
-            ls       = '--' if _color_seen[color] > 1 else '-'
+            ls       = '--' if label.upper().startswith('1SP') else '-'
             ax1.plot(steps, mean_err, color=color, linewidth=2.2,
                      linestyle=ls, label=label)
             ax1.fill_between(steps, mean_err - sem_err, mean_err + sem_err,
@@ -368,10 +366,7 @@ def main():
         })
 
         color = _label_color(label)
-        if not hasattr(ax1, '_color_seen'):
-            ax1._color_seen = {}
-        ax1._color_seen[color] = ax1._color_seen.get(color, 0) + 1
-        ls = '--' if ax1._color_seen[color] > 1 else '-'
+        ls    = '--' if label.upper().startswith('1SP') else '-'
 
         # Left: mean ± SEM of ||x̂_k - x_k^gt|| vs step
         ax1.plot(steps, mean_err, color=color, linewidth=2.2,
