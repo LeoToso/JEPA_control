@@ -325,6 +325,7 @@ def run_trial(planner, eval_env, initial_qpos, initial_qvel,
 
     step        = 0
     x_vels      = []
+    actions     = []
     frames      = []
     qpos_seq    = []
     qvel_seq    = []
@@ -346,6 +347,7 @@ def run_trial(planner, eval_env, initial_qpos, initial_qvel,
                 break
             obs, reward, terminated, truncated, info = eval_env.step(a)
             step += 1
+            actions.append(a.tolist())
             x_vels.append(float(info.get('x_velocity', 0.0)))
             if do_render:
                 frames.append(eval_env.render())
@@ -378,6 +380,7 @@ def run_trial(planner, eval_env, initial_qpos, initial_qvel,
         'final_angle':    final_angle,
         'fail_reason':    reason,
         'x_velocities':   x_vels,
+        'actions':        actions,
     }
     if do_save_states:
         row['qpos_seq'] = qpos_seq
