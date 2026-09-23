@@ -67,72 +67,78 @@ HEALTHY_Z_MAX   = 2.0
 HEALTHY_ANG_MAX = 1.0
 
 
-# ── latent rollout cost ────────────────────────────────────────────────────────
+# ── batched latent rollout cost ────────────────────────────────────────────────
 
 @torch.no_grad()
-def latent_rollout_cost(
-    bundle, probe, start_z: torch.Tensor,
+def batched_rollout_cost(
+    bundle, probe_net, start_z: torch.Tensor,
     actions: np.ndarray,
     wx=1.0, wh=1.0, wu=1e-3, cf=10.0,
     wz=0.0, wang=0.0, height_target=1.2,
     wjoint=0.0, wsmooth=0.0, wback=2.0,
     wstability=0.0,
-) -> float:
-    """Evaluate one action sequence in latent space.
+    healthy_ang_max=1.0,
+) -> np.ndarray:
+    """Evaluate N action sequences in parallel on GPU.
 
-    start_z : (1, latent_dim) tensor on bundle device
-    actions : (H, 6) numpy array
+    start_z  : (1, latent_dim) tensor on bundle device
+    actions  : (N, H, 6) numpy array
+    Returns  : (N,) numpy cost array
 
-    Cost = -sum(per-step reward) + cf * (H - t_alive)
+    Cost = -sum(per-step reward * alive) + cf * (H - t_alive)
     Per-step reward = wx*max(x_vel,0) - wback*max(-x_vel,0) + wh
                       - wu*||u||² - wz*(h-h*)² - wang*ang²
                       - wjoint*||joints||² - wsmooth*||Δa||²
                       - wstability*||posture_t - posture_{t-1}||²
-
-    x_vel    = decoded obs[8]      (qvel[0], forward velocity)
-    h        = decoded obs[0]      (torso z-height)
-    ang      = decoded obs[1]      (torso tilt angle)
-    joints   = decoded obs[2:8]    (qpos[3:9])
-    posture  = decoded obs[0:9]    (height + angle + joints, for stability term)
+    Fall criterion: |torso_angle| >= healthy_ang_max
     """
-    from experiments.walker2d_smwm_utils import latent_step, is_healthy_obs
+    from experiments.walker2d_smwm_utils import latent_step_batch
 
-    z      = start_z.clone()
-    H      = len(actions)
-    t_alive      = 0
-    dense_reward = 0.0
-    a_prev        = np.zeros(ACTION_DIM, dtype=np.float32)
-    prev_posture  = None
+    device = bundle['device']
+    N, H, _ = actions.shape
+
+    z     = start_z.expand(N, -1).contiguous()                    # (N, D)
+    acts  = torch.as_tensor(actions, dtype=z.dtype, device=device) # (N, H, 6)
+
+    dense_reward = torch.zeros(N, device=device)
+    t_alive      = torch.zeros(N, device=device)
+    alive        = torch.ones(N, dtype=torch.bool, device=device)
+    a_prev       = torch.zeros(N, ACTION_DIM, dtype=z.dtype, device=device)
+    prev_posture = None
 
     for t in range(H):
-        a     = np.clip(actions[t], ACTION_LOW, ACTION_HIGH).astype(np.float32)
-        x_hat = probe(z[0].cpu().numpy())   # decoded 17-D obs
+        a     = acts[:, t]                                         # (N, 6)
+        x_hat = probe_net(z)                                       # (N, 17) on device
 
-        if not is_healthy_obs(x_hat):
+        # Fall detection — update alive before accumulating reward
+        alive = alive & (x_hat[:, 1].abs() < healthy_ang_max)
+        if not alive.any():
             break
 
-        x_vel      = float(x_hat[8])
-        h          = float(x_hat[0])
-        ang        = float(x_hat[1])
-        joints     = x_hat[2:8]
-        posture    = x_hat[0:9]
-        ctrl_cost  = wu * float(np.dot(a, a))
-        posture_pen = wz * (h - height_target) ** 2 + wang * ang ** 2
-        joint_pen  = wjoint  * float(np.dot(joints, joints))
-        smooth_pen = wsmooth * float(np.dot(a - a_prev, a - a_prev))
-        fwd_term   = wx * max(x_vel, 0.0) - wback * max(-x_vel, 0.0)
-        stab_pen   = (wstability * float(np.dot(posture - prev_posture,
-                                                posture - prev_posture))
-                      if prev_posture is not None else 0.0)
+        x_vel   = x_hat[:, 8]
+        h       = x_hat[:, 0]
+        ang     = x_hat[:, 1]
+        joints  = x_hat[:, 2:8]
+        posture = x_hat[:, 0:9]
 
-        dense_reward += (fwd_term + wh - ctrl_cost
-                         - posture_pen - joint_pen - smooth_pen - stab_pen)
-        t_alive      += 1
-        a_prev        = a
-        prev_posture  = posture
-        z             = latent_step(bundle, z, a)
+        fwd_term    = wx * x_vel.clamp(min=0) - wback * (-x_vel).clamp(min=0)
+        ctrl_cost   = wu  * (a * a).sum(-1)
+        posture_pen = wz  * (h - height_target) ** 2 + wang * ang ** 2
+        joint_pen   = wjoint  * (joints * joints).sum(-1)
+        smooth_pen  = wsmooth * ((a - a_prev) ** 2).sum(-1)
+        stab_pen    = (wstability * ((posture - prev_posture) ** 2).sum(-1)
+                       if wstability > 0.0 and prev_posture is not None
+                       else torch.zeros(N, device=device))
 
-    return -dense_reward + cf * (H - t_alive)
+        step_r = fwd_term + wh - ctrl_cost - posture_pen - joint_pen - smooth_pen - stab_pen
+        dense_reward = dense_reward + step_r * alive.float()
+        t_alive      = t_alive      + alive.float()
+
+        a_prev       = a
+        prev_posture = posture if wstability > 0.0 else None
+        z            = latent_step_batch(bundle, z, a)
+
+    return (-dense_reward + cf * (H - t_alive)).cpu().numpy()
 
 
 # ── colored noise (identical to gt_icem_walker.py) ────────────────────────────
@@ -177,6 +183,8 @@ class LatentWalkeriCEM:
         self.sample_decay   = float(sample_decay)
         self.bundle         = bundle
         self.probe          = probe
+        # Keep probe net on bundle device for batched GPU inference
+        self._probe_net     = probe._net.to(bundle['device']).eval()
         self.wx             = float(wx)
         self.wh             = float(wh)
         self.wu             = float(wu)
@@ -230,14 +238,13 @@ class LatentWalkeriCEM:
             if i == self.iterations - 1:
                 samples = np.concatenate([samples, mean[None]], axis=0)
 
-            costs = np.array([
-                latent_rollout_cost(
-                    self.bundle, self.probe, start_z, samples[k],
-                    self.wx, self.wh, self.wu, self.cf,
-                    self.wz, self.wang, self.height_target,
-                    self.wjoint, self.wsmooth, self.wback, self.wstability)
-                for k in range(len(samples))
-            ])
+            costs = batched_rollout_cost(
+                self.bundle, self._probe_net, start_z, samples,
+                self.wx, self.wh, self.wu, self.cf,
+                self.wz, self.wang, self.height_target,
+                self.wjoint, self.wsmooth, self.wback, self.wstability,
+                healthy_ang_max=HEALTHY_ANG_MAX,
+            )
 
             bi = int(np.argmin(costs))
             if costs[bi] < best_cost:
@@ -439,7 +446,9 @@ def main():
 
     # ── override health bound ─────────────────────────────────────────────────
     import experiments.walker2d_smwm_utils as _wu
-    _wu.HEALTHY_ANG_MAX = args.healthy_angle_max
+    import experiments.latent_icem_walker as _self
+    _wu.HEALTHY_ANG_MAX    = args.healthy_angle_max
+    _self.HEALTHY_ANG_MAX  = args.healthy_angle_max
 
     np.random.seed(args.seed)
 
