@@ -69,7 +69,6 @@ HEALTHY_ANG_MAX = 1.0
 
 # ── batched latent rollout cost ────────────────────────────────────────────────
 
-@torch.no_grad()
 _DEBUG_COST_REMAINING = 0   # module-level counter; set via set_debug_cost_calls()
 
 def set_debug_cost_calls(n: int):
@@ -77,6 +76,7 @@ def set_debug_cost_calls(n: int):
     _DEBUG_COST_REMAINING = n
 
 
+@torch.no_grad()
 def batched_rollout_cost(
     bundle, probe_net, start_z: torch.Tensor,
     actions: np.ndarray,
