@@ -241,6 +241,122 @@ def fit_walker_mlp_probe(
     return probe
 
 
+def fit_walker_rollout_probe(
+    bundle:        dict,
+    hdf5_dir:      str,
+    split:         str   = 'train',
+    max_episodes:  int   = 300,
+    rollout_steps: int   = 3,
+    image_size:    int   = 64,
+    hidden:        int   = 128,
+    n_epochs:      int   = 30,
+    lr:            float = 1e-3,
+    batch_size:    int   = 512,
+) -> MLPStateProbe:
+    """Fit MLPStateProbe calibrated for latent PREDICTOR outputs.
+
+    Unlike fit_walker_mlp_probe (which trains on z values from the visual
+    encoder), this function:
+      1. Encodes z_t from real observations.
+      2. Rolls the predictor forward `rollout_steps` steps using the real
+         actions from the dataset.
+      3. Trains the probe to predict state_{t+k} from z_{t+k}_pred.
+
+    The resulting probe maps predictor-output z → obs17 rather than
+    encoder-output z → obs17, which gives a meaningful directional signal
+    (x_vel sign, magnitude) during multi-step latent planning.
+
+    Use `rollout_steps` equal to the model's training horizon (e.g. 3 for
+    ms_sr) for best in-distribution calibration.
+    """
+    from torch.utils.data import DataLoader, TensorDataset
+
+    hdf5_path = Path(hdf5_dir) / f'{split}.hdf5'
+    device    = bundle['device']
+    z_dim     = int(bundle['model_cfg'].get('latent_dim', 192))
+    scale     = bundle['action_scale']
+
+    zs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+
+    with torch.no_grad():
+        with h5py.File(hdf5_path, 'r') as f:
+            ep_grp  = f['episodes']
+            ep_keys = sorted(ep_grp.keys(), key=lambda k: int(k))[:max_episodes]
+            print(f'[rollout-probe] encoding {len(ep_keys)} episodes '
+                  f'(k={rollout_steps}) from {hdf5_path.name}')
+
+            for ep_key in ep_keys:
+                ep    = ep_grp[ep_key]
+                obs_t = ep['observations'][:]   # (T+1, H, W, 3)
+                st_t  = ep['states'][:]         # (T+1, 17)
+                acts  = ep['actions'][:]        # (T, 6)
+                T     = obs_t.shape[0] - 1
+                if T < rollout_steps + 2:
+                    continue
+
+                if obs_t.shape[1] != image_size or obs_t.shape[2] != image_size:
+                    import torch.nn.functional as F_
+                    t_ = torch.from_numpy(obs_t).permute(0, 3, 1, 2).float()
+                    t_ = F_.interpolate(t_, (image_size, image_size),
+                                        mode='bilinear', align_corners=False)
+                    obs_t = t_.permute(0, 2, 3, 1).byte().numpy()
+
+                for t in range(1, T - rollout_steps + 1):
+                    # Encode from real observation at t
+                    z = encode_obs(bundle, obs_t[t], obs_t[t - 1], st_t[t])  # (1, D)
+
+                    # Roll forward k steps with real actions
+                    for k in range(rollout_steps):
+                        a_k = torch.as_tensor(
+                            acts[t + k], dtype=z.dtype, device=device
+                        ).unsqueeze(0)                                         # (1, 6)
+                        a_ctx = bundle['model'].expand_action(
+                            a_k / scale).unsqueeze(1)                          # (1, 1, ctx)
+                        z = bundle['model'].predict(z.unsqueeze(1), a_ctx)[:, 0]  # (1, D)
+
+                    zs.append(z[0].cpu().numpy())
+                    ys.append(st_t[t + rollout_steps])
+
+    Z = torch.from_numpy(np.stack(zs)).float()   # (N, z_dim)
+    Y = torch.from_numpy(np.stack(ys)).float()   # (N, 17)
+    print(f'[rollout-probe] N={len(Z)} samples  z_dim={z_dim}  '
+          f'training {n_epochs} epochs …')
+
+    probe = MLPStateProbe(z_dim, obs_dim=Y.shape[1], hidden=hidden)
+    probe.to(device)
+    net = probe._net.train()
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    dl  = DataLoader(TensorDataset(Z, Y), batch_size=batch_size, shuffle=True)
+
+    for ep in range(n_epochs):
+        total = 0.
+        for zb, yb in dl:
+            zb, yb = zb.to(device), yb.to(device)
+            loss = torch.nn.functional.mse_loss(net(zb), yb)
+            opt.zero_grad(); loss.backward(); opt.step()
+            total += loss.item()
+        if (ep + 1) % 10 == 0 or ep == 0:
+            print(f'  epoch {ep+1:3d}/{n_epochs}  loss={total/len(dl):.5f}', flush=True)
+
+    net.eval()
+    with torch.no_grad():
+        Y_hat = net(Z.to(device)).cpu().numpy()
+        Y_np  = Y.numpy()
+        r2 = float(1 - np.mean((Y_hat - Y_np) ** 2) / np.var(Y_np))
+    print(f'[rollout-probe] train R²={r2:.4f}')
+
+    _LABELS = ['z_h','ang','kL','aL','hR','kR','aR','fR',
+               'xvel','zvel','ang_v','kL_v','aL_v','hR_v','kR_v','aR_v','fR_v']
+    _CRIT   = {0,1,2,3,4,5,6,7,8}
+    ss_res  = ((Y_hat - Y_np) ** 2).sum(axis=0)
+    ss_tot  = ((Y_np - Y_np.mean(axis=0)) ** 2).sum(axis=0)
+    r2_per  = 1.0 - ss_res / np.maximum(ss_tot, 1e-12)
+    parts   = [f'{l}={v:.3f}{"★" if i in _CRIT else ""}' for i,(l,v) in enumerate(zip(_LABELS, r2_per))]
+    print('[rollout-probe] per-dim R²: ' + '  '.join(parts))
+    return probe
+
+
 # ── ridge probe fitter ────────────────────────────────────────────────────────
 
 @torch.no_grad()

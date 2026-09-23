@@ -409,6 +409,14 @@ def main():
     p.add_argument('--hdf5-dir',     required=True, help='Dataset dir for fitting MLP probe')
     p.add_argument('--probe-path',   default=None,
                    help='Save/load MLP probe (.pt).  Trained once, reused on subsequent runs.')
+    p.add_argument('--probe-type',   default='encoder',
+                   choices=['encoder', 'rollout'],
+                   help='encoder: probe trained on visual-encoder z values (default). '
+                        'rollout: probe trained on k-step predictor rollout z values '
+                        '— better calibrated for multi-step latent planning.')
+    p.add_argument('--probe-rollout-steps', type=int, default=3,
+                   help='Steps to roll predictor when --probe-type=rollout. '
+                        'Match your model\'s training horizon (e.g. 3 for ms_sr).')
     p.add_argument('--probe-episodes', type=int, default=200)
     p.add_argument('--probe-epochs',   type=int, default=30)
     p.add_argument('--device',       default='cuda')
@@ -511,10 +519,20 @@ def main():
                        weights_only=True))
         probe._net.eval()
     else:
-        print('[latent-iCEM] Fitting MLP probe …')
-        probe = fit_walker_mlp_probe(bundle, args.hdf5_dir,
-                                     max_episodes=args.probe_episodes,
-                                     n_epochs=args.probe_epochs)
+        if args.probe_type == 'rollout':
+            from experiments.walker2d_smwm_utils import fit_walker_rollout_probe
+            print(f'[latent-iCEM] Fitting rollout probe (k={args.probe_rollout_steps}) …')
+            probe = fit_walker_rollout_probe(
+                bundle, args.hdf5_dir,
+                rollout_steps=args.probe_rollout_steps,
+                max_episodes=args.probe_episodes,
+                n_epochs=args.probe_epochs,
+            )
+        else:
+            print('[latent-iCEM] Fitting encoder MLP probe …')
+            probe = fit_walker_mlp_probe(bundle, args.hdf5_dir,
+                                         max_episodes=args.probe_episodes,
+                                         n_epochs=args.probe_epochs)
         if args.probe_path:
             Path(args.probe_path).parent.mkdir(parents=True, exist_ok=True)
             torch.save(probe._net.state_dict(), args.probe_path)
