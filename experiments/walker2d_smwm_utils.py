@@ -302,9 +302,13 @@ def fit_walker_rollout_probe(
                                         mode='bilinear', align_corners=False)
                     obs_t = t_.permute(0, 2, 3, 1).byte().numpy()
 
-                for t in range(1, T - rollout_steps + 1):
+                for t in range(T - rollout_steps + 1):
+                    # At t=0 there is no prior frame; use current as prev (zero diff).
+                    # Including t=0 calibrates the probe for the episode-start encoding
+                    # that planning always begins from (prev_frame = current_frame).
+                    prev_obs = obs_t[t - 1] if t > 0 else obs_t[t]
                     # Encode from real observation at t
-                    z = encode_obs(bundle, obs_t[t], obs_t[t - 1], st_t[t])  # (1, D)
+                    z = encode_obs(bundle, obs_t[t], prev_obs, st_t[t])  # (1, D)
 
                     # Roll forward k steps with real actions
                     for k in range(rollout_steps):
