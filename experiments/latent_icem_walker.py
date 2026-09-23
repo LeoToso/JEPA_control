@@ -703,11 +703,13 @@ def main():
             planner._gt_init_mean        = None
             planner._gt_init_std_per_dim = None
 
-        # seed iCEM mean from SAC actions if requested (overrides GT mean)
+        # seed iCEM mean from SAC actions if requested
+        # Use _gt_init_mean (no shift) rather than _prev_mean (shifts by executed_steps),
+        # so the full SAC sequence is used as cold-start on the first plan call.
         if sac_warmstart_seq is not None:
-            planner._prev_mean = sac_warmstart_seq.copy()
-        else:
-            planner._prev_mean = None
+            planner._gt_init_mean = sac_warmstart_seq.copy()
+            planner._gt_init_std_per_dim = None
+        planner._prev_mean    = None
         planner._shift_elites = None
 
         row, frames = run_trial(
