@@ -304,9 +304,18 @@ class LatentWalkeriCEM:
 # ── MPC trial ─────────────────────────────────────────────────────────────────
 
 def run_trial(planner, eval_env, visual_env,
-              bundle, initial_seed, n_steps, do_render):
-    """MPC loop: plan in latent space, execute in real env, re-encode."""
-    from experiments.walker2d_smwm_utils import is_healthy_obs
+              bundle, initial_seed, n_steps, do_render,
+              z0_library=None):
+    """MPC loop: plan in latent space, execute in real env, re-encode.
+
+    z0_library : optional (z0s, actions) from precompute_z0_library.
+                 When provided, the nearest-neighbour training z_0 is used
+                 as start_z for CEM at every plan call (keeps the predictor
+                 in-distribution), while actions are still executed in the
+                 real env.  The NN episode's actions are also used as CEM
+                 warm-start mean.
+    """
+    from experiments.walker2d_smwm_utils import (is_healthy_obs, find_nn_z0)
     from experiments.sensorimotor_probe_utils import encode_obs, make_frame_buffer, push_frame
 
     # Reset both envs to the same initial state
@@ -327,7 +336,7 @@ def run_trial(planner, eval_env, visual_env,
         frame_buf = frame   # single frame; prev_frame used by use_frame_diff path
 
     # Initial encode
-    z = encode_obs(bundle, frame_buf, prev_frame, state)
+    z_eval = encode_obs(bundle, frame_buf, prev_frame, state)
 
     step        = 0
     x_vels      = []
@@ -335,7 +344,25 @@ def run_trial(planner, eval_env, visual_env,
     terminated  = False
 
     while step < n_steps and not terminated:
-        sequence = planner.plan(z)
+        if z0_library is not None:
+            # Substitute nearest-neighbour training z_0 so CEM stays in-distribution
+            z0s_lib, lib_actions = z0_library
+            z_np  = z_eval[0].cpu().numpy()
+            nn_i  = find_nn_z0(z_np, z0s_lib)
+            z_for_plan = torch.from_numpy(z0s_lib[nn_i]).float().unsqueeze(0).to(bundle['device'])
+            # Warm-start CEM with that episode's actions
+            H     = planner.horizon
+            acts  = lib_actions[nn_i]
+            if len(acts) >= H:
+                planner._gt_init_mean = acts[:H].copy()
+            else:
+                pad = np.zeros((H - len(acts), ACTION_DIM), dtype=np.float32)
+                planner._gt_init_mean = np.concatenate([acts, pad], axis=0)
+            planner._gt_init_std_per_dim = None
+        else:
+            z_for_plan = z_eval
+
+        sequence = planner.plan(z_for_plan)
 
         for a in sequence:
             if step >= n_steps or terminated:
@@ -357,7 +384,7 @@ def run_trial(planner, eval_env, visual_env,
 
         if not terminated:
             # Re-encode from updated observation
-            z = encode_obs(bundle, frame_buf, prev_frame, state)
+            z_eval = encode_obs(bundle, frame_buf, prev_frame, state)
 
     data         = eval_env.unwrapped.data
     final_height = float(data.qpos[1])
@@ -486,6 +513,12 @@ def main():
                         'Replaces z_height check (unreliable from probe).')
     p.add_argument('--debug-cost', type=int, default=0, metavar='N',
                    help='Print probe prediction stats for the first N batched_rollout_cost calls.')
+    p.add_argument('--nn-z0-warmstart', action='store_true',
+                   help='At each plan call substitute the nearest-neighbour training z_0 '
+                        'for start_z (keeps predictor in-distribution) and warm-start CEM '
+                        'with that episode\'s actions.')
+    p.add_argument('--nn-z0-episodes', type=int, default=200,
+                   help='Number of training episodes to pre-encode for NN z_0 lookup.')
     # warm-start
     p.add_argument('--sac-warmstart', action='store_true',
                    help='Seed first iCEM mean from a real SAC action sequence '
@@ -626,6 +659,13 @@ def main():
             print(f'  per-dim mean: {np.round(_gt_mean, 3).tolist()}')
             print(f'  per-dim std:  {np.round(_gt_std,  3).tolist()}')
 
+    # ── NN z_0 library ────────────────────────────────────────────────────────
+    z0_library = None
+    if args.nn_z0_warmstart:
+        from experiments.walker2d_smwm_utils import precompute_z0_library
+        z0_library = precompute_z0_library(bundle, args.hdf5_dir,
+                                           n_episodes=args.nn_z0_episodes)
+
     # ── build planner ─────────────────────────────────────────────────────────
     planner = LatentWalkeriCEM(
         horizon        = args.planning_horizon,
@@ -720,7 +760,8 @@ def main():
         row, frames = run_trial(
             planner, eval_env, visual_env,
             bundle, args.seed + i, args.n_steps,
-            bool(args.render_dir))
+            bool(args.render_dir),
+            z0_library=z0_library)
 
         elapsed = time.time() - t0
         success = row['survived_full'] and row['avg_x_velocity'] >= args.success_min_velocity

@@ -454,3 +454,49 @@ def decode_z(z: torch.Tensor, probe: RidgeStateProbe) -> np.ndarray:
     """Decode latent z (1, latent_dim) → gym obs (17,) via linear probe."""
     z_np = z[0].cpu().numpy() if torch.is_tensor(z) else np.asarray(z).ravel()
     return probe(z_np).astype(np.float32)
+
+
+@torch.no_grad()
+def precompute_z0_library(bundle: dict, hdf5_dir: str,
+                          n_episodes: int = 200,
+                          split: str = 'train') -> tuple:
+    """Pre-encode initial observations from training episodes.
+
+    Returns
+    -------
+    z0s      : np.ndarray  (N, D)  — initial latent states on CPU
+    actions  : list[np.ndarray]    — list of N (T, 6) action arrays
+    """
+    import h5py
+    from pathlib import Path as _Path
+
+    hdf5_path = _Path(hdf5_dir) / f'{split}.hdf5'
+    device = bundle['device']
+
+    z0s: list = []
+    ep_actions: list = []
+
+    with h5py.File(hdf5_path, 'r') as f:
+        ep_grp  = f['episodes']
+        ep_keys = sorted(ep_grp.keys(), key=lambda k: int(k))[:n_episodes]
+        for ep_key in ep_keys:
+            obs    = ep_grp[ep_key]['observations'][:]  # (T+1, H, W, 3)
+            states = ep_grp[ep_key]['states'][:]        # (T+1, 17)
+            acts   = ep_grp[ep_key]['actions'][:]       # (T, 6)
+
+            obs0   = obs[0].astype(np.uint8)
+            state0 = states[0].astype(np.float32)
+            # At t=0, prev_frame == current_frame (no prior frame available)
+            z0 = encode_obs(bundle, obs0, obs0, state0)  # (1, D)
+            z0s.append(z0[0].cpu().numpy())
+            ep_actions.append(acts.astype(np.float32))
+
+    print(f'[z0-library] encoded {len(z0s)} episodes from {split}.hdf5')
+    return np.stack(z0s), ep_actions  # (N, D), list[(T,6)]
+
+
+def find_nn_z0(z_query: np.ndarray, z0_library: np.ndarray) -> int:
+    """Return index of closest z in z0_library (L2 distance)."""
+    diffs = z0_library - z_query          # (N, D)
+    dists = (diffs * diffs).sum(axis=1)   # (N,)
+    return int(np.argmin(dists))
