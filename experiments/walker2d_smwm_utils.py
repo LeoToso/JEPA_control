@@ -308,10 +308,6 @@ def latent_step(bundle: dict, z: torch.Tensor,
     z      : (1, latent_dim) tensor on bundle device
     action : (6,) float32 in env units (will be normalised by action_scale)
     Returns: (1, latent_dim) tensor
-
-    NOTE: predict_one treats action.reshape(-1) as a batch of scalar actions,
-    which is wrong for 6-D Walker2D actions.  We call model directly with the
-    correct (1, 6) → (1, 1, ctx) action shape.
     """
     model = bundle['model']
     scale = bundle['action_scale']
@@ -321,6 +317,21 @@ def latent_step(bundle: dict, z: torch.Tensor,
                              device=z.device).unsqueeze(0)           # (1, 6)
     a_ctx = model.expand_action(a / scale).unsqueeze(1)             # (1, 1, ctx)
     return model.predict(z.unsqueeze(1), a_ctx)[:, 0]               # (1, D)
+
+
+@torch.no_grad()
+def latent_step_batch(bundle: dict, z_batch: torch.Tensor,
+                      a_batch: torch.Tensor) -> torch.Tensor:
+    """Batched latent prediction step for Walker2D.
+
+    z_batch : (N, latent_dim) tensor on bundle device
+    a_batch : (N, 6) tensor on bundle device, in env units
+    Returns : (N, latent_dim) tensor
+    """
+    model = bundle['model']
+    scale = bundle['action_scale']
+    a_ctx = model.expand_action(a_batch / scale).unsqueeze(1)       # (N, 1, ctx)
+    return model.predict(z_batch.unsqueeze(1), a_ctx)[:, 0]         # (N, D)
 
 
 def decode_z(z: torch.Tensor, probe: RidgeStateProbe) -> np.ndarray:
