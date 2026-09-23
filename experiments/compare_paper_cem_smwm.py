@@ -14,7 +14,8 @@ import torch
 import yaml
 
 from sensorimotor_probe_utils import make_env
-from cartpole_cem_utils import PaperLearnedCEM, encode_online, evaluate_trial, summarize
+from cartpole_cem_utils import (PaperLearnedCEM, encode_online, evaluate_trial,
+                                summarize, make_frame_buffer)
 from models.sensorimotor_world_model import SensorimotorWorldModel
 
 
@@ -124,8 +125,9 @@ def main():
         goal_state = np.zeros(4, dtype=np.float32)
         goal_env = make_env(cfg, args.seed + 999)
         goal_obs, _, _ = goal_env.reset_to_state(goal_state)
+        goal_buf = make_frame_buffer(model, goal_obs)
         z_goal = encode_online(
-            model, goal_obs, goal_obs, goal_state,
+            model, goal_buf, goal_obs, goal_state,
             state_mean, state_std, device)
         goal_env.close()
 
