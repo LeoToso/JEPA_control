@@ -570,14 +570,18 @@ def main():
     sac_warmstart_seq = None
     if args.sac_warmstart:
         import h5py, glob as _glob
+        # Prefer train.hdf5 (in-distribution actions); fall back to first file found
         hdf5_files = sorted(_glob.glob(str(Path(args.hdf5_dir) / '*.hdf5')))
+        train_file = Path(args.hdf5_dir) / 'train.hdf5'
+        if train_file.exists():
+            hdf5_files = [str(train_file)] + [f for f in hdf5_files if Path(f) != train_file]
         if not hdf5_files:
             print('[latent-iCEM] WARNING: no HDF5 files found, skipping warm-start')
         else:
             hf = h5py.File(hdf5_files[0], 'r')
             # structure: hdf5['episodes'][ep_key]['actions']
             ep_group = hf['episodes'] if 'episodes' in hf else hf
-            eps  = list(ep_group.keys())
+            eps  = sorted(ep_group.keys(), key=lambda k: int(k))
             ep   = eps[args.sac_warmstart_episode % len(eps)]
             acts = np.array(ep_group[ep]['actions'])     # (T, 6)
             hf.close()
@@ -588,7 +592,8 @@ def main():
                 pad = np.zeros((H - len(acts), ACTION_DIM), dtype=np.float32)
                 sac_warmstart_seq = np.concatenate([acts, pad], axis=0)
             print(f'[latent-iCEM] SAC warm-start from {Path(hdf5_files[0]).name} '
-                  f'ep={ep}  H={H}  act_mean={sac_warmstart_seq.mean():.3f}')
+                  f'ep={ep}  H={H}  act_mean={sac_warmstart_seq.mean():.3f}  '
+                  f'act_std={sac_warmstart_seq.std():.3f}')
 
     # ── GT iCEM warm-start ────────────────────────────────────────────────────
     gt_warmstart_seqs  = None   # list[np.ndarray (T_gt, 6)] — one per GT trial
