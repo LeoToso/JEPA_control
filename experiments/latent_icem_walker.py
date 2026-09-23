@@ -291,8 +291,14 @@ def run_trial(planner, eval_env, visual_env,
     planner._prev_mean    = None
     planner._shift_elites = None
 
-    # Rolling frame buffer — keeps the last frame_stack frames for the encoder
-    frame_buf = make_frame_buffer(bundle, frame)
+    # Build observation input for the encoder:
+    #   frame_stack > 1: rolling buffer of the last frame_stack frames
+    #   frame_stack == 1 (use_frame_diff): single frame; prev_frame carries history
+    _fs = int(bundle['model'].frame_stack)
+    if _fs > 1:
+        frame_buf = make_frame_buffer(bundle, frame)
+    else:
+        frame_buf = frame   # single frame; prev_frame used by use_frame_diff path
 
     # Initial encode
     z = encode_obs(bundle, frame_buf, prev_frame, state)
@@ -310,7 +316,10 @@ def run_trial(planner, eval_env, visual_env,
                 break
             prev_frame = frame.copy()
             frame, state, _, done, info = visual_env.step(a)
-            push_frame(frame_buf, frame)
+            if _fs > 1:
+                push_frame(frame_buf, frame)
+            else:
+                frame_buf = frame
             obs_gym, _, term_gym, trunc_gym, info_gym = eval_env.step(a)
             step += 1
             x_vels.append(float(info_gym.get('x_velocity', 0.0)))
@@ -321,7 +330,7 @@ def run_trial(planner, eval_env, visual_env,
                 break
 
         if not terminated:
-            # Re-encode from updated frame buffer
+            # Re-encode from updated observation
             z = encode_obs(bundle, frame_buf, prev_frame, state)
 
     data         = eval_env.unwrapped.data
