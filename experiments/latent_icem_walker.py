@@ -283,9 +283,9 @@ def run_trial(planner, eval_env, visual_env,
     from experiments.walker2d_smwm_utils import is_healthy_obs
     from experiments.sensorimotor_probe_utils import encode_obs
 
-    # Reset both envs to same initial state
+    # Reset both envs to the same initial state
     obs_gym, _ = eval_env.reset(seed=initial_seed)
-    frame, state, _ = visual_env.reset()
+    frame, state, _ = visual_env.reset(seed=initial_seed)
     prev_frame = frame.copy()
 
     planner._prev_mean    = None
