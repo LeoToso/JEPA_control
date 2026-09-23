@@ -36,9 +36,9 @@ MUJOCO_GL=egl python experiments/latent_icem_walker.py \\
     --beta 0.5 --initial-std 0.5 \\
     --keep-fraction 0.3 --shift-fraction 0.3 --sample-decay 1.25 \\
     --wx 0.2 --wh 4.0 --wu 1e-3 --cf 50.0 \\
-    --wang 1.5 --wz 3.0 --height-target 1.35 \\
+    --wang 1.5 --wz 0.0 --height-target 1.35 \\
     --wjoint 0.02 --wsmooth 0.05 \\
-    --healthy-z-min 1.0 \\
+    --healthy-angle-max 1.0 \\
     --render-dir results/latent_icem_fwd_ep_ar_frames \\
     --output results/latent_icem_fwd_ep_ar.json
 """
@@ -405,7 +405,9 @@ def main():
     p.add_argument('--wh',            type=float, default=4.0)
     p.add_argument('--wu',            type=float, default=1e-3)
     p.add_argument('--cf',            type=float, default=50.0)
-    p.add_argument('--wz',            type=float, default=3.0)
+    p.add_argument('--wz',            type=float, default=0.0,
+                   help='Height-deviation penalty weight; set 0 (default) because '
+                        'z_height probe R²≈−0.5 — use --wang instead')
     p.add_argument('--wang',          type=float, default=1.5)
     p.add_argument('--height-target', type=float, default=1.35)
     p.add_argument('--wjoint',        type=float, default=0.02)
@@ -416,7 +418,9 @@ def main():
                    help='Penalty for change in decoded posture between steps '
                         '(||posture_t - posture_{t-1}||²); use with --wx 0 to '
                         'drop velocity term and optimise for stable dynamics only')
-    p.add_argument('--healthy-z-min', type=float, default=1.0)
+    p.add_argument('--healthy-angle-max', type=float, default=1.0,
+                   help='Latent-rollout fall threshold: |torso_angle| > this → fallen. '
+                        'Replaces z_height check (unreliable from probe).')
     # warm-start
     p.add_argument('--sac-warmstart', action='store_true',
                    help='Seed first iCEM mean from a real SAC action sequence '
@@ -435,7 +439,7 @@ def main():
 
     # ── override health bound ─────────────────────────────────────────────────
     import experiments.walker2d_smwm_utils as _wu
-    _wu.HEALTHY_Z_MIN = args.healthy_z_min
+    _wu.HEALTHY_ANG_MAX = args.healthy_angle_max
 
     np.random.seed(args.seed)
 
@@ -546,7 +550,7 @@ def main():
     print(f'  cost: wx={args.wx}  wh={args.wh}  wu={args.wu}  cf={args.cf}  '
           f'wz={args.wz}  wang={args.wang}  h*={args.height_target}  '
           f'wback={args.wback}  wstability={args.wstability}')
-    print(f'  healthy z > {args.healthy_z_min}')
+    print(f'  fall criterion: |torso_angle| > {args.healthy_angle_max}')
 
     trials_data  = []
     frames_list  = []
@@ -635,7 +639,7 @@ def main():
             'wz': args.wz, 'wang': args.wang, 'height_target': args.height_target,
             'wjoint': args.wjoint, 'wsmooth': args.wsmooth,
             'wback': args.wback, 'wstability': args.wstability,
-            'healthy_z_min':    args.healthy_z_min,
+            'healthy_angle_max': args.healthy_angle_max,
             'success_min_vel':  args.success_min_velocity,
             'seed':             args.seed,
             'n_trials':         args.trials,

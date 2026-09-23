@@ -36,9 +36,9 @@ ACTION_DIM = 6
 QPOS_DIM   = 9
 QVEL_DIM   = 9
 
-HEALTHY_Z_MIN   = 0.8
+HEALTHY_Z_MIN   = 0.8    # used by gt_icem (real physics); ignored in latent planner
 HEALTHY_Z_MAX   = 2.0
-HEALTHY_ANG_MAX = 1.0
+HEALTHY_ANG_MAX = 1.0    # primary fall criterion for latent planner
 
 
 # ── bundle loader ─────────────────────────────────────────────────────────────
@@ -108,10 +108,13 @@ def mj_state_to_gym_obs(qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:
 
 
 def is_healthy_obs(obs17: np.ndarray) -> bool:
-    """Health check from gym obs (no physics needed)."""
-    z   = float(obs17[0])   # qpos[1]
-    ang = float(obs17[1])   # qpos[2]
-    return HEALTHY_Z_MIN < z < HEALTHY_Z_MAX and abs(ang) < HEALTHY_ANG_MAX
+    """Health check from decoded obs (latent planner).
+
+    z_height (obs[0]) is not used: probe R² for that dimension is unreliable.
+    Fall is detected via torso tilt angle alone (R² ≈ 0.94).
+    """
+    ang = float(obs17[1])   # qpos[2]  — torso tilt angle
+    return abs(ang) < HEALTHY_ANG_MAX
 
 
 # ── MLP state probe ───────────────────────────────────────────────────────────
