@@ -70,6 +70,13 @@ HEALTHY_ANG_MAX = 1.0
 # ── batched latent rollout cost ────────────────────────────────────────────────
 
 @torch.no_grad()
+_DEBUG_COST_REMAINING = 0   # module-level counter; set via set_debug_cost_calls()
+
+def set_debug_cost_calls(n: int):
+    global _DEBUG_COST_REMAINING
+    _DEBUG_COST_REMAINING = n
+
+
 def batched_rollout_cost(
     bundle, probe_net, start_z: torch.Tensor,
     actions: np.ndarray,
@@ -106,6 +113,11 @@ def batched_rollout_cost(
     a_prev       = torch.zeros(N, ACTION_DIM, dtype=z.dtype, device=device)
     prev_posture = None
 
+    global _DEBUG_COST_REMAINING
+    _dbg = _DEBUG_COST_REMAINING > 0
+    if _dbg:
+        _DEBUG_COST_REMAINING -= 1
+
     for t in range(H):
         a     = acts[:, t]                                         # (N, 6)
 
@@ -115,6 +127,15 @@ def batched_rollout_cost(
         # kill every trajectory before action-dependent signal can form.
         z     = latent_step_batch(bundle, z, a)                   # z_{t+1}
         x_hat = probe_net(z)                                       # (N, 17) on device
+
+        if _dbg and t < 3:
+            xv = x_hat[:, 8]
+            ag = x_hat[:, 1]
+            frac_alive_pred = (ag.abs() < healthy_ang_max).float().mean().item()
+            print(f'  [dbg t={t}] xvel pred: mean={xv.mean():.3f} std={xv.std():.3f} '
+                  f'min={xv.min():.3f} max={xv.max():.3f}  '
+                  f'ang mean={ag.mean():.3f} std={ag.std():.3f}  '
+                  f'pred_alive={frac_alive_pred:.3f}')
 
         # Fall detection — update alive before accumulating reward
         alive = alive & (x_hat[:, 1].abs() < healthy_ang_max)
@@ -463,6 +484,8 @@ def main():
     p.add_argument('--healthy-angle-max', type=float, default=1.0,
                    help='Latent-rollout fall threshold: |torso_angle| > this → fallen. '
                         'Replaces z_height check (unreliable from probe).')
+    p.add_argument('--debug-cost', type=int, default=0, metavar='N',
+                   help='Print probe prediction stats for the first N batched_rollout_cost calls.')
     # warm-start
     p.add_argument('--sac-warmstart', action='store_true',
                    help='Seed first iCEM mean from a real SAC action sequence '
@@ -625,6 +648,9 @@ def main():
         wstability     = args.wstability,
         execute_best   = not args.no_execute_best,
     )
+
+    if args.debug_cost > 0:
+        set_debug_cost_calls(args.debug_cost)
 
     # ── environments ──────────────────────────────────────────────────────────
     import gymnasium as gym
