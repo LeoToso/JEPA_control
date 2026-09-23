@@ -225,6 +225,16 @@ def fit_walker_mlp_probe(
         Y_np  = Y.numpy()
         r2 = float(1 - np.mean((Y_hat - Y_np) ** 2) / np.var(Y_np))
     print(f'[mlp-probe] train R²={r2:.4f}')
+
+    # Per-dimension R² (iCEM-critical dims starred)
+    _LABELS = ['z_h','ang','kL','aL','hR','kR','aR','fR',
+               'xvel','zvel','ang_v','kL_v','aL_v','hR_v','kR_v','aR_v','fR_v']
+    _CRIT   = {0,1,2,3,4,5,6,7,8}
+    ss_res  = ((Y_hat - Y_np) ** 2).sum(axis=0)
+    ss_tot  = ((Y_np - Y_np.mean(axis=0)) ** 2).sum(axis=0)
+    r2_per  = 1.0 - ss_res / np.maximum(ss_tot, 1e-12)
+    parts   = [f'{l}={v:.3f}{"★" if i in _CRIT else ""}' for i,(l,v) in enumerate(zip(_LABELS, r2_per))]
+    print('[mlp-probe] per-dim R²: ' + '  '.join(parts))
     return probe
 
 
