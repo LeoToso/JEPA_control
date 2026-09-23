@@ -281,7 +281,7 @@ def run_trial(planner, eval_env, visual_env,
               bundle, initial_seed, n_steps, do_render):
     """MPC loop: plan in latent space, execute in real env, re-encode."""
     from experiments.walker2d_smwm_utils import is_healthy_obs
-    from experiments.sensorimotor_probe_utils import encode_obs
+    from experiments.sensorimotor_probe_utils import encode_obs, make_frame_buffer, push_frame
 
     # Reset both envs to the same initial state
     obs_gym, _ = eval_env.reset(seed=initial_seed)
@@ -291,8 +291,11 @@ def run_trial(planner, eval_env, visual_env,
     planner._prev_mean    = None
     planner._shift_elites = None
 
+    # Rolling frame buffer — keeps the last frame_stack frames for the encoder
+    frame_buf = make_frame_buffer(bundle, frame)
+
     # Initial encode
-    z = encode_obs(bundle, frame, prev_frame, state)
+    z = encode_obs(bundle, frame_buf, prev_frame, state)
 
     step        = 0
     x_vels      = []
@@ -307,6 +310,7 @@ def run_trial(planner, eval_env, visual_env,
                 break
             prev_frame = frame.copy()
             frame, state, _, done, info = visual_env.step(a)
+            push_frame(frame_buf, frame)
             obs_gym, _, term_gym, trunc_gym, info_gym = eval_env.step(a)
             step += 1
             x_vels.append(float(info_gym.get('x_velocity', 0.0)))
@@ -317,8 +321,8 @@ def run_trial(planner, eval_env, visual_env,
                 break
 
         if not terminated:
-            # Re-encode from new real observation
-            z = encode_obs(bundle, frame, prev_frame, state)
+            # Re-encode from updated frame buffer
+            z = encode_obs(bundle, frame_buf, prev_frame, state)
 
     data         = eval_env.unwrapped.data
     final_height = float(data.qpos[1])
