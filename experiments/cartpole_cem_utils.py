@@ -23,12 +23,39 @@ def _obs_t(obs, device):
             .permute(2, 0, 1).unsqueeze(0).to(device) / 255.)
 
 
+def _build_obs_input(model, obs, prev_obs, device):
+    """Return the observation tensor the encoder expects.
+
+    frame_stack > 1: obs may be a list of frame_stack HxWxC arrays (oldest
+                     first).  A bare array is repeated frame_stack times
+                     (correct for goal / init encoding).
+    use_frame_diff:  single obs + prev_obs handled downstream in model.encode.
+    """
+    fs = int(model.frame_stack)
+    if fs > 1:
+        frames = list(obs) if isinstance(obs, (list, tuple)) else [obs] * fs
+        return torch.cat([_obs_t(f, device) for f in frames], dim=1)
+    return _obs_t(obs, device)
+
+
+def make_frame_buffer(model, initial_obs):
+    """Return a list of frame_stack copies of initial_obs (oldest first)."""
+    return [initial_obs] * int(model.frame_stack)
+
+
+def push_frame(frame_buffer, new_obs):
+    """Append new_obs and drop the oldest frame in-place."""
+    frame_buffer.pop(0)
+    frame_buffer.append(new_obs)
+
+
 # ── encoding ──────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
 def encode_online(model, obs, prev_obs, state, state_mean, state_std, device):
     """Encode a single (obs, prev_obs, state) triple without a bundle dict.
 
+    obs may be a list of frame_stack arrays when model.frame_stack > 1.
     Works for both use_proprio=True and use_proprio=False checkpoints.
     """
     proprio = None
@@ -38,7 +65,10 @@ def encode_online(model, obs, prev_obs, state, state_mean, state_std, device):
             norm = norm[model.proprio_indices]
         proprio = torch.as_tensor(norm, dtype=torch.float32,
                                   device=device).reshape(1, -1)
-    return model.encode(_obs_t(obs, device), _obs_t(prev_obs, device), proprio)
+    obs_in  = _build_obs_input(model, obs, prev_obs, device)
+    prev_in = (_obs_t(prev_obs, device)
+               if model.use_frame_diff and model.frame_stack == 1 else None)
+    return model.encode(obs_in, prev_in, proprio)
 
 
 # ── CEM planner ───────────────────────────────────────────────────────────────
@@ -108,7 +138,7 @@ def evaluate_trial(env, planner, model, initial_state, goal_state, z_goal,
     budget, matching the original implementation on the reference branch.
     """
     obs, state, _ = env.reset_to_state(initial_state)
-    prev_obs = obs
+    frame_buf = make_frame_buffer(model, obs)
     frame_skip = int(env.frame_skip)
     macro_budget = int(np.ceil(primitive_budget / frame_skip))
 
@@ -119,16 +149,15 @@ def evaluate_trial(env, planner, model, initial_state, goal_state, z_goal,
     replans = 0
 
     while len(actions) < macro_budget and not terminated:
-        z = encode_online(model, obs, prev_obs, state,
+        z = encode_online(model, frame_buf, obs, state,
                           state_mean, state_std, device)
         latent_goal_errors.append(float(torch.linalg.vector_norm(z - z_goal)))
         sequence = planner.plan_sequence(z, z_goal)
         replans += 1
         remaining = macro_budget - len(actions)
         for action in sequence[:remaining]:
-            old_obs = obs
             obs, state, _, done, _ = env.step(float(action))
-            prev_obs = old_obs
+            push_frame(frame_buf, obs)
             actions.append(float(action))
             states.append(state.copy())
             if done:
@@ -136,7 +165,7 @@ def evaluate_trial(env, planner, model, initial_state, goal_state, z_goal,
                 break
 
     # Record terminal latent distance.
-    z_final = encode_online(model, obs, prev_obs, state,
+    z_final = encode_online(model, frame_buf, obs, state,
                             state_mean, state_std, device)
     latent_goal_errors.append(float(torch.linalg.vector_norm(z_final - z_goal)))
 
