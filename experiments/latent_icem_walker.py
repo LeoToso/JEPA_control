@@ -197,10 +197,15 @@ class LatentWalkeriCEM:
         self.wback          = float(wback)
         self.wstability     = float(wstability)
         self.execute_best   = bool(execute_best)
-        self._prev_mean    = None
-        self._shift_elites = None
+        self._prev_mean     = None
+        self._shift_elites  = None
+        # GT warm-start: set externally before each trial
+        self._gt_init_mean        = None   # (H, 6) default mean at plan() cold-start
+        self._gt_init_std_per_dim = None   # (6,)   replaces initial_std when set
 
     def _init_std(self):
+        if self._gt_init_std_per_dim is not None:
+            return np.tile(self._gt_init_std_per_dim, (self.horizon, 1))  # (H, 6)
         return np.full((self.horizon, ACTION_DIM), self.initial_std)
 
     def _shift_seq(self, seq):
@@ -213,8 +218,12 @@ class LatentWalkeriCEM:
 
     def plan(self, start_z: torch.Tensor) -> np.ndarray:
         """Run iCEM from latent state start_z; return (executed_steps, 6) actions."""
-        mean = self._shift_seq(self._prev_mean) if self._prev_mean is not None \
-               else np.zeros((self.horizon, ACTION_DIM))
+        if self._prev_mean is not None:
+            mean = self._shift_seq(self._prev_mean)
+        elif self._gt_init_mean is not None:
+            mean = self._gt_init_mean.copy()
+        else:
+            mean = np.zeros((self.horizon, ACTION_DIM))
         std          = self._init_std()
         best_cost    = np.inf
         best_seq     = mean.copy()
@@ -434,6 +443,16 @@ def main():
                         'from the HDF5 dataset (avoids cold-start in random space)')
     p.add_argument('--sac-warmstart-episode', type=int, default=0,
                    help='Which HDF5 episode to take SAC actions from')
+    # GT iCEM warm-start
+    p.add_argument('--gt-warmstart', default=None, metavar='GT_JSON',
+                   help='Path to GT iCEM JSON (must contain trials[].actions). '
+                        'Initialises the CEM distribution from real controller actions.')
+    p.add_argument('--gt-warmstart-mode', default='distribution',
+                   choices=['distribution', 'per_trial'],
+                   help='distribution: tile per-dim mean over H for all trials.  '
+                        'per_trial: use GT trial i\'s first H actions as mean for trial i.')
+    p.add_argument('--gt-warmstart-use-std', action='store_true',
+                   help='Also replace initial sampling std with per-dim std of GT actions.')
     # success
     p.add_argument('--success-min-velocity', type=float, default=0.5)
     # output
@@ -512,6 +531,37 @@ def main():
             print(f'[latent-iCEM] SAC warm-start from {Path(hdf5_files[0]).name} '
                   f'ep={ep}  H={H}  act_mean={sac_warmstart_seq.mean():.3f}')
 
+    # ── GT iCEM warm-start ────────────────────────────────────────────────────
+    gt_warmstart_seqs  = None   # list[np.ndarray (T_gt, 6)] — one per GT trial
+    gt_warmstart_mean  = None   # (H, 6) tiled mean for 'distribution' mode
+    gt_warmstart_std   = None   # (6,)   per-dim std for 'distribution' mode
+    if args.gt_warmstart:
+        with open(args.gt_warmstart) as _f:
+            _gt = json.load(_f)
+        _gt_trials = _gt.get('trials', [])
+        if not _gt_trials:
+            print('[latent-iCEM] WARNING: gt_warmstart JSON has no trials, skipping')
+        elif 'actions' not in _gt_trials[0]:
+            print('[latent-iCEM] WARNING: GT trials have no "actions" key — '
+                  're-run gt_icem_walker.py to regenerate with actions saved')
+        else:
+            gt_warmstart_seqs = [
+                np.array(t['actions'], dtype=np.float32) for t in _gt_trials
+            ]
+            # Per-dim statistics across all GT actions (all trials, all timesteps)
+            _all_acts = np.concatenate(gt_warmstart_seqs, axis=0)  # (N_total, 6)
+            _gt_mean  = _all_acts.mean(axis=0)                     # (6,)
+            _gt_std   = _all_acts.std(axis=0).clip(min=1e-4)       # (6,)
+            H = args.planning_horizon
+            gt_warmstart_mean = np.tile(_gt_mean, (H, 1))          # (H, 6)
+            gt_warmstart_std  = _gt_std
+            print(f'[latent-iCEM] GT warm-start from {args.gt_warmstart}  '
+                  f'mode={args.gt_warmstart_mode}  '
+                  f'n_gt_trials={len(gt_warmstart_seqs)}  '
+                  f'N_actions={len(_all_acts)}')
+            print(f'  per-dim mean: {np.round(_gt_mean, 3).tolist()}')
+            print(f'  per-dim std:  {np.round(_gt_std,  3).tolist()}')
+
     # ── build planner ─────────────────────────────────────────────────────────
     planner = LatentWalkeriCEM(
         horizon        = args.planning_horizon,
@@ -570,7 +620,28 @@ def main():
         print(f'[trial {i:03d}] ', end='', flush=True)
         t0 = time.time()
 
-        # seed iCEM mean from SAC actions if requested
+        # Initialise GT warm-start distribution on planner
+        if gt_warmstart_mean is not None:
+            if args.gt_warmstart_mode == 'per_trial' and gt_warmstart_seqs is not None:
+                _seq = gt_warmstart_seqs[i % len(gt_warmstart_seqs)]
+                H    = args.planning_horizon
+                if len(_seq) >= H:
+                    planner._gt_init_mean = _seq[:H].copy()
+                else:
+                    pad = np.zeros((H - len(_seq), ACTION_DIM), dtype=np.float32)
+                    planner._gt_init_mean = np.concatenate([_seq, pad], axis=0)
+            else:
+                # 'distribution' mode: same tiled mean for every trial
+                planner._gt_init_mean = gt_warmstart_mean.copy()
+            if args.gt_warmstart_use_std and gt_warmstart_std is not None:
+                planner._gt_init_std_per_dim = gt_warmstart_std.copy()
+            else:
+                planner._gt_init_std_per_dim = None
+        else:
+            planner._gt_init_mean        = None
+            planner._gt_init_std_per_dim = None
+
+        # seed iCEM mean from SAC actions if requested (overrides GT mean)
         if sac_warmstart_seq is not None:
             planner._prev_mean = sac_warmstart_seq.copy()
         else:
@@ -649,6 +720,9 @@ def main():
             'wjoint': args.wjoint, 'wsmooth': args.wsmooth,
             'wback': args.wback, 'wstability': args.wstability,
             'healthy_angle_max': args.healthy_angle_max,
+            'gt_warmstart':      args.gt_warmstart,
+            'gt_warmstart_mode': args.gt_warmstart_mode,
+            'gt_warmstart_use_std': args.gt_warmstart_use_std,
             'success_min_vel':  args.success_min_velocity,
             'seed':             args.seed,
             'n_trials':         args.trials,
