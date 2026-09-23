@@ -108,6 +108,12 @@ def batched_rollout_cost(
 
     for t in range(H):
         a     = acts[:, t]                                         # (N, 6)
+
+        # Step first so we always evaluate predictor outputs (not encoder z).
+        # The rollout probe is calibrated for predictor-output z values; applying
+        # it to the encoder z (which is identical for all N samples at t=0) would
+        # kill every trajectory before action-dependent signal can form.
+        z     = latent_step_batch(bundle, z, a)                   # z_{t+1}
         x_hat = probe_net(z)                                       # (N, 17) on device
 
         # Fall detection — update alive before accumulating reward
@@ -136,7 +142,6 @@ def batched_rollout_cost(
 
         a_prev       = a
         prev_posture = posture if wstability > 0.0 else None
-        z            = latent_step_batch(bundle, z, a)
 
     return (-dense_reward + cf * (H - t_alive)).cpu().numpy()
 
