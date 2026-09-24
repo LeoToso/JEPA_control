@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Compare GT and model-decoded limit cycles on the right-hip phase portrait.
 
-Figure: 3 panels (GT | 1SP+EP-IDM | MSP+SIG).
+Figure: 4 panels (GT | 1SP+EP-IDM | 1SP+SIG | MSP+SIG).
 Each model panel shows the model's decoded orbit in colour with the GT orbit
 overlaid in light grey as a reference.
 
@@ -19,13 +19,23 @@ Pipeline per model
 Usage
 -----
 MUJOCO_GL=egl python experiments/plot_model_limit_cycle_sac.py \\
-    --fwd-ar-ckpt /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
-    --fwd-ar-cfg  configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
-    --ms-sr-ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_sigreg_rollout_act1_seed42/model_final.pt \\
-    --ms-sr-cfg   configs/walker2d_smwm_sigreg_rollout_act1.yaml \\
-    --hdf5-dir    data/walker2d_mixed_sac_fs5_64 \\
-    --sac-repo    sdpkjc/Walker2d-v4-sac_continuous_action-seed4 \\
-    --n-episodes  8 --n-steps 600 --warmup 150 \\
+    --fwd-ar-ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
+    --fwd-ar-cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --sig-fwd-ckpt /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_sigreg_fwd_act1_seed42/model_final.pt \\
+    --sig-fwd-cfg  configs/walker2d_smwm_sigreg_fwd_act1.yaml \\
+    --ms-sr-ckpt   /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_sigreg_rollout_act1_seed42/model_final.pt \\
+    --ms-sr-cfg    configs/walker2d_smwm_sigreg_rollout_act1.yaml \\
+    --hdf5-dir     data/walker2d_mixed_sac_fs5_64 \\
+    --sac-repo     sdpkjc/Walker2d-v4-sac_continuous_action-seed4 \\
+    --n-episodes   8 --n-steps 600 --warmup 150 \\
+    --fwd-probe-path  results/probes/fwd_ep_ar_mlp_probe.pt \\
+    --sig-fwd-probe-path results/probes/sig_fwd_mlp_probe.pt \\
+    --ms-probe-path   results/probes/ms_sr_mlp_probe.pt \\
+    --gt-cache    results/cache/gt_trajs.npz \\
+    --fwd-cache   results/cache/fwd_trajs.npz \\
+    --sig-fwd-cache results/cache/sig_fwd_trajs.npz \\
+    --ms-cache    results/cache/ms_trajs.npz \\
+    --fwd-show 2 --sig-fwd-show 2 --ms-show 2 --ms-steps 100 \\
     --out         results/model_limit_cycle_sac.pdf
 """
 from __future__ import annotations
@@ -59,9 +69,10 @@ TICK_SIZE   = 13
 TITLE_SIZE  = 16
 LINEWIDTH   = 1.4
 
-GT_CMAP     = 'Greens'    # GT → green
-FWD_CMAP    = 'Oranges'   # IDM → orange
-MS_CMAP     = 'Blues'     # SIG → blue
+GT_CMAP      = 'Greens'    # GT → green
+FWD_CMAP     = 'Oranges'   # 1SP+EP-IDM → orange
+SIG_FWD_CMAP = 'Purples'   # 1SP+SIG → purple
+MS_CMAP      = 'Blues'     # MSP+SIG → blue
 GT_REF_COLOR = '#aaaaaa'   # light grey GT reference in model panels
 
 IDX_RIGHT_HIP_ANG = 2
@@ -197,40 +208,51 @@ def _style(ax, xlabel, ylabel, title=None):
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument('--fwd-ar-ckpt', required=True)
-    p.add_argument('--fwd-ar-cfg',  default=None)
-    p.add_argument('--ms-sr-ckpt',  required=True)
-    p.add_argument('--ms-sr-cfg',   default=None)
-    p.add_argument('--hdf5-dir',    required=True)
+    p.add_argument('--fwd-ar-ckpt',  required=True)
+    p.add_argument('--fwd-ar-cfg',   default=None)
+    p.add_argument('--sig-fwd-ckpt', default=None,
+                   help='1SP+SIG checkpoint (sigreg_fwd); omit to skip that panel')
+    p.add_argument('--sig-fwd-cfg',  default=None)
+    p.add_argument('--ms-sr-ckpt',   required=True)
+    p.add_argument('--ms-sr-cfg',    default=None)
+    p.add_argument('--hdf5-dir',     required=True)
     p.add_argument('--sac-repo',
                    default='sdpkjc/Walker2d-v4-sac_continuous_action-seed4')
-    p.add_argument('--sac-ckpt',    default=None)
-    p.add_argument('--device',      default='cuda')
-    p.add_argument('--n-episodes',  type=int, default=8)
-    p.add_argument('--n-steps',     type=int, default=600)
-    p.add_argument('--warmup',      type=int, default=150)
+    p.add_argument('--sac-ckpt',     default=None)
+    p.add_argument('--device',       default='cuda')
+    p.add_argument('--n-episodes',   type=int, default=8)
+    p.add_argument('--n-steps',      type=int, default=600)
+    p.add_argument('--warmup',       type=int, default=150)
     p.add_argument('--probe-episodes', type=int, default=200,
                    help='Max HDF5 episodes used to fit MLP probes')
     p.add_argument('--probe-epochs',   type=int, default=30)
-    p.add_argument('--fwd-probe-path', default=None,
+    p.add_argument('--fwd-probe-path',     default=None,
                    help='Path to save/load 1SP+EP-IDM MLP probe (.pt)')
-    p.add_argument('--ms-probe-path',  default=None,
+    p.add_argument('--sig-fwd-probe-path', default=None,
+                   help='Path to save/load 1SP+SIG MLP probe (.pt)')
+    p.add_argument('--ms-probe-path',      default=None,
                    help='Path to save/load MSP+SIG MLP probe (.pt)')
-    p.add_argument('--gt-cache',   default=None,
+    p.add_argument('--gt-cache',      default=None,
                    help='Path to save/load GT trajectories (.npz)')
-    p.add_argument('--fwd-cache',  default=None,
+    p.add_argument('--fwd-cache',     default=None,
                    help='Path to save/load 1SP+EP-IDM trajectories (.npz)')
-    p.add_argument('--ms-cache',   default=None,
+    p.add_argument('--sig-fwd-cache', default=None,
+                   help='Path to save/load 1SP+SIG trajectories (.npz)')
+    p.add_argument('--ms-cache',      default=None,
                    help='Path to save/load MSP+SIG trajectories (.npz)')
-    p.add_argument('--seed',        type=int, default=0)
-    p.add_argument('--image-size',  type=int, default=64)
-    p.add_argument('--fwd-show',    type=int, default=3,
+    p.add_argument('--seed',          type=int, default=0)
+    p.add_argument('--image-size',    type=int, default=64)
+    p.add_argument('--fwd-show',      type=int, default=3,
                    help='Max converging 1SP+EP-IDM episodes to plot')
-    p.add_argument('--ms-show',     type=int, default=1,
+    p.add_argument('--sig-fwd-show',  type=int, default=3,
+                   help='Max converging 1SP+SIG episodes to plot')
+    p.add_argument('--sig-fwd-steps', type=int, default=None,
+                   help='Truncate each 1SP+SIG trajectory to first N steps')
+    p.add_argument('--ms-show',       type=int, default=1,
                    help='Number of MSP+SIG episodes to plot (first N)')
-    p.add_argument('--ms-steps',    type=int, default=None,
+    p.add_argument('--ms-steps',      type=int, default=None,
                    help='Truncate each MSP+SIG trajectory to first N steps')
-    p.add_argument('--out',         default='results/model_limit_cycle_sac.pdf')
+    p.add_argument('--out',           default='results/model_limit_cycle_sac.pdf')
     args = p.parse_args()
 
     # ── trajectory cache helpers ──────────────────────────────────────────────
@@ -276,6 +298,12 @@ def main():
     fwd_bundle = load_walker_bundle(args.fwd_ar_ckpt,
                                     _cfg(args.fwd_ar_ckpt, args.fwd_ar_cfg),
                                     args.device)
+    sig_fwd_bundle = None
+    if args.sig_fwd_ckpt:
+        print('\n=== Load 1SP+SIG bundle ===')
+        sig_fwd_bundle = load_walker_bundle(args.sig_fwd_ckpt,
+                                            _cfg(args.sig_fwd_ckpt, args.sig_fwd_cfg),
+                                            args.device)
     print('\n=== Load MSP+SIG bundle ===')
     ms_bundle  = load_walker_bundle(args.ms_sr_ckpt,
                                     _cfg(args.ms_sr_ckpt, args.ms_sr_cfg),
@@ -303,8 +331,10 @@ def main():
             print(f'[probe] saved → {save_path}')
         return probe
 
-    fwd_probe = _get_probe(fwd_bundle, '1SP+EP-IDM', args.fwd_probe_path)
-    ms_probe  = _get_probe(ms_bundle,  'MSP+SIG',    args.ms_probe_path)
+    fwd_probe     = _get_probe(fwd_bundle, '1SP+EP-IDM', args.fwd_probe_path)
+    sig_fwd_probe = (_get_probe(sig_fwd_bundle, '1SP+SIG', args.sig_fwd_probe_path)
+                     if sig_fwd_bundle is not None else None)
+    ms_probe      = _get_probe(ms_bundle,  'MSP+SIG',    args.ms_probe_path)
 
     # ── model latent rollouts ─────────────────────────────────────────────────
     if args.fwd_cache and Path(args.fwd_cache).exists():
@@ -317,6 +347,18 @@ def main():
         if args.fwd_cache:
             _save_trajs(args.fwd_cache, fwd_trajs)
 
+    sig_fwd_trajs = []
+    if sig_fwd_bundle is not None:
+        if args.sig_fwd_cache and Path(args.sig_fwd_cache).exists():
+            sig_fwd_trajs = _load_trajs(args.sig_fwd_cache)
+        else:
+            print('\n=== Latent rollout: 1SP+SIG ===')
+            sig_fwd_trajs = collect_model_trajs(sig_fwd_bundle, sig_fwd_probe, policy,
+                                                args.n_episodes, args.n_steps,
+                                                args.warmup, args.seed, args.image_size)
+            if args.sig_fwd_cache:
+                _save_trajs(args.sig_fwd_cache, sig_fwd_trajs)
+
     if args.ms_cache and Path(args.ms_cache).exists():
         ms_trajs = _load_trajs(args.ms_cache)
     else:
@@ -327,43 +369,69 @@ def main():
         if args.ms_cache:
             _save_trajs(args.ms_cache, ms_trajs)
 
-    fwd_xys = _phase_xy(fwd_trajs)
-    ms_xys  = _phase_xy(ms_trajs)
+    fwd_xys     = _phase_xy(fwd_trajs)
+    sig_fwd_xys = _phase_xy(sig_fwd_trajs)
+    ms_xys      = _phase_xy(ms_trajs)
 
-    # ── classify 1SP trajectories: escaping vs converging ────────────────────
-    gt_bbox    = _gt_bbox(gt_xys)
+    # ── classify converging vs escaping trajectories ─────────────────────────
+    gt_bbox = _gt_bbox(gt_xys)
+
     fwd_escape = [xy for xy in fwd_xys if     _escapes_bbox(xy, gt_bbox)]
     fwd_stay   = [xy for xy in fwd_xys if not _escapes_bbox(xy, gt_bbox)]
-    print(f'[1SP] {len(fwd_escape)} escaping / {len(fwd_stay)} converging '
+    print(f'[1SP+EP-IDM] {len(fwd_escape)} escaping / {len(fwd_stay)} converging '
           f'(GT bbox margin=15%)')
-    fwd_stay = fwd_stay[:args.fwd_show]   # cap to --fwd-show
+    fwd_stay = fwd_stay[:args.fwd_show]
+
+    sig_fwd_escape = [xy for xy in sig_fwd_xys if     _escapes_bbox(xy, gt_bbox)]
+    sig_fwd_stay   = [xy for xy in sig_fwd_xys if not _escapes_bbox(xy, gt_bbox)]
+    if sig_fwd_xys:
+        print(f'[1SP+SIG]    {len(sig_fwd_escape)} escaping / {len(sig_fwd_stay)} converging '
+              f'(GT bbox margin=15%)')
+    sig_fwd_stay = sig_fwd_stay[:args.sig_fwd_show]
 
     # ── figure ────────────────────────────────────────────────────────────────
     XLABEL = r'Right hip $\theta$ (rad)'
     YLABEL = r'Right hip $\dot{\theta}$ (rad/s)'
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+    n_panels = 3 + (1 if sig_fwd_bundle is not None else 0)
+    fig_width = 4.8 * n_panels
+    fig, axes = plt.subplots(1, n_panels, figsize=(fig_width, 4.5))
+
+    ax_idx = 0
 
     # Panel 0: GT — time-coloured line orbits
     for xy in gt_xys:
-        _add_orbit(axes[0], xy, GT_CMAP)
-    _autolim(axes[0], *gt_xys)
-    _style(axes[0], XLABEL, YLABEL, 'GT')
+        _add_orbit(axes[ax_idx], xy, GT_CMAP)
+    _autolim(axes[ax_idx], *gt_xys)
+    _style(axes[ax_idx], XLABEL, YLABEL, 'GT')
+    ax_idx += 1
 
-    # Panel 1: 1SP+EP-IDM — converging trajectories only, line orbits
+    # Panel 1: 1SP+EP-IDM — converging trajectories only
     for xy in fwd_stay:
-        _add_orbit(axes[1], xy, FWD_CMAP)
-    _autolim(axes[1], *(gt_xys + fwd_stay)) if fwd_stay else _autolim(axes[1], *gt_xys)
-    _style(axes[1], XLABEL, YLABEL, '1SP+EP-IDM')
+        _add_orbit(axes[ax_idx], xy, FWD_CMAP)
+    _autolim(axes[ax_idx], *(gt_xys + fwd_stay)) if fwd_stay else _autolim(axes[ax_idx], *gt_xys)
+    _style(axes[ax_idx], XLABEL, YLABEL, '1SP+EP-IDM')
+    ax_idx += 1
 
-    # Panel 2: MSP+SIG — line orbits, first ms_show episodes, truncated to ms_steps
+    # Panel 2 (optional): 1SP+SIG — converging trajectories only
+    if sig_fwd_bundle is not None:
+        sig_few = sig_fwd_stay
+        if args.sig_fwd_steps is not None:
+            sig_few = [xy[:args.sig_fwd_steps] for xy in sig_few]
+        for xy in sig_few:
+            _add_orbit(axes[ax_idx], xy, SIG_FWD_CMAP, lw=LINEWIDTH, alpha=0.85)
+        _autolim(axes[ax_idx], *(sig_few + gt_xys)) if sig_few else _autolim(axes[ax_idx], *gt_xys)
+        _style(axes[ax_idx], XLABEL, YLABEL, '1SP+SIG')
+        ax_idx += 1
+
+    # Final panel: MSP+SIG — first ms_show episodes, truncated to ms_steps
     ms_few = ms_xys[:args.ms_show]
     if args.ms_steps is not None:
         ms_few = [xy[:args.ms_steps] for xy in ms_few]
     for xy in ms_few:
-        _add_orbit(axes[2], xy, MS_CMAP, lw=LINEWIDTH, alpha=0.85)
-    _autolim(axes[2], *(ms_few + gt_xys)) if ms_few else _autolim(axes[2], *gt_xys)
-    _style(axes[2], XLABEL, YLABEL, 'MSP+SIG')
+        _add_orbit(axes[ax_idx], xy, MS_CMAP, lw=LINEWIDTH, alpha=0.85)
+    _autolim(axes[ax_idx], *(ms_few + gt_xys)) if ms_few else _autolim(axes[ax_idx], *gt_xys)
+    _style(axes[ax_idx], XLABEL, YLABEL, 'MSP+SIG')
 
     fig.tight_layout()
     out = Path(args.out)
