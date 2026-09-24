@@ -54,7 +54,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 
 from experiments.walker2d_smwm_utils import (
     load_walker_bundle, fit_walker_mlp_probe,
@@ -71,7 +71,7 @@ LINEWIDTH   = 1.4
 
 GT_CMAP      = 'Greens'    # GT → green
 FWD_CMAP     = 'Oranges'   # 1SP+EP-IDM → orange
-SIG_FWD_CMAP = 'YlGn'      # 1SP+SIG → light green
+SIG_FWD_CMAP = LinearSegmentedColormap.from_list('cyans', ['#b2f5f5', '#008080'])  # 1SP+SIG → cyan
 MS_CMAP      = 'Blues'     # MSP+SIG → blue
 GT_REF_COLOR = '#aaaaaa'   # light grey GT reference in model panels
 
