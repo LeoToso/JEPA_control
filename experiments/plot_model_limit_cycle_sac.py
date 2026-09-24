@@ -71,7 +71,7 @@ LINEWIDTH   = 1.4
 
 GT_CMAP      = 'Greens'    # GT → green
 FWD_CMAP     = 'Oranges'   # 1SP+EP-IDM → orange
-SIG_FWD_CMAP = 'GnBu'      # 1SP+SIG → green-blue
+SIG_FWD_CMAP = 'YlGn'      # 1SP+SIG → light green
 MS_CMAP      = 'Blues'     # MSP+SIG → blue
 GT_REF_COLOR = '#aaaaaa'   # light grey GT reference in model panels
 
