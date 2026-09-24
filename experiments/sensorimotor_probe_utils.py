@@ -123,8 +123,9 @@ def equilibrium_latent(bundle):
     env = make_env(bundle['env_cfg'], 987)
     state = np.zeros(4, dtype=np.float32)
     obs, _, _ = env.reset_to_state(state)
-    buf = make_frame_buffer(bundle, obs)
-    z = encode_obs(bundle, buf, obs, state)
+    # Pass obs directly so _build_obs_input handles frame_stack via
+    # its bare-array path ([obs]*fs), avoiding a 4-D tensor when frame_stack==1.
+    z = encode_obs(bundle, obs, obs, state)
     env.close()
     return z.detach()
 
