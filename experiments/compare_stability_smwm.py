@@ -159,11 +159,6 @@ def main():
         ax.set_xlabel(XLABEL, fontsize=FS)
         ax.set_ylabel(YLABEL, fontsize=FS)
 
-    # row labels as figure text
-    fig.text(0.255, 1.01, 'ROA',         ha='center', va='bottom',
-             fontsize=FS + 1, fontweight='bold')
-    fig.text(0.755, 1.01, 'Certificate', ha='center', va='bottom',
-             fontsize=FS + 1, fontweight='bold')
 
     fig.tight_layout()
     out = Path(args.out)
