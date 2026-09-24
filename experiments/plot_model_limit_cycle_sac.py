@@ -382,12 +382,11 @@ def main():
           f'(GT bbox margin=15%)')
     fwd_stay = fwd_stay[:args.fwd_show]
 
-    sig_fwd_escape = [xy for xy in sig_fwd_xys if     _escapes_bbox(xy, gt_bbox)]
-    sig_fwd_stay   = [xy for xy in sig_fwd_xys if not _escapes_bbox(xy, gt_bbox)]
     if sig_fwd_xys:
+        sig_fwd_escape = [xy for xy in sig_fwd_xys if     _escapes_bbox(xy, gt_bbox)]
+        sig_fwd_stay   = [xy for xy in sig_fwd_xys if not _escapes_bbox(xy, gt_bbox)]
         print(f'[1SP+SIG]    {len(sig_fwd_escape)} escaping / {len(sig_fwd_stay)} converging '
               f'(GT bbox margin=15%)')
-    sig_fwd_stay = sig_fwd_stay[:args.sig_fwd_show]
 
     # ── figure ────────────────────────────────────────────────────────────────
     XLABEL = r'Right hip $\theta$ (rad)'
@@ -413,9 +412,9 @@ def main():
     _style(axes[ax_idx], XLABEL, YLABEL, '1SP+EP-IDM')
     ax_idx += 1
 
-    # Panel 2 (optional): 1SP+SIG — converging trajectories only
+    # Panel 2 (optional): 1SP+SIG — first sig_fwd_show episodes, truncated to sig_fwd_steps
     if sig_fwd_bundle is not None:
-        sig_few = sig_fwd_stay
+        sig_few = sig_fwd_xys[:args.sig_fwd_show]
         if args.sig_fwd_steps is not None:
             sig_few = [xy[:args.sig_fwd_steps] for xy in sig_few]
         for xy in sig_few:
