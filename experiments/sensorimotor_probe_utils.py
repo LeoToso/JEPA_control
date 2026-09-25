@@ -52,6 +52,9 @@ def _build_obs_input(bundle, obs, prev_obs):
     if fs > 1:
         frames = list(obs) if isinstance(obs, (list, tuple)) else [obs] * fs
         return torch.cat([obs_tensor(f, device) for f in frames], dim=1)
+    # fs == 1: callers may pass make_frame_buffer output ([obs]) — unwrap it
+    if isinstance(obs, (list, tuple)):
+        obs = obs[0]
     return obs_tensor(obs, device)
 
 
