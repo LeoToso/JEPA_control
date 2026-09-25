@@ -129,7 +129,7 @@ def main():
 
     XLABEL = r'$\theta$ [deg]'
     YLABEL = r'$\dot\theta$ [deg/s]'
-    FS = 15
+    FS = 20
 
     # ── Panels 0-1: ROA ──────────────────────────────────────────────────────
     for ax, m, label in [(axes[0], fwd, args.fwd_label),
@@ -140,13 +140,14 @@ def main():
         ax.set_title(label, fontsize=FS, fontweight='bold', pad=6)
         ax.set_xlabel(XLABEL, fontsize=FS)
         ax.set_ylabel(YLABEL, fontsize=FS)
+        ax.tick_params(labelsize=FS - 2)
 
     # shared ROA legend on the first ROA panel only
     axes[0].legend(handles=[
         mpatches.Patch(color='green', alpha=.85, label='Learned LQR stabilises'),
         mpatches.Patch(color='red',   alpha=.85, label='Learned LQR fails'),
         Line2D([0], [0], color='k', lw=1.5, ls='--', label='GT LQR boundary'),
-    ], fontsize=12, loc='upper right')
+    ], fontsize=16, loc='upper right')
     axes[1].get_legend().remove() if axes[1].get_legend() else None
 
     # ── Panels 2-3: Lyapunov certificate ─────────────────────────────────────
@@ -154,10 +155,11 @@ def main():
                          (axes[3], ms,  args.ms_label)]:
         print(f'\n[Certificate] {label} …')
         panel_lyapunov(ax, m['bundle'], m['K_z'], m['z_eq_np'], m['P_phys'],
-                       **lyap_kw)
+                       **lyap_kw, fontsize=FS)
         ax.set_title(label, fontsize=FS, fontweight='bold', pad=6)
         ax.set_xlabel(XLABEL, fontsize=FS)
         ax.set_ylabel(YLABEL, fontsize=FS)
+        ax.tick_params(labelsize=FS - 2)
 
 
     fig.tight_layout()

@@ -285,7 +285,7 @@ def panel_roa(ax, bundle, K_z, z_eq, K_phys,
 # ── Panel 3: Lyapunov decrease condition ──────────────────────────────────────
 
 def panel_lyapunov(ax, bundle, K_z, z_eq, P_phys,
-                   theta_max, rate_max, n_theta, n_rate):
+                   theta_max, rate_max, n_theta, n_rate, fontsize=14):
     theta_deg = np.linspace(-theta_max, theta_max, n_theta)
     rate_deg  = np.linspace(-rate_max,  rate_max,  n_rate)
     theta_mesh, rate_mesh = np.meshgrid(theta_deg, rate_deg)
@@ -317,16 +317,16 @@ def panel_lyapunov(ax, bundle, K_z, z_eq, P_phys,
                        cmap='RdBu_r', shading='auto',
                        vmin=-vabs, vmax=vabs)
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(r'$\Delta V = V(x^\prime) - V(x)$', fontsize=14)
-    cbar.ax.tick_params(labelsize=14)
+    cbar.set_label(r'$\Delta V = V(x^\prime) - V(x)$', fontsize=fontsize)
+    cbar.ax.tick_params(labelsize=fontsize)
     ax.contour(theta_deg, rate_deg, dV_map,
                levels=[0.], colors='k', linewidths=1.2)
 
     ax.scatter([0.], [0.], marker='*', s=200, color='lime', zorder=5,
                edgecolors='darkgreen', lw=0.8)
-    ax.set_xlabel(r'$\theta$ [deg]', fontsize=14)
-    ax.set_ylabel(r'$\dot\theta$ [deg/s]', fontsize=14)
-    ax.tick_params(labelsize=14)
+    ax.set_xlabel(r'$\theta$ [deg]', fontsize=fontsize)
+    ax.set_ylabel(r'$\dot\theta$ [deg/s]', fontsize=fontsize)
+    ax.tick_params(labelsize=fontsize)
     ax.grid(alpha=.15)
 
 
