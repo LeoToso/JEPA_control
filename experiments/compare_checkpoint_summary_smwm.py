@@ -114,11 +114,16 @@ def main():
 
     FS = args.fontsize
     fig, axes = plt.subplots(2, 3, figsize=(21, 13))
-    fig.subplots_adjust(left=0.08, hspace=0.35, wspace=0.35)
+    fig.subplots_adjust(left=0.08, hspace=0.12, wspace=0.35)
 
     print(f'\n=== Row 0: {args.fwd_label} ===')
     _fill_row(axes[0], fig, fwd_bundle, fwd_probe,
               phase_kw, pred_kw, args.horizon, FS)
+
+    # remove x-axis labels and tick labels from top row (shared with bottom)
+    for ax in axes[0]:
+        ax.set_xlabel('')
+        ax.tick_params(axis='x', labelbottom=False)
 
     print(f'\n=== Row 1: {args.ms_label} ===')
     _fill_row(axes[1], fig, ms_bundle, ms_probe,
