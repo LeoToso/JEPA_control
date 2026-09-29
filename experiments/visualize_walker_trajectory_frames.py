@@ -269,9 +269,16 @@ def main():
     p.add_argument('--sig-fwd-steps', type=int, default=None)
     p.add_argument('--ms-steps',      type=int, default=None)
 
-    # episode index to visualise from each cache
+    # episode index to visualise from each cache (per-model overrides --episode)
     p.add_argument('--episode',       type=int, default=0,
-                   help='Episode index to use from each cache')
+                   help='Default episode index for all caches')
+    p.add_argument('--gt-episode',      type=int, default=None)
+    p.add_argument('--fwd-episode',     type=int, default=None)
+    p.add_argument('--sig-fwd-episode', type=int, default=None)
+    p.add_argument('--ms-episode',      type=int, default=None)
+    p.add_argument('--fwd-select-stay', action='store_true',
+                   help='Auto-pick first 1SP+EP-IDM episode that stays within '
+                        'the GT phase-portrait bounding box (mirrors plot_model_limit_cycle_sac.py)')
 
     p.add_argument('--n-frames',      type=int, default=10)
     p.add_argument('--tail-steps',    type=int, default=None,
@@ -293,6 +300,13 @@ def main():
     args = p.parse_args()
 
     # ── load and sample ───────────────────────────────────────────────────────
+    ep_overrides = {
+        'gt':      args.gt_episode,
+        'fwd':     args.fwd_episode,
+        'sig_fwd': args.sig_fwd_episode,
+        'ms':      args.ms_episode,
+    }
+
     specs = [
         ('gt',      args.gt_label,      args.gt_cache,      args.gt_steps),
         ('fwd',     args.fwd_label,     args.fwd_cache,     args.fwd_steps),
@@ -302,12 +316,47 @@ def main():
                       args.sig_fwd_steps))
     specs.append(('ms', args.ms_label, args.ms_cache, args.ms_steps))
 
+    # pre-load GT trajectories for bbox filtering
+    gt_trajs_all = _load_trajs(args.gt_cache)
+
+    def _gt_bbox(trajs, margin=0.15):
+        xs = np.concatenate([t[:, 2] for t in trajs])
+        ys = np.concatenate([t[:, 11] for t in trajs])
+        rx, ry = xs.ptp(), ys.ptp()
+        return (xs.min() - margin * rx, xs.max() + margin * rx,
+                ys.min() - margin * ry, ys.max() + margin * ry)
+
+    def _escapes_bbox(traj, bbox):
+        xmin, xmax, ymin, ymax = bbox
+        x, y = traj[:, 2], traj[:, 11]
+        return bool(np.any(x < xmin) or np.any(x > xmax) or
+                    np.any(y < ymin) or np.any(y > ymax))
+
+    gt_bbox = _gt_bbox(gt_trajs_all)
+
     rows = []
     gif_trajs = []   # (label, full_traj_after_head_truncation) for GIF
     for key, label, cache_path, max_steps in specs:
         print(f'[{label}] loading {cache_path} …')
         trajs = _load_trajs(cache_path)
-        ep = min(args.episode, len(trajs) - 1)
+
+        # resolve episode index
+        ep_override = ep_overrides.get(key)
+        if ep_override is not None:
+            ep = min(ep_override, len(trajs) - 1)
+        elif key == 'fwd' and args.fwd_select_stay:
+            stay = [i for i, t in enumerate(trajs) if not _escapes_bbox(t, gt_bbox)]
+            if stay:
+                ep = stay[0]
+                print(f'  [fwd-select-stay] chose episode {ep} '
+                      f'(staying: {stay}, escaping: '
+                      f'{[i for i in range(len(trajs)) if i not in stay]})')
+            else:
+                ep = 0
+                print(f'  [fwd-select-stay] no staying episodes found, using 0')
+        else:
+            ep = min(args.episode, len(trajs) - 1)
+
         traj = trajs[ep]
         traj_head = traj[:max_steps] if max_steps is not None else traj
         tail = args.tail_steps
