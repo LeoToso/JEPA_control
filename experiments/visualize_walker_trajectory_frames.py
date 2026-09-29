@@ -139,30 +139,44 @@ def render_obs_batch(obs_batch: np.ndarray,
 
 def build_gif_frame(frames_at_t: list[np.ndarray],
                     labels: list[str],
-                    label_fontsize: int = 14) -> 'PIL.Image':
-    """Composite one GIF frame: models stacked vertically with a label column."""
+                    label_fontsize: int = 14,
+                    horizontal: bool = False) -> 'PIL.Image':
+    """Composite one GIF frame.
+
+    horizontal=False (default): models stacked vertically, rotated labels on left.
+    horizontal=True:            models in a row, labels above each frame.
+    """
     from PIL import Image as PilImage, ImageDraw, ImageFont
     h, w = frames_at_t[0].shape[:2]
-    label_w = max(120, label_fontsize * 7)
     n = len(frames_at_t)
-    canvas = PilImage.new('RGB', (label_w + w, h * n), (255, 255, 255))
     try:
         font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
                                    label_fontsize)
     except Exception:
         font = ImageFont.load_default()
-    draw = ImageDraw.Draw(canvas)
-    for i, (img, label) in enumerate(zip(frames_at_t, labels)):
-        canvas.paste(PilImage.fromarray(img), (label_w, i * h))
-        # vertical label: draw rotated text into a temp image then paste
-        txt_img = PilImage.new('RGB', (h, label_w), (240, 240, 240))
-        td = ImageDraw.Draw(txt_img)
-        bb = td.textbbox((0, 0), label, font=font)
-        tx = (h - (bb[2] - bb[0])) // 2
-        ty = (label_w - (bb[3] - bb[1])) // 2
-        td.text((tx, ty), label, fill=(30, 30, 30), font=font)
-        rotated = txt_img.rotate(90, expand=True)
-        canvas.paste(rotated, (0, i * h))
+
+    if horizontal:
+        label_h = label_fontsize + 8
+        canvas = PilImage.new('RGB', (w * n, label_h + h), (255, 255, 255))
+        draw = ImageDraw.Draw(canvas)
+        for i, (img, label) in enumerate(zip(frames_at_t, labels)):
+            canvas.paste(PilImage.fromarray(img), (i * w, label_h))
+            bb = draw.textbbox((0, 0), label, font=font)
+            tx = i * w + (w - (bb[2] - bb[0])) // 2
+            ty = (label_h - (bb[3] - bb[1])) // 2
+            draw.text((tx, ty), label, fill=(30, 30, 30), font=font)
+    else:
+        label_w = max(120, label_fontsize * 7)
+        canvas = PilImage.new('RGB', (label_w + w, h * n), (255, 255, 255))
+        for i, (img, label) in enumerate(zip(frames_at_t, labels)):
+            canvas.paste(PilImage.fromarray(img), (label_w, i * h))
+            txt_img = PilImage.new('RGB', (h, label_w), (240, 240, 240))
+            td = ImageDraw.Draw(txt_img)
+            bb = td.textbbox((0, 0), label, font=font)
+            tx = (h - (bb[2] - bb[0])) // 2
+            ty = (label_w - (bb[3] - bb[1])) // 2
+            td.text((tx, ty), label, fill=(30, 30, 30), font=font)
+            canvas.paste(txt_img.rotate(90, expand=True), (0, i * h))
     return canvas
 
 
@@ -172,18 +186,27 @@ def save_gif(rows_traj: list[tuple[str, np.ndarray]],
              render_size: int = 200,
              fps: int = 10,
              label_fontsize: int = 14,
-             from_head: bool = False):
+             from_head: bool = False,
+             skip_labels: set | None = None,
+             horizontal: bool = False):
     """Render n_frames steps of each trajectory and save as animated GIF.
 
     from_head=True  : take the first n_frames steps (shows transient).
     from_head=False : take the last  n_frames steps (shows steady state).
+    skip_labels     : set of label strings to exclude from the GIF.
+    horizontal      : arrange models in a row instead of a column.
     """
     from PIL import Image as PilImage
+
+    skip_labels = skip_labels or set()
 
     # build per-model frame lists aligned in time
     all_frames: list[list[np.ndarray]] = []
     labels = []
     for label, traj in rows_traj:
+        if label in skip_labels:
+            print(f'  [{label}] skipped')
+            continue
         t = traj[:n_frames] if from_head else traj[-n_frames:]
         print(f'  [{label}] rendering {len(t)} frames ({"head" if from_head else "tail"}) …')
         all_frames.append(render_obs_batch(t, render_size))
@@ -193,7 +216,8 @@ def save_gif(rows_traj: list[tuple[str, np.ndarray]],
     gif_frames = []
     for t in range(n_t):
         imgs_at_t = [all_frames[m][t] for m in range(len(labels))]
-        gif_frames.append(build_gif_frame(imgs_at_t, labels, label_fontsize))
+        gif_frames.append(build_gif_frame(imgs_at_t, labels, label_fontsize,
+                                          horizontal=horizontal))
 
     duration_ms = int(1000 / fps)
     gif_frames[0].save(
@@ -297,6 +321,10 @@ def main():
                    help='Frames per second for the GIF')
     p.add_argument('--gif-from-head', action='store_true',
                    help='Use first gif-frames steps (default: last gif-frames steps)')
+    p.add_argument('--gif-no-gt',     action='store_true',
+                   help='Exclude GT row from the GIF')
+    p.add_argument('--gif-horizontal', action='store_true',
+                   help='Arrange models in a row instead of a column in the GIF')
     args = p.parse_args()
 
     # ── load and sample ───────────────────────────────────────────────────────
@@ -384,12 +412,15 @@ def main():
         print(f'\n[gif] rendering last {args.gif_frames} frames per model …')
         gif_out = Path(args.gif)
         gif_out.parent.mkdir(parents=True, exist_ok=True)
+        skip = {args.gt_label} if args.gif_no_gt else set()
         save_gif(gif_trajs, str(gif_out),
                  n_frames=args.gif_frames,
                  render_size=args.render_size,
                  fps=args.gif_fps,
                  label_fontsize=args.label_fontsize,
-                 from_head=args.gif_from_head)
+                 from_head=args.gif_from_head,
+                 skip_labels=skip,
+                 horizontal=args.gif_horizontal)
 
 
 if __name__ == '__main__':
