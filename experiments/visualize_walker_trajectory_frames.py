@@ -120,6 +120,68 @@ def render_obs_batch(obs_batch: np.ndarray,
     return frames
 
 
+# ── gif ───────────────────────────────────────────────────────────────────────
+
+def build_gif_frame(frames_at_t: list[np.ndarray],
+                    labels: list[str],
+                    label_fontsize: int = 14) -> 'PIL.Image':
+    """Composite one GIF frame: models stacked vertically with a label column."""
+    from PIL import Image as PilImage, ImageDraw, ImageFont
+    h, w = frames_at_t[0].shape[:2]
+    label_w = max(120, label_fontsize * 7)
+    n = len(frames_at_t)
+    canvas = PilImage.new('RGB', (label_w + w, h * n), (255, 255, 255))
+    try:
+        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                                   label_fontsize)
+    except Exception:
+        font = ImageFont.load_default()
+    draw = ImageDraw.Draw(canvas)
+    for i, (img, label) in enumerate(zip(frames_at_t, labels)):
+        canvas.paste(PilImage.fromarray(img), (label_w, i * h))
+        # vertical label: draw rotated text into a temp image then paste
+        txt_img = PilImage.new('RGB', (h, label_w), (240, 240, 240))
+        td = ImageDraw.Draw(txt_img)
+        bb = td.textbbox((0, 0), label, font=font)
+        tx = (h - (bb[2] - bb[0])) // 2
+        ty = (label_w - (bb[3] - bb[1])) // 2
+        td.text((tx, ty), label, fill=(30, 30, 30), font=font)
+        rotated = txt_img.rotate(90, expand=True)
+        canvas.paste(rotated, (0, i * h))
+    return canvas
+
+
+def save_gif(rows_traj: list[tuple[str, np.ndarray]],
+             out_path: str,
+             n_frames: int = 100,
+             render_size: int = 200,
+             fps: int = 10,
+             label_fontsize: int = 14):
+    """Render last n_frames steps of each trajectory and save as animated GIF."""
+    from PIL import Image as PilImage
+
+    # build per-model frame lists aligned in time
+    all_frames: list[list[np.ndarray]] = []
+    labels = []
+    for label, traj in rows_traj:
+        t = traj[-n_frames:]
+        print(f'  [{label}] rendering {len(t)} frames …')
+        all_frames.append(render_obs_batch(t, render_size))
+        labels.append(label)
+
+    n_t = min(len(f) for f in all_frames)
+    gif_frames = []
+    for t in range(n_t):
+        imgs_at_t = [all_frames[m][t] for m in range(len(labels))]
+        gif_frames.append(build_gif_frame(imgs_at_t, labels, label_fontsize))
+
+    duration_ms = int(1000 / fps)
+    gif_frames[0].save(
+        out_path, save_all=True, append_images=gif_frames[1:],
+        loop=0, duration=duration_ms)
+    print(f'[saved gif] {out_path}  ({n_t} frames @ {fps} fps)')
+
+
 # ── figure ────────────────────────────────────────────────────────────────────
 
 def build_figure(rows: list[tuple[str, list[np.ndarray]]],
@@ -198,6 +260,14 @@ def main():
                    help='Pixel size of each rendered frame')
     p.add_argument('--label-fontsize', type=int, default=18)
     p.add_argument('--out', default='results/walker_trajectory_frames.pdf')
+
+    # GIF options
+    p.add_argument('--gif',           default=None,
+                   help='If set, also save an animated GIF to this path')
+    p.add_argument('--gif-frames',    type=int, default=100,
+                   help='Number of frames from the end of each trajectory for the GIF')
+    p.add_argument('--gif-fps',       type=int, default=10,
+                   help='Frames per second for the GIF')
     args = p.parse_args()
 
     # ── load and sample ───────────────────────────────────────────────────────
@@ -211,20 +281,23 @@ def main():
     specs.append(('ms', args.ms_label, args.ms_cache, args.ms_steps))
 
     rows = []
+    gif_trajs = []   # (label, full_traj_after_head_truncation) for GIF
     for key, label, cache_path, max_steps in specs:
         print(f'[{label}] loading {cache_path} …')
         trajs = _load_trajs(cache_path)
         ep = min(args.episode, len(trajs) - 1)
         traj = trajs[ep]
+        traj_head = traj[:max_steps] if max_steps is not None else traj
         tail = args.tail_steps
         print(f'  episode {ep}: {len(traj)} steps'
               + (f' → head {max_steps}' if max_steps else '')
               + (f' → tail {tail}' if tail else ''))
-        obs_batch = _sample_frames(traj, args.n_frames, max_steps, tail)
+        obs_batch = _sample_frames(traj_head, args.n_frames, tail_steps=tail)
 
         print(f'  rendering {args.n_frames} frames at {args.render_size}px …')
         frames = render_obs_batch(obs_batch, args.render_size)
         rows.append((label, frames))
+        gif_trajs.append((label, traj_head))
 
     # ── plot ──────────────────────────────────────────────────────────────────
     print('\n[figure] assembling grid …')
@@ -234,6 +307,17 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=180, bbox_inches='tight')
     print(f'[saved] {out}')
+
+    # ── gif ───────────────────────────────────────────────────────────────────
+    if args.gif:
+        print(f'\n[gif] rendering last {args.gif_frames} frames per model …')
+        gif_out = Path(args.gif)
+        gif_out.parent.mkdir(parents=True, exist_ok=True)
+        save_gif(gif_trajs, str(gif_out),
+                 n_frames=args.gif_frames,
+                 render_size=args.render_size,
+                 fps=args.gif_fps,
+                 label_fontsize=args.label_fontsize)
 
 
 if __name__ == '__main__':
