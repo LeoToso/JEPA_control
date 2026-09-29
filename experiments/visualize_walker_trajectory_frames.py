@@ -53,16 +53,19 @@ def _load_trajs(path: str) -> list[np.ndarray]:
 
 def _sample_frames(traj: np.ndarray, n_frames: int,
                    max_steps: int | None = None,
-                   tail_steps: int | None = None) -> np.ndarray:
+                   tail_steps: int | None = None,
+                   skip_last: int = 0) -> np.ndarray:
     """Return (n_frames, 17) array of uniformly sampled obs from traj.
 
     max_steps : keep only the first max_steps steps.
     tail_steps: after max_steps truncation, keep only the last tail_steps steps.
+    skip_last : exclude the last N frames from the sampling window.
     """
     t = traj[:max_steps] if max_steps is not None else traj
     if tail_steps is not None:
         t = t[-tail_steps:]
-    idx = np.linspace(0, len(t) - 1, n_frames, dtype=int)
+    end = max(0, len(t) - 1 - skip_last)
+    idx = np.linspace(0, end, n_frames, dtype=int)
     return t[idx]
 
 
@@ -307,6 +310,8 @@ def main():
     p.add_argument('--n-frames',      type=int, default=10)
     p.add_argument('--tail-steps',    type=int, default=None,
                    help='Sample frames from only the last N steps of each trajectory')
+    p.add_argument('--skip-last',     type=int, default=1,
+                   help='Exclude last N frames from sampling window (default 1 avoids terminal pose)')
     p.add_argument('--render-size',   type=int, default=200,
                    help='Pixel size of each rendered frame')
     p.add_argument('--label-fontsize', type=int, default=18)
@@ -391,7 +396,8 @@ def main():
         print(f'  episode {ep}: {len(traj)} steps'
               + (f' → head {max_steps}' if max_steps else '')
               + (f' → tail {tail}' if tail else ''))
-        obs_batch = _sample_frames(traj_head, args.n_frames, tail_steps=tail)
+        obs_batch = _sample_frames(traj_head, args.n_frames, tail_steps=tail,
+                                   skip_last=args.skip_last)
 
         print(f'  rendering {args.n_frames} frames at {args.render_size}px …')
         frames = render_obs_batch(obs_batch, args.render_size)
