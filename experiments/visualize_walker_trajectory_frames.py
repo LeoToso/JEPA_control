@@ -85,6 +85,10 @@ def render_obs_batch(obs_batch: np.ndarray,
     env = gym.make('Walker2d-v4', render_mode='rgb_array')
     env.reset(seed=0)
 
+    std = obs_batch.std(axis=0)
+    print(f'  obs std  (qpos-part): {std[:8].round(4)}')
+    print(f'  obs std  (qvel-part): {std[8:].round(4)}')
+
     n_fallback = 0
     frames = []
     for i, obs in enumerate(obs_batch):
