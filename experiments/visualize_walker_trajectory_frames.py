@@ -52,9 +52,16 @@ def _load_trajs(path: str) -> list[np.ndarray]:
 
 
 def _sample_frames(traj: np.ndarray, n_frames: int,
-                   max_steps: int | None = None) -> np.ndarray:
-    """Return (n_frames, 17) array of uniformly sampled obs from traj."""
+                   max_steps: int | None = None,
+                   tail_steps: int | None = None) -> np.ndarray:
+    """Return (n_frames, 17) array of uniformly sampled obs from traj.
+
+    max_steps : keep only the first max_steps steps.
+    tail_steps: after max_steps truncation, keep only the last tail_steps steps.
+    """
     t = traj[:max_steps] if max_steps is not None else traj
+    if tail_steps is not None:
+        t = t[-tail_steps:]
     idx = np.linspace(0, len(t) - 1, n_frames, dtype=int)
     return t[idx]
 
@@ -185,6 +192,8 @@ def main():
                    help='Episode index to use from each cache')
 
     p.add_argument('--n-frames',      type=int, default=10)
+    p.add_argument('--tail-steps',    type=int, default=None,
+                   help='Sample frames from only the last N steps of each trajectory')
     p.add_argument('--render-size',   type=int, default=200,
                    help='Pixel size of each rendered frame')
     p.add_argument('--label-fontsize', type=int, default=18)
@@ -207,9 +216,11 @@ def main():
         trajs = _load_trajs(cache_path)
         ep = min(args.episode, len(trajs) - 1)
         traj = trajs[ep]
+        tail = args.tail_steps
         print(f'  episode {ep}: {len(traj)} steps'
-              + (f' → truncated to {max_steps}' if max_steps else ''))
-        obs_batch = _sample_frames(traj, args.n_frames, max_steps)
+              + (f' → head {max_steps}' if max_steps else '')
+              + (f' → tail {tail}' if tail else ''))
+        obs_batch = _sample_frames(traj, args.n_frames, max_steps, tail)
 
         print(f'  rendering {args.n_frames} frames at {args.render_size}px …')
         frames = render_obs_batch(obs_batch, args.render_size)
