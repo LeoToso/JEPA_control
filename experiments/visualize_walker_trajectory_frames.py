@@ -85,17 +85,24 @@ def render_obs_batch(obs_batch: np.ndarray,
     env = gym.make('Walker2d-v4', render_mode='rgb_array')
     env.reset(seed=0)
 
+    n_fallback = 0
     frames = []
-    for obs in obs_batch:
+    for i, obs in enumerate(obs_batch):
         qpos = np.zeros(9, dtype=np.float64)
         qpos[1:] = obs[0:8].astype(np.float64)   # z, tilt, joints
         qvel = obs[8:17].astype(np.float64)
         try:
             env.unwrapped.set_state(qpos, qvel)
-        except Exception:
-            # Fallback if state is OOD for the physics (e.g. diverged model)
-            env.reset(seed=0)
-            env.unwrapped.set_state(qpos, np.clip(qvel, -50, 50))
+        except Exception as e:
+            # Clip velocities and retry — do NOT reset (reset gives same pose each time)
+            n_fallback += 1
+            if n_fallback == 1:
+                print(f'  [render warn] set_state failed at frame {i}: {e}')
+            try:
+                env.unwrapped.set_state(
+                    np.clip(qpos, -5, 5), np.clip(qvel, -50, 50))
+            except Exception:
+                pass  # render whatever state the env is in
 
         img = env.render()   # (H, W, 3) uint8, default ~480×480
 
@@ -116,6 +123,10 @@ def render_obs_batch(obs_batch: np.ndarray,
 
         frames.append(img)
 
+    if n_fallback:
+        print(f'  [render warn] {n_fallback}/{len(obs_batch)} frames used fallback clipping')
+    else:
+        print(f'  [render ok] all {len(obs_batch)} frames set cleanly')
     env.close()
     return frames
 
