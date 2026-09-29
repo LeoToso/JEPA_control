@@ -171,16 +171,21 @@ def save_gif(rows_traj: list[tuple[str, np.ndarray]],
              n_frames: int = 100,
              render_size: int = 200,
              fps: int = 10,
-             label_fontsize: int = 14):
-    """Render last n_frames steps of each trajectory and save as animated GIF."""
+             label_fontsize: int = 14,
+             from_head: bool = False):
+    """Render n_frames steps of each trajectory and save as animated GIF.
+
+    from_head=True  : take the first n_frames steps (shows transient).
+    from_head=False : take the last  n_frames steps (shows steady state).
+    """
     from PIL import Image as PilImage
 
     # build per-model frame lists aligned in time
     all_frames: list[list[np.ndarray]] = []
     labels = []
     for label, traj in rows_traj:
-        t = traj[-n_frames:]
-        print(f'  [{label}] rendering {len(t)} frames …')
+        t = traj[:n_frames] if from_head else traj[-n_frames:]
+        print(f'  [{label}] rendering {len(t)} frames ({"head" if from_head else "tail"}) …')
         all_frames.append(render_obs_batch(t, render_size))
         labels.append(label)
 
@@ -280,9 +285,11 @@ def main():
     p.add_argument('--gif',           default=None,
                    help='If set, also save an animated GIF to this path')
     p.add_argument('--gif-frames',    type=int, default=100,
-                   help='Number of frames from the end of each trajectory for the GIF')
+                   help='Number of frames for the GIF')
     p.add_argument('--gif-fps',       type=int, default=10,
                    help='Frames per second for the GIF')
+    p.add_argument('--gif-from-head', action='store_true',
+                   help='Use first gif-frames steps (default: last gif-frames steps)')
     args = p.parse_args()
 
     # ── load and sample ───────────────────────────────────────────────────────
@@ -332,7 +339,8 @@ def main():
                  n_frames=args.gif_frames,
                  render_size=args.render_size,
                  fps=args.gif_fps,
-                 label_fontsize=args.label_fontsize)
+                 label_fontsize=args.label_fontsize,
+                 from_head=args.gif_from_head)
 
 
 if __name__ == '__main__':
