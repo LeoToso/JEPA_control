@@ -247,20 +247,114 @@ def make_figure(xvel_pred, xvel_true, xvel_enc, out_path):
     plt.close(fig)
 
 
+def collect_env_xvel(bundle, probe_net, n_episodes, steps_per_ep, image_size=64,
+                     seed=0, action_policy='random'):
+    """Collect x_vel accuracy by running the Walker2d-v4 env directly.
+
+    No HDF5 dataset needed.  At each step:
+      encode frame_t → z_t
+      z_{t+1}^pred = latent_step(z_t, a_t)
+      probe(z_{t+1}^pred)[8]  vs  real x_vel at t+1
+
+    action_policy: 'random' (uniform [-1,1]) or 'forward' (hip bias)
+    """
+    import gymnasium
+    from envs.walker2d_visual import Walker2dVisual
+
+    device = bundle['device']
+    rng    = np.random.default_rng(seed)
+
+    # Forward-bias indices (same as generate_walker2d_dataset.py)
+    FWD_IDX = [0, 3]
+    FWD_BIAS = 0.4
+
+    xvel_pred_list, xvel_true_list, xvel_enc_list = [], [], []
+
+    env = Walker2dVisual(image_size=image_size, seed=seed)
+
+    for ep in range(n_episodes):
+        frame, state, _ = env.reset()
+        prev_frame = frame.copy()
+
+        for t in range(steps_per_ep):
+            # Sample action
+            a = rng.uniform(-1.0, 1.0, size=6).astype(np.float32)
+            if action_policy == 'forward':
+                a[FWD_IDX] = np.clip(a[FWD_IDX] + FWD_BIAS, -1.0, 1.0)
+
+            # Encode current frame → z_t
+            with torch.no_grad():
+                z_t = encode_obs(bundle, frame, prev_frame, state)  # (1, D)
+
+                # Predict z_{t+1} from latent dynamics
+                a_t = torch.as_tensor(a, device=device).unsqueeze(0)  # (1, 6)
+                z_pred = latent_step_batch(bundle, z_t, a_t)           # (1, D)
+                xvel_p = probe_net(z_pred)[0, XVEL_IDX].item()
+
+            # Step real env
+            next_frame, next_state, _, done, _ = env.step(a)
+            xvel_true = float(next_state[XVEL_IDX])
+
+            # Encode next frame → z_{t+1} (upper-bound accuracy)
+            with torch.no_grad():
+                z_enc  = encode_obs(bundle, next_frame, frame, next_state)
+                xvel_e = probe_net(z_enc)[0, XVEL_IDX].item()
+
+            xvel_pred_list.append(xvel_p)
+            xvel_true_list.append(xvel_true)
+            xvel_enc_list.append(xvel_e)
+
+            prev_frame = frame
+            frame      = next_frame
+            state      = next_state
+
+            if done:
+                break
+
+        if (ep + 1) % 5 == 0:
+            print(f'[xvel-eval]  env ep {ep+1}/{n_episodes}  '
+                  f'N={len(xvel_pred_list)} samples so far')
+
+    env.close()
+    print(f'[xvel-eval]  collected N={len(xvel_pred_list)} (env) samples')
+    return (np.array(xvel_pred_list, dtype=np.float32),
+            np.array(xvel_true_list, dtype=np.float32),
+            np.array(xvel_enc_list,  dtype=np.float32))
+
+
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--ckpt',            required=True)
     p.add_argument('--cfg',             default=None)
-    p.add_argument('--hdf5-dir',        required=True)
     p.add_argument('--probe-path',      required=True,
                    help='Saved .pt MLP probe file')
-    p.add_argument('--val-episodes',    type=int, default=50)
-    p.add_argument('--max-steps-per-ep', type=int, default=None,
-                   help='Cap steps per episode (speed up with None=all)')
     p.add_argument('--device',          default='cuda')
     p.add_argument('--out',             default='results/probes/xvel_latent_eval.pdf')
+
+    # ── HDF5 mode (original) ──────────────────────────────────────────────────
+    p.add_argument('--hdf5-dir',        default=None,
+                   help='HDF5 dataset dir. If omitted, --from-env is used.')
+    p.add_argument('--val-episodes',    type=int, default=50)
+    p.add_argument('--max-steps-per-ep', type=int, default=None)
+
+    # ── Env mode (no dataset needed) ─────────────────────────────────────────
+    p.add_argument('--from-env',        action='store_true',
+                   help='Run Walker2d-v4 env directly; no HDF5 needed.')
+    p.add_argument('--env-episodes',    type=int, default=20,
+                   help='Number of env episodes for --from-env')
+    p.add_argument('--env-steps',       type=int, default=200,
+                   help='Max steps per episode for --from-env')
+    p.add_argument('--env-policy',      default='random',
+                   choices=['random', 'forward'],
+                   help='Action policy for --from-env')
+    p.add_argument('--image-size',      type=int, default=64)
+    p.add_argument('--seed',            type=int, default=0)
     args = p.parse_args()
+
+    # Default to --from-env if no hdf5-dir given
+    if args.hdf5_dir is None:
+        args.from_env = True
 
     bundle = load_walker_bundle(args.ckpt, args.cfg, args.device)
     z_dim  = int(bundle['model_cfg'].get('latent_dim', 192))
@@ -273,11 +367,23 @@ def main():
     probe_net = probe._net.to(bundle['device']).eval()
 
     # ── Collect predictions ───────────────────────────────────────────────────
-    xvel_pred, xvel_true, xvel_enc = collect_predicted_xvel(
-        bundle, probe_net, args.hdf5_dir, 'val',
-        max_episodes=args.val_episodes,
-        max_steps_per_ep=args.max_steps_per_ep,
-    )
+    if args.from_env:
+        print(f'[xvel-eval]  running {args.env_episodes} env episodes '
+              f'({args.env_steps} steps, policy={args.env_policy}) …')
+        xvel_pred, xvel_true, xvel_enc = collect_env_xvel(
+            bundle, probe_net,
+            n_episodes=args.env_episodes,
+            steps_per_ep=args.env_steps,
+            image_size=args.image_size,
+            seed=args.seed,
+            action_policy=args.env_policy,
+        )
+    else:
+        xvel_pred, xvel_true, xvel_enc = collect_predicted_xvel(
+            bundle, probe_net, args.hdf5_dir, 'val',
+            max_episodes=args.val_episodes,
+            max_steps_per_ep=args.max_steps_per_ep,
+        )
 
     print_report(xvel_pred, xvel_true, xvel_enc)
     make_figure(xvel_pred, xvel_true, xvel_enc, args.out)
