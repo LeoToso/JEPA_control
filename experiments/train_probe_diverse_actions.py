@@ -176,25 +176,35 @@ def collect_diverse_pairs(bundle, hdf5_dir, split, max_episodes,
     print(f'[diverse-pairs]  {len(starting_states)} starting states, '
           f'policy={policy}, β={beta}, σ={std}')
 
+    # Must reset once before set_state — initialises MuJoCo internal data.
+    env._env.reset(seed=0)
+
     zs, ys = [], []
     n_done  = 0
+    n_fail  = 0
 
     for i, (start_img, start_state) in enumerate(starting_states):
-        # Set real env to starting state
+        # Reset env then override state — reset ensures MuJoCo data is valid.
+        env._env.reset(seed=int(rng.integers(0, 2**31)))
         qpos, qvel = gym_obs_to_mj_state(start_state)
-        try:
-            env._env.unwrapped.set_state(qpos, qvel)
-        except Exception:
+        set_ok = False
+        for qp, qv in [(qpos, qvel),
+                       (np.clip(qpos, -5, 5), np.clip(qvel, -50, 50))]:
             try:
-                env._env.unwrapped.set_state(
-                    np.clip(qpos, -5, 5), np.clip(qvel, -50, 50))
+                env._env.unwrapped.set_state(qp, qv)
+                set_ok = True
+                break
             except Exception:
-                continue
+                pass
+        if not set_ok:
+            n_fail += 1
+            continue
 
-        # Render to get the image at the starting state
+        # Render to get the starting frame
         try:
             frame = env._render()
         except Exception:
+            n_fail += 1
             continue
 
         prev_frame = frame.copy()
@@ -246,7 +256,13 @@ def collect_diverse_pairs(bundle, hdf5_dir, split, max_episodes,
                   f'N={len(zs)} pairs so far')
 
     env.close()
-    print(f'[diverse-pairs]  N={len(zs)} total samples')
+    print(f'[diverse-pairs]  N={len(zs)} total samples  '
+          f'(skipped {n_fail}/{len(starting_states)} starts)')
+    if len(zs) == 0:
+        raise RuntimeError(
+            '[diverse-pairs]  No samples collected — all set_state calls failed. '
+            'Check that the env can be reset and that gym_obs_to_mj_state returns '
+            'valid qpos/qvel for your Walker2d-v4 version.')
     return np.stack(zs).astype(np.float32), np.stack(ys).astype(np.float32)
 
 
