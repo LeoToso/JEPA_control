@@ -513,9 +513,10 @@ def main():
 
     # ── Load probe ────────────────────────────────────────────────────────────
     print(f'[xvel-eval]  loading probe from {args.probe_path}')
-    ck    = torch.load(args.probe_path, map_location='cpu', weights_only=False)
-    probe = MLPStateProbe(z_dim)
-    probe._net.load_state_dict(ck['state_dict'] if 'state_dict' in ck else ck)
+    ck     = torch.load(args.probe_path, map_location='cpu', weights_only=False)
+    hidden = ck.get('hidden', 128) if isinstance(ck, dict) else 128
+    probe  = MLPStateProbe(z_dim, hidden=hidden)
+    probe._net.load_state_dict(ck['state_dict'] if isinstance(ck, dict) and 'state_dict' in ck else ck)
     probe_net = probe._net.to(bundle['device']).eval()
 
     # ── 1-step accuracy ───────────────────────────────────────────────────────

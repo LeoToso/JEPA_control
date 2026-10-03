@@ -587,10 +587,13 @@ def main():
     z_dim = int(bundle['model_cfg'].get('latent_dim', 192))
     if args.probe_path and Path(args.probe_path).exists():
         print(f'[latent-iCEM] Loading MLP probe from {args.probe_path} …')
-        probe = MLPStateProbe(z_dim).to(bundle['device'])
+        _ck     = torch.load(args.probe_path, map_location=bundle['device'],
+                             weights_only=False)
+        _hidden = _ck.get('hidden', 128) if isinstance(_ck, dict) else 128
+        probe   = MLPStateProbe(z_dim, hidden=_hidden).to(bundle['device'])
         probe._net.load_state_dict(
-            torch.load(args.probe_path, map_location=bundle['device'],
-                       weights_only=True))
+            _ck['state_dict'] if isinstance(_ck, dict) and 'state_dict' in _ck
+            else _ck)
         probe._net.eval()
     else:
         if args.probe_type == 'rollout':
