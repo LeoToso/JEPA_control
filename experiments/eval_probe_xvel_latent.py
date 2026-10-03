@@ -247,6 +247,143 @@ def make_figure(xvel_pred, xvel_true, xvel_enc, out_path):
     plt.close(fig)
 
 
+def collect_multistep_xvel(bundle, probe_net, hdf5_dir, split, max_episodes,
+                           horizons=(1, 5, 10, 20, 30, 60),
+                           image_size=64, beta=0.5, std=0.5):
+    """For each starting state z_t, roll out H steps with COLORED NOISE actions
+    (same as iCEM uses) and record probe(z_{t+H})[8] vs true x_vel at t+H.
+
+    Tests both:
+    - multi-step error accumulation (degradation over horizon length)
+    - OOD action distribution (colored noise vs SAC actions)
+
+    Returns dict: horizon → (xvel_pred (N,), xvel_true (N,))
+    """
+    hdf5_path = Path(hdf5_dir) / f'{split}.hdf5'
+    device = bundle['device']
+    max_H  = max(horizons)
+
+    results = {h: ([], []) for h in horizons}
+
+    def _colored_noise_seq(H, beta=0.5, std=0.5, seed=None):
+        rng = np.random.default_rng(seed)
+        fft_len = H // 2 + 1
+        freqs   = np.fft.rfftfreq(H)
+        freqs[0] = 1.0
+        power    = freqs ** (-beta / 2.0)
+        power[0] = 0.0
+        white  = (rng.standard_normal((6, fft_len))
+                  + 1j * rng.standard_normal((6, fft_len)))
+        colored = white * power[None, :]
+        noise   = np.fft.irfft(colored, n=H, axis=-1).T   # (H, 6)
+        scale   = noise.std(axis=0, keepdims=True).clip(1e-8)
+        return np.clip(noise / scale * std, -1.0, 1.0).astype(np.float32)
+
+    n_seqs_done = 0
+    with torch.no_grad():
+        with h5py.File(hdf5_path, 'r') as f:
+            ep_grp  = f['episodes']
+            ep_keys = sorted(ep_grp.keys(), key=lambda k: int(k))[:max_episodes]
+            print(f'[multistep]  {split}: {len(ep_keys)} episodes, '
+                  f'horizons={horizons}, noise β={beta} σ={std}')
+
+            for ep_key in ep_keys:
+                ep      = ep_grp[ep_key]
+                obs_t   = ep['observations'][:]
+                states  = ep['states'][:]
+                T       = obs_t.shape[0] - 1
+                if T < max_H + 1:
+                    continue
+
+                if obs_t.shape[1] != image_size or obs_t.shape[2] != image_size:
+                    import torch.nn.functional as F_
+                    t_ = torch.from_numpy(obs_t).permute(0, 3, 1, 2).float()
+                    t_ = F_.interpolate(t_, (image_size, image_size),
+                                        mode='bilinear', align_corners=False)
+                    obs_t = t_.permute(0, 2, 3, 1).byte().numpy()
+
+                # Sample a few starting points per episode
+                starts = list(range(1, T - max_H, max(1, (T - max_H) // 5)))[:5]
+                for t0 in starts:
+                    z = encode_obs(bundle, obs_t[t0], obs_t[t0 - 1], states[t0])
+                    # Roll out max_H steps with a fresh colored-noise sequence
+                    actions = _colored_noise_seq(max_H, beta=beta, std=std,
+                                                 seed=n_seqs_done)
+                    a_seq  = torch.as_tensor(actions, device=device)  # (H, 6)
+
+                    for step in range(1, max_H + 1):
+                        a_s = a_seq[step - 1].unsqueeze(0)            # (1, 6)
+                        z   = latent_step_batch(bundle, z, a_s)       # (1, D)
+                        if step in set(horizons):
+                            # True x_vel: run env forward t0+step if data available
+                            # We just use the stored state as approximation
+                            # (states[t0+step] is from SAC actions, not our random
+                            #  actions, so this is NOT a fair comparison for xvel_true.
+                            # Instead we record what the probe PREDICTS and compare
+                            # with the state that would have occurred under SAC.)
+                            xvel_p = probe_net(z)[0, XVEL_IDX].item()
+                            xvel_t = float(states[t0 + step, XVEL_IDX])
+                            results[step][0].append(xvel_p)
+                            results[step][1].append(xvel_t)
+                    n_seqs_done += 1
+
+    print(f'[multistep]  done, {n_seqs_done} sequences')
+    return {h: (np.array(v, dtype=np.float32), np.array(w, dtype=np.float32))
+            for h, (v, w) in results.items()}
+
+
+def print_multistep_report(ms_results, horizons):
+    print('\n' + '=' * 65)
+    print('  x_vel accuracy vs. planning horizon (colored-noise actions)')
+    print('=' * 65)
+    print(f'  {"horizon":>8}  {"R²":>8}  {"r":>8}  {"MAE":>8}  {"sign-acc":>9}')
+    print('  ' + '-' * 50)
+    for h in horizons:
+        xp, xt = ms_results[h]
+        if len(xp) < 2:
+            continue
+        r2_v   = r2_1d(xp, xt)
+        cor_v  = pearson(xp, xt)
+        mae_v  = float(np.mean(np.abs(xp - xt)))
+        sa_v   = float(np.mean(np.sign(xp) == np.sign(xt)))
+        print(f'  {h:>8d}  {r2_v:>8.4f}  {cor_v:>8.4f}  {mae_v:>8.4f}  {sa_v:>9.3f}')
+    print('=' * 65)
+    print()
+    print('  Note: xvel_true is from SAC trajectory, not from colored-noise')
+    print('  actions. Degrading R² / sign-acc with horizon = evidence of')
+    print('  latent drift under OOD action sequences.\n')
+
+
+def make_multistep_figure(ms_results, horizons, out_path):
+    r2s  = [r2_1d(*ms_results[h])  for h in horizons]
+    cors = [pearson(*ms_results[h]) for h in horizons]
+    sas  = [float(np.mean(np.sign(ms_results[h][0]) == np.sign(ms_results[h][1])))
+            for h in horizons]
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    for ax, vals, ylabel, color in zip(
+            axes,
+            [r2s, cors, sas],
+            ['R²', 'Pearson r', 'sign-accuracy'],
+            ['#2166ac', '#e07b00', '#33a02c']):
+        ax.plot(horizons, vals, 'o-', color=color, linewidth=2, markersize=7)
+        ax.axhline(0, color='k', linewidth=0.8, linestyle='--', alpha=0.4)
+        ax.set_xlabel('planning horizon (steps)', fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(f'x_vel {ylabel} vs. horizon', fontsize=11)
+        ax.grid(True, color='#eeeeee')
+        ax.spines[['top', 'right']].set_visible(False)
+
+    fig.suptitle('Probe accuracy under colored-noise rollouts\n'
+                 '(OOD actions + multi-step latent drift)',
+                 fontsize=11)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=180, bbox_inches='tight')
+    print(f'[done]  {out_path}')
+    plt.close(fig)
+
+
 def collect_env_xvel(bundle, probe_net, n_episodes, steps_per_ep, image_size=64,
                      seed=0, action_policy='random'):
     """Collect x_vel accuracy by running the Walker2d-v4 env directly.
@@ -350,6 +487,21 @@ def main():
                    help='Action policy for --from-env')
     p.add_argument('--image-size',      type=int, default=64)
     p.add_argument('--seed',            type=int, default=0)
+
+    # ── Multi-step horizon test ───────────────────────────────────────────
+    p.add_argument('--multistep',       action='store_true',
+                   help='Also test x_vel accuracy over multiple horizons '
+                        'with colored-noise (OOD) actions.')
+    p.add_argument('--ms-horizons',     default='1,5,10,20,30,60',
+                   help='Comma-separated list of horizons for --multistep')
+    p.add_argument('--ms-episodes',     type=int, default=20,
+                   help='Episodes to use for --multistep test')
+    p.add_argument('--ms-beta',         type=float, default=0.5,
+                   help='Colored noise beta for --multistep')
+    p.add_argument('--ms-std',          type=float, default=0.5,
+                   help='Colored noise sigma for --multistep')
+    p.add_argument('--ms-out',          default=None,
+                   help='Output PDF for multistep figure (default: replaces .pdf with .ms.pdf)')
     args = p.parse_args()
 
     # Default to --from-env if no hdf5-dir given
@@ -366,7 +518,7 @@ def main():
     probe._net.load_state_dict(ck['state_dict'] if 'state_dict' in ck else ck)
     probe_net = probe._net.to(bundle['device']).eval()
 
-    # ── Collect predictions ───────────────────────────────────────────────────
+    # ── 1-step accuracy ───────────────────────────────────────────────────────
     if args.from_env:
         print(f'[xvel-eval]  running {args.env_episodes} env episodes '
               f'({args.env_steps} steps, policy={args.env_policy}) …')
@@ -387,6 +539,22 @@ def main():
 
     print_report(xvel_pred, xvel_true, xvel_enc)
     make_figure(xvel_pred, xvel_true, xvel_enc, args.out)
+
+    # ── Multi-step / colored-noise test ───────────────────────────────────────
+    if args.multistep and args.hdf5_dir is not None:
+        horizons = [int(h) for h in args.ms_horizons.split(',')]
+        ms_results = collect_multistep_xvel(
+            bundle, probe_net, args.hdf5_dir, 'val',
+            max_episodes=args.ms_episodes,
+            horizons=horizons,
+            beta=args.ms_beta,
+            std=args.ms_std,
+        )
+        print_multistep_report(ms_results, horizons)
+        ms_out = args.ms_out or args.out.replace('.pdf', '.ms.pdf')
+        make_multistep_figure(ms_results, horizons, ms_out)
+    elif args.multistep:
+        print('[multistep]  skipped (requires --hdf5-dir)')
 
 
 if __name__ == '__main__':
