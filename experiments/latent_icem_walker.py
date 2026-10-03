@@ -85,6 +85,7 @@ def batched_rollout_cost(
     wjoint=0.0, wsmooth=0.0, wback=2.0,
     wstability=0.0,
     healthy_ang_max=1.0,
+    simple_reward=False,
 ) -> np.ndarray:
     """Evaluate N action sequences in parallel on GPU.
 
@@ -148,16 +149,19 @@ def batched_rollout_cost(
         joints  = x_hat[:, 2:8]
         posture = x_hat[:, 0:9]
 
-        fwd_term    = wx * x_vel.clamp(min=0) - wback * (-x_vel).clamp(min=0)
-        ctrl_cost   = wu  * (a * a).sum(-1)
-        posture_pen = wz  * (h - height_target) ** 2 + wang * ang ** 2
-        joint_pen   = wjoint  * (joints * joints).sum(-1)
-        smooth_pen  = wsmooth * ((a - a_prev) ** 2).sum(-1)
-        stab_pen    = (wstability * ((posture - prev_posture) ** 2).sum(-1)
-                       if wstability > 0.0 and prev_posture is not None
-                       else torch.zeros(N, device=device))
-
-        step_r = fwd_term + wh - ctrl_cost - posture_pen - joint_pen - smooth_pen - stab_pen
+        ctrl_cost = wu * (a * a).sum(-1)
+        if simple_reward:
+            # Standard Walker2d-v4 reward: x_vel + 1.0 - ctrl_cost
+            step_r = x_vel + 1.0 - ctrl_cost
+        else:
+            fwd_term    = wx * x_vel.clamp(min=0) - wback * (-x_vel).clamp(min=0)
+            posture_pen = wz  * (h - height_target) ** 2 + wang * ang ** 2
+            joint_pen   = wjoint  * (joints * joints).sum(-1)
+            smooth_pen  = wsmooth * ((a - a_prev) ** 2).sum(-1)
+            stab_pen    = (wstability * ((posture - prev_posture) ** 2).sum(-1)
+                           if wstability > 0.0 and prev_posture is not None
+                           else torch.zeros(N, device=device))
+            step_r = fwd_term + wh - ctrl_cost - posture_pen - joint_pen - smooth_pen - stab_pen
         dense_reward = dense_reward + step_r * alive.float()
         t_alive      = t_alive      + alive.float()
 
@@ -196,6 +200,7 @@ class LatentWalkeriCEM:
                  wx=1.0, wh=1.0, wu=1e-3, cf=10.0,
                  wz=0.0, wang=0.0, height_target=1.2,
                  wjoint=0.0, wsmooth=0.0, wback=2.0, wstability=0.0,
+                 simple_reward=False,
                  execute_best=True):
         self.horizon        = int(horizon)
         self.executed_steps = min(int(executed_steps), horizon)
@@ -222,6 +227,7 @@ class LatentWalkeriCEM:
         self.wsmooth        = float(wsmooth)
         self.wback          = float(wback)
         self.wstability     = float(wstability)
+        self.simple_reward  = bool(simple_reward)
         self.execute_best   = bool(execute_best)
         self._prev_mean     = None
         self._shift_elites  = None
@@ -279,6 +285,7 @@ class LatentWalkeriCEM:
                 self.wz, self.wang, self.height_target,
                 self.wjoint, self.wsmooth, self.wback, self.wstability,
                 healthy_ang_max=HEALTHY_ANG_MAX,
+                simple_reward=self.simple_reward,
             )
 
             bi = int(np.argmin(costs))
@@ -514,6 +521,9 @@ def main():
     p.add_argument('--healthy-angle-max', type=float, default=1.0,
                    help='Latent-rollout fall threshold: |torso_angle| > this → fallen. '
                         'Replaces z_height check (unreliable from probe).')
+    p.add_argument('--simple-reward', action='store_true',
+                   help='Use the standard Walker2d reward r = x_vel + 1.0 - 1e-3*||u||² '
+                        '(ignores all w* weights except wu and cf).')
     p.add_argument('--debug-cost', type=int, default=0, metavar='N',
                    help='Print probe prediction stats for the first N batched_rollout_cost calls.')
     p.add_argument('--nn-z0-warmstart', action='store_true',
@@ -694,6 +704,7 @@ def main():
         wsmooth        = args.wsmooth,
         wback          = args.wback,
         wstability     = args.wstability,
+        simple_reward  = args.simple_reward,
         execute_best   = not args.no_execute_best,
     )
 
@@ -716,9 +727,12 @@ def main():
     print(f'  β={args.beta}  std₀={args.initial_std}  '
           f'keep={args.keep_fraction}  shift={args.shift_fraction}  '
           f'decay={args.sample_decay}')
-    print(f'  cost: wx={args.wx}  wh={args.wh}  wu={args.wu}  cf={args.cf}  '
-          f'wz={args.wz}  wang={args.wang}  h*={args.height_target}  '
-          f'wback={args.wback}  wstability={args.wstability}')
+    if args.simple_reward:
+        print(f'  cost: SIMPLE (x_vel + 1.0 - {args.wu}*||u||²)  cf={args.cf}')
+    else:
+        print(f'  cost: wx={args.wx}  wh={args.wh}  wu={args.wu}  cf={args.cf}  '
+              f'wz={args.wz}  wang={args.wang}  h*={args.height_target}  '
+              f'wback={args.wback}  wstability={args.wstability}')
     print(f'  fall criterion: |torso_angle| > {args.healthy_angle_max}')
 
     trials_data  = []
