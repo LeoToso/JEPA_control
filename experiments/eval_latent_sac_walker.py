@@ -105,6 +105,8 @@ def main():
     p.add_argument('--probe-path',  default=None)
     p.add_argument('--probe-episodes', type=int, default=200)
     p.add_argument('--probe-epochs',   type=int, default=30)
+    p.add_argument('--probe-hidden',   type=int, default=128,
+                   help='Hidden size of MLP probe (default 128; try 256 for better quality)')
     p.add_argument('--sac-repo',    default='sdpkjc/Walker2d-v4-sac_continuous_action-seed4')
     p.add_argument('--sac-ckpt',    default=None)
     p.add_argument('--trials',      type=int, default=5)
@@ -152,14 +154,16 @@ def main():
         probe._net.eval()
         probe_net = probe._net
     else:
-        print('[latent-SAC] Fitting encoder MLP probe …')
+        print(f'[latent-SAC] Fitting encoder MLP probe (hidden={args.probe_hidden}) …')
         probe = fit_walker_mlp_probe(bundle, args.hdf5_dir,
                                      max_episodes=args.probe_episodes,
-                                     n_epochs=args.probe_epochs)
+                                     n_epochs=args.probe_epochs,
+                                     hidden=args.probe_hidden)
         probe_net = probe._net.eval()
         if args.probe_path:
             Path(args.probe_path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(probe._net.state_dict(), args.probe_path)
+            torch.save({'state_dict': probe._net.state_dict(),
+                        'hidden': args.probe_hidden}, args.probe_path)
             print(f'[latent-SAC] Probe saved → {args.probe_path}')
 
     # Optionally wrap probe_net to patch badly-predicted dimensions
