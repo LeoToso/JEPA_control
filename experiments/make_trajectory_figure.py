@@ -93,9 +93,10 @@ def main():
         ax_lbl = fig.add_subplot(gs[row_idx, 0])
         ax_lbl.axis('off')
         ax_lbl.text(
-            0.95, 0.5, label,
-            ha='right', va='center',
+            0.5, 0.5, label,
+            ha='center', va='center',
             fontsize=7, fontweight='bold',
+            rotation=90,
             transform=ax_lbl.transAxes,
         )
 
