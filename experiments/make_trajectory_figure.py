@@ -22,7 +22,6 @@ from PIL import Image
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 
 def load_gif_frames(path: str) -> list[np.ndarray]:
@@ -71,22 +70,17 @@ def main():
     ]
 
     n = args.n_frames
-    # Each frame is 64×64 px rendered; we display at ~1.1 in wide, aspect ~1
-    frame_w = 1.1
-    label_w = 0.28
-    fig_w = label_w + n * frame_w
-    fig_h = len(rows) * frame_w * 0.72   # frames are wider than tall (env crop)
-    fig = plt.figure(figsize=(fig_w, fig_h), dpi=args.dpi)
+    cell_w = cell_h = 2.2
+    left_margin = 1.2
+    fig_w = left_margin + n * cell_w
+    fig_h = len(rows) * cell_h
+    fig, axes = plt.subplots(len(rows), n, figsize=(fig_w, fig_h), dpi=args.dpi)
     fig.patch.set_facecolor('white')
-
-    # GridSpec: narrow label column + n frame columns
-    gs = gridspec.GridSpec(
-        len(rows), n + 1,
-        figure=fig,
-        wspace=0.018, hspace=0.018,
-        left=0.0, right=1.0, top=1.0, bottom=0.0,
-        width_ratios=[label_w] + [frame_w] * n,
-    )
+    fig.subplots_adjust(left=left_margin / fig_w,
+                        right=1.0, top=1.0, bottom=0.0,
+                        hspace=0.04, wspace=0.04)
+    if len(rows) == 1:
+        axes = [axes]
 
     for row_idx, (gif_path, label) in enumerate(rows):
         print(f'[fig] loading {gif_path} …')
@@ -96,21 +90,21 @@ def main():
                                start=args.start_frame,
                                end_offset=args.end_offset)
 
-        # Label cell
-        ax_lbl = fig.add_subplot(gs[row_idx, 0])
-        ax_lbl.axis('off')
-        ax_lbl.text(
-            0.55, 0.5, label,
-            ha='center', va='center',
-            fontsize=6.5, fontweight='bold',
-            rotation=90,
-            transform=ax_lbl.transAxes,
-        )
-
         for col_idx, frame in enumerate(selected):
-            ax = fig.add_subplot(gs[row_idx, col_idx + 1])
-            ax.imshow(frame, aspect='auto')
+            ax = axes[row_idx][col_idx]
+            ax.imshow(frame)
             ax.axis('off')
+
+        # vertical label centred on this row (matches visualize_walker_trajectory_frames.py)
+        row_axes = axes[row_idx]
+        ys = [ax.get_position().y0 + ax.get_position().height / 2
+              for ax in row_axes]
+        y_mid = sum(ys) / len(ys)
+        xs = [ax.get_position().x0 for ax in row_axes]
+        x_left = min(xs) - 0.01
+        fig.text(x_left, y_mid, label,
+                 ha='right', va='center', rotation='vertical',
+                 fontsize=18, fontweight='bold')
 
 
     out_path = Path(args.out)
