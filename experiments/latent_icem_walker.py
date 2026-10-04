@@ -369,22 +369,22 @@ def run_trial(planner, eval_env, visual_env,
             planner._gt_init_std_per_dim = None
 
         if sac_policy is not None:
-            # Roll SAC policy for H steps from the probe-decoded current obs.
-            # This gives a warm-start mean that mirrors the SAC gait; with tiny
-            # initial_std the CEM barely perturbs it — "basically SAC + noise".
-            from experiments.walker2d_smwm_utils import latent_step_batch
-            H         = planner.horizon
-            sac_mean  = np.zeros((H, ACTION_DIM), dtype=np.float32)
-            z_sac     = z_for_plan.clone()
+            # Compute ONE SAC action from the ENCODER z (reliable probe).
+            # Tiling it as a constant mean avoids the OOD probe problem that
+            # arose when rolling the predictor for H steps: predictor z values
+            # are out-of-distribution for an encoder-trained probe, so probe
+            # outputs at t>0 were unreliable and gave a bad mean.
+            # With the constant-tile mean, all iCEM samples stay close to
+            # a SAC-like action (in the training distribution), so predictor
+            # rollouts drift less OOD and the cost is more discriminative.
+            H = planner.horizon
             with torch.no_grad():
-                for t in range(H):
-                    obs_hat = probe._net(z_sac)[0].cpu().numpy()   # (17,)
-                    a_sac   = sac_policy.act(obs_hat)              # (6,)
-                    sac_mean[t] = a_sac
-                    z_sac = latent_step_batch(bundle, z_sac,
-                                             torch.as_tensor(a_sac, dtype=z_sac.dtype,
-                                                             device=z_sac.device).unsqueeze(0))
-            planner._gt_init_mean        = np.clip(sac_mean, ACTION_LOW, ACTION_HIGH)
+                obs_hat = probe._net(z_for_plan)[0].cpu().numpy()   # encoder z → reliable
+                a_sac   = sac_policy.act(obs_hat)                   # (6,)
+            sac_mean = np.tile(
+                np.clip(a_sac, ACTION_LOW, ACTION_HIGH)[None], (H, 1)
+            ).astype(np.float32)
+            planner._gt_init_mean        = sac_mean
             planner._gt_init_std_per_dim = None
 
         sequence = planner.plan(z_for_plan)
