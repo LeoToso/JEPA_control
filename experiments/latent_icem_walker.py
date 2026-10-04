@@ -311,8 +311,8 @@ class LatentWalkeriCEM:
 # ── MPC trial ─────────────────────────────────────────────────────────────────
 
 def run_trial(planner, eval_env, visual_env,
-              bundle, initial_seed, n_steps, do_render,
-              z0_library=None):
+              bundle, probe, initial_seed, n_steps, do_render,
+              z0_library=None, sac_policy=None):
     """MPC loop: plan in latent space, execute in real env, re-encode.
 
     z0_library : optional (z0s, actions) from precompute_z0_library.
@@ -351,6 +351,7 @@ def run_trial(planner, eval_env, visual_env,
     terminated  = False
 
     while step < n_steps and not terminated:
+        z_for_plan = z_eval
         if z0_library is not None:
             # Substitute nearest-neighbour training z_0 so CEM stays in-distribution
             z0s_lib, lib_actions = z0_library
@@ -366,8 +367,25 @@ def run_trial(planner, eval_env, visual_env,
                 pad = np.zeros((H - len(acts), ACTION_DIM), dtype=np.float32)
                 planner._gt_init_mean = np.concatenate([acts, pad], axis=0)
             planner._gt_init_std_per_dim = None
-        else:
-            z_for_plan = z_eval
+
+        if sac_policy is not None:
+            # Roll SAC policy for H steps from the probe-decoded current obs.
+            # This gives a warm-start mean that mirrors the SAC gait; with tiny
+            # initial_std the CEM barely perturbs it — "basically SAC + noise".
+            from experiments.walker2d_smwm_utils import latent_step_batch
+            H         = planner.horizon
+            sac_mean  = np.zeros((H, ACTION_DIM), dtype=np.float32)
+            z_sac     = z_for_plan.clone()
+            with torch.no_grad():
+                for t in range(H):
+                    obs_hat = probe._net(z_sac)[0].cpu().numpy()   # (17,)
+                    a_sac   = sac_policy.act(obs_hat)              # (6,)
+                    sac_mean[t] = a_sac
+                    z_sac = latent_step_batch(bundle, z_sac,
+                                             torch.as_tensor(a_sac, dtype=z_sac.dtype,
+                                                             device=z_sac.device).unsqueeze(0))
+            planner._gt_init_mean        = np.clip(sac_mean, ACTION_LOW, ACTION_HIGH)
+            planner._gt_init_std_per_dim = None
 
         sequence = planner.plan(z_for_plan)
 
@@ -538,6 +556,15 @@ def main():
                         'from the HDF5 dataset (avoids cold-start in random space)')
     p.add_argument('--sac-warmstart-episode', type=int, default=0,
                    help='Which HDF5 episode to take SAC actions from')
+    # SAC policy warm-start (live policy network)
+    p.add_argument('--sac-policy-warmstart', action='store_true',
+                   help='At each plan call, roll out the SAC policy network for H steps '
+                        'from the probe-decoded current obs and use those actions as the '
+                        'CEM mean (effectively "SAC + tiny noise" when --initial-std is small)')
+    p.add_argument('--sac-repo',  default='sdpkjc/Walker2d-v4-sac_continuous_action-seed4',
+                   help='HuggingFace repo for SAC policy (used with --sac-policy-warmstart)')
+    p.add_argument('--sac-ckpt',  default=None,
+                   help='Local SAC checkpoint path instead of downloading')
     # GT iCEM warm-start
     p.add_argument('--gt-warmstart', default=None, metavar='GT_JSON',
                    help='Path to GT iCEM JSON (must contain trials[].actions). '
@@ -682,6 +709,16 @@ def main():
         z0_library = precompute_z0_library(bundle, args.hdf5_dir,
                                            n_episodes=args.nn_z0_episodes)
 
+    # ── SAC policy network warm-start ─────────────────────────────────────────
+    sac_policy = None
+    if args.sac_policy_warmstart:
+        from experiments.walker2d_ppo_utils import download_and_load_sac, load_sac_from_local
+        print('[latent-iCEM] Loading SAC policy …')
+        sac_policy = (load_sac_from_local(args.sac_ckpt)
+                      if args.sac_ckpt else
+                      download_and_load_sac(args.sac_repo, device='cpu'))
+        print('[latent-iCEM] SAC policy loaded.')
+
     # ── build planner ─────────────────────────────────────────────────────────
     planner = LatentWalkeriCEM(
         horizon        = args.planning_horizon,
@@ -779,9 +816,10 @@ def main():
 
         row, frames = run_trial(
             planner, eval_env, visual_env,
-            bundle, args.seed + i, args.n_steps,
+            bundle, probe, args.seed + i, args.n_steps,
             bool(args.render_dir),
-            z0_library=z0_library)
+            z0_library=z0_library,
+            sac_policy=sac_policy)
 
         elapsed = time.time() - t0
         success = row['survived_full'] and row['avg_x_velocity'] >= args.success_min_velocity
