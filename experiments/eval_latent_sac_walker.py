@@ -37,7 +37,8 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
               seed: int, n_steps: int,
               real_height: bool = False,
               real_angle: bool = False,
-              real_obs: bool = False):
+              real_obs: bool = False,
+              do_render: bool = False):
     """Close loop: real frame → encoder → probe → SAC → real env.
 
     real_height / real_angle: replace probe output dims 0/1 with the
@@ -59,6 +60,7 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
     device = bundle['device']
     step = 0
     x_vels: list[float] = []
+    frames: list = []
     terminated = False
 
     while step < n_steps and not terminated:
@@ -94,6 +96,8 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
         obs_gym, reward, term, trunc, info = eval_env.step(action)
         step += 1
         x_vels.append(float(info.get('x_velocity', 0.0)))
+        if do_render:
+            frames.append(eval_env.render())
         terminated = term or trunc or done_vis
 
     data         = eval_env.unwrapped.data
@@ -110,7 +114,7 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
         'avg_x_velocity': avg_vel,
         'final_height': final_height,
         'final_angle': final_angle,
-    }
+    }, frames
 
 
 def main():
@@ -148,6 +152,12 @@ def main():
     p.add_argument('--real-obs',    action='store_true',
                    help='Bypass probe entirely; feed real gymnasium obs to SAC '
                         '(upper bound ablation; should match SAC real-env baseline ~3.9 m/s)')
+    # rendering
+    p.add_argument('--render-dir',   default='',
+                   help='Directory to save GIF and frame grid. Empty = no rendering.')
+    p.add_argument('--render-every', type=int, default=5,
+                   help='Save every N-th frame to the grid image')
+    p.add_argument('--gif-fps',      type=int, default=30)
     args = p.parse_args()
 
     # ── load bundle ──────────────────────────────────────────────────────────
@@ -223,7 +233,8 @@ def main():
     import gymnasium as gym
     from envs.walker2d_visual import Walker2dVisual
 
-    eval_env   = gym.make('Walker2d-v4')
+    eval_env   = gym.make('Walker2d-v4',
+                          render_mode='rgb_array' if args.render_dir else None)
     visual_env = Walker2dVisual(image_size=args.image_size)
 
     mode = ('real-obs' if args.real_obs else
@@ -237,16 +248,22 @@ def main():
     print(f'  trials={args.trials}  n_steps={args.n_steps}  seed={args.seed}')
     print()
 
-    all_vels = []
+    do_render  = bool(args.render_dir)
+    all_vels   = []
+    all_rows   = []
+    all_frames = []
     for i in range(args.trials):
         t0  = time.time()
-        row = run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
-                        seed=args.seed + i, n_steps=args.n_steps,
-                        real_height=args.real_height,
-                        real_angle=args.real_angle,
-                        real_obs=args.real_obs)
+        row, frames = run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
+                                seed=args.seed + i, n_steps=args.n_steps,
+                                real_height=args.real_height,
+                                real_angle=args.real_angle,
+                                real_obs=args.real_obs,
+                                do_render=do_render)
         elapsed = time.time() - t0
         all_vels.append(row['avg_x_velocity'])
+        all_rows.append(row)
+        all_frames.append(frames)
         status = 'SUCCESS' if row['survived'] else 'FAIL'
         print(f'  trial {i:02d}  {status}  steps={row["steps"]}  '
               f'avg_vel={row["avg_x_velocity"]:+.3f}  '
@@ -255,6 +272,22 @@ def main():
 
     print(f'\nMean avg_x_velocity: {np.mean(all_vels):.3f} m/s  '
           f'(range {min(all_vels):.3f} – {max(all_vels):.3f})')
+
+    if do_render:
+        from experiments.latent_icem_walker import save_gif, save_frame_grid
+        # Pick best trial by velocity
+        best_i  = max(range(len(all_rows)), key=lambda i: all_rows[i]['avg_x_velocity'])
+        row     = all_rows[best_i]
+        frames  = all_frames[best_i]
+        tag     = 'success' if row['survived'] else 'best_failed'
+        stem    = f'{tag}_trial_{best_i:03d}'
+        title   = (f'Latent-SAC Walker2d — trial {best_i} [{tag}] '
+                   f'vel={row["avg_x_velocity"]:.3f} disp={row["forward_disp"]:.2f}m')
+        outdir  = Path(args.render_dir)
+        if frames:
+            save_gif(frames, outdir / f'{stem}.gif', fps=args.gif_fps)
+            save_frame_grid(frames, outdir / f'{stem}.png',
+                            every=args.render_every, title=title)
 
     eval_env.close()
     visual_env.close()
