@@ -53,8 +53,8 @@ def main():
     p.add_argument('--gif2', required=True, help='GIF for row 2 (MSP+SIG)')
     p.add_argument('--gif3', required=True, help='GIF for row 3 (1SP+SIG)')
     p.add_argument('--label1', default='1SP+EP-IDM')
-    p.add_argument('--label2', default='MSP+SIG')
-    p.add_argument('--label3', default='1SP+SIG')
+    p.add_argument('--label2', default='1SP+SIG')
+    p.add_argument('--label3', default='MSP+SIG')
     p.add_argument('--n-frames',    type=int, default=10)
     p.add_argument('--start-frame', type=int, default=150,
                    help='Index of the first frame to show')
