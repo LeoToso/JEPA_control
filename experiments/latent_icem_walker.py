@@ -718,9 +718,12 @@ def main():
     import gymnasium as gym
     from envs.walker2d_visual import Walker2dVisual
 
-    from gymnasium.envs.mujoco import Walker2dEnv
-    eval_env   = Walker2dEnv(frame_skip=5,
-                             render_mode='rgb_array' if args.render_dir else None)
+    import importlib as _il
+    _spec     = gym.spec('Walker2d-v4')
+    _mod, _cls = _spec.entry_point.rsplit(':', 1)
+    _Walker2dCls = getattr(_il.import_module(_mod), _cls)
+    eval_env   = _Walker2dCls(frame_skip=5,
+                              render_mode='rgb_array' if args.render_dir else None)
     visual_env = Walker2dVisual(image_size=args.image_size, frame_skip=5)
 
     model_name = Path(args.ckpt).parent.name
