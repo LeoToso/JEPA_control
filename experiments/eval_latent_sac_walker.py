@@ -12,7 +12,7 @@ Usage
 -----
 MUJOCO_GL=egl python experiments/eval_latent_sac_walker.py \\
     --ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --hdf5-dir data/walker2d_mixed_sac_fs5_64 \\
     --probe-path results/probes/fwd_ep_ar_mlp_probe.pt \\
     --sac-repo sdpkjc/Walker2d-v4-sac_continuous_action-seed4 \\
@@ -45,7 +45,7 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
     corresponding real gymnasium obs value for an ablation study.
     real_obs: bypass probe entirely and use the full real gymnasium obs.
     """
-    from experiments.sensorimotor_probe_utils import encode_obs, make_frame_buffer, push_frame
+    from experiments.probe_utils import encode_obs, make_frame_buffer, push_frame
 
     obs_gym, _ = eval_env.reset(seed=seed)
     frame, state, _ = visual_env.reset(seed=seed)
@@ -161,7 +161,7 @@ def main():
     args = p.parse_args()
 
     # ── load bundle ──────────────────────────────────────────────────────────
-    from experiments.walker2d_smwm_utils import (
+    from experiments.walker2d_utils import (
         load_walker_bundle, fit_walker_mlp_probe, MLPStateProbe,
     )
 

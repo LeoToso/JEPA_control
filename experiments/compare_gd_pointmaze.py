@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Gradient-based planning for PointMaze JEPA (SensorimotorWorldModel) checkpoints.
+"""Gradient-based planning for PointMaze JEPA checkpoints.
 
 Uses the same seed/trial protocol as compare_cem_dinowm_pointmaze.py and the
 same GD optimisation loop as compare_gd_smwm.py (Adam, noise injection,
@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from sensorimotor_probe_utils import encode_obs, load_bundle
+from experiments.probe_utils import encode_obs, load_bundle
 from envs.pointmaze_visual import PointMazeVisual
 
 

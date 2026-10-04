@@ -1,19 +1,22 @@
 #!/usr/bin/env python
-"""Single-checkpoint 5-panel summary figure.
+"""Single-checkpoint 5-panel summary figure — physical-space error variant.
+
+Identical to plot_checkpoint_summary_smwm.py except panels 2 and 3 decode
+predicted latents to physical state via the ridge probe before computing error.
 
 Panels (left → right):
-  1. Phase portrait — GT (green) vs learned (plasma) vector field on θ–θ̇ plane
-  2. H-step prediction error landscape — ||f_H(E(s),0) − E(s_{t+H}^GT)||
-  3. Planning cost landscape — log10||f_H(E(s),0) − z_goal||^2, H=horizon
-  4. Latent norm divergence — encoded GT vs recursive predictor norm over time
-  5. Cosine alignment — cos(Δz_GT, Δz_pred) vs rollout time
+  1. Phase portrait       — GT (green) vs learned (plasma) on θ–θ̇ plane
+  2. H-step prediction error — ||D(f_H(E(s),0)) − s_{t+H}^GT||  (physical)
+  3. Planning cost           — log10||D(f_H(E(s),0)) − s_goal||² (physical)
+  4. Latent norm divergence  — encoded GT vs recursive predictor norm
+  5. Cosine alignment        — cos(Δz_GT, Δz_pred) vs rollout time
 
 Usage:
-  python experiments/plot_checkpoint_summary_smwm.py \\
+  python experiments/plot_checkpoint_summary_physical_smwm.py \\
       --ckpt  path/to/model.pt \\
       --cfg   path/to/config.yaml \\
       --title "1sp_AR" \\
-      --out   results/summary_1sp_AR.png
+      --out   results/summary_physical_1sp_AR.png
 """
 from __future__ import annotations
 
@@ -23,24 +26,23 @@ import warnings
 from pathlib import Path
 
 _here = Path(__file__).resolve().parent
-sys.path.insert(0, str(_here))           # experiments/ → sensorimotor_probe_utils
-sys.path.insert(0, str(_here.parent))    # repo root    → models/, data/, …
+sys.path.insert(0, str(_here))
+sys.path.insert(0, str(_here.parent))
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
 
-from sensorimotor_probe_utils import make_env
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import make_env
+from experiments.probe_utils import (
     RidgeStateProbe, encode_obs, encode_rendered_state,
     gt_rollout, learned_rollout, load_bundle,
 )
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers (unchanged) ───────────────────────────────────────────────────────
 
 def _env_patch(bundle):
-    """Fill in missing 'environment' key for result-only configs."""
     if 'environment' not in bundle['env_cfg']:
         bundle['env_cfg']['environment'] = {
             'frame_skip': int(bundle['model_cfg'].get('frame_skip', 5)),
@@ -58,7 +60,6 @@ def _macro_dt(bundle):
 
 
 def _build_probe(bundle, n_samples=200, seed=123):
-    """Fit a ridge probe over randomly sampled states."""
     rng = np.random.RandomState(seed)
     states = rng.uniform(
         [-.2, -.5, -.15, -1.], [.2, .5, .15, 1.],
@@ -69,12 +70,10 @@ def _build_probe(bundle, n_samples=200, seed=123):
         obs, _, _ = env.reset_to_state(s)
         zs.append(encode_obs(bundle, obs, obs, s).cpu().numpy()[0])
     env.close()
-    probe = RidgeStateProbe().fit(np.asarray(zs), states, 1e-3)
-    return probe
+    return RidgeStateProbe().fit(np.asarray(zs), states, 1e-3)
 
 
 def _gt_unstable_eigvec(bundle, eps=1e-4):
-    """Finite-difference GT linearisation → most unstable eigenvector."""
     n = 4
     A = np.zeros((n, n), dtype=np.float64)
     for j in range(n):
@@ -90,7 +89,7 @@ def _gt_unstable_eigvec(bundle, eps=1e-4):
     return (vecs / norms)[:, 0]
 
 
-# ── Panel 1: phase portrait ───────────────────────────────────────────────────
+# ── Panel 1: phase portrait (unchanged) ──────────────────────────────────────
 
 def panel_phase_portrait(ax, bundle, probe,
                          theta_max, rate_max, n_theta, n_rate):
@@ -110,7 +109,7 @@ def panel_phase_portrait(ax, bundle, probe,
         obs, _, _ = env.reset_to_state(state)
         z0    = encode_obs(bundle, obs, obs, state)
         z_roll = learned_rollout(bundle, z0, 1, 0.)
-        dec   = probe(z_roll)  # (2, 4) decoded states
+        dec   = probe(z_roll)
         lr_u[idx] = np.rad2deg((dec[1, 2] - dec[0, 2]) / mdt)
         lr_v[idx] = np.rad2deg((dec[1, 3] - dec[0, 3]) / mdt)
         env.reset_to_state(state)
@@ -138,26 +137,25 @@ def panel_phase_portrait(ax, bundle, probe,
               scale=1, scale_units='xy', angles='xy',
               width=.002, headwidth=4, headlength=4)
     ax.quiver(theta_mesh, rate_mesh,
-              lr_un * frac * dx, lr_vn * frac * dy,
-              color='black', alpha=0.75, pivot='mid',
+              lr_un * frac * dx, lr_vn * frac * dy, speed,
+              cmap='plasma', pivot='mid',
               scale=1, scale_units='xy', angles='xy',
               width=.0025, headwidth=4, headlength=4)
     ax.scatter([0.], [0.], marker='*', s=200, color='red', zorder=5)
-    ax.set_xlabel(r'$\theta$ [deg]', fontsize=14)
-    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=14)
+    ax.set_xlabel(r'$\theta$ [deg]', fontsize=11)
+    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=11)
     ax.legend(handles=[
         Line2D([0], [0], color='#2ecc40', lw=4, label='GT'),
         Line2D([0], [0], color='black',   lw=3, label='Learned'),
         Line2D([0], [0], marker='*', color='red', ls='None',
                ms=13, label='Equilibrium'),
-    ], fontsize=14, loc='upper right')
-    ax.tick_params(labelsize=14)
+    ], fontsize=8, loc='upper right')
     ax.grid(alpha=.2)
 
 
-# ── Panel 2: H-step prediction error ─────────────────────────────────────────
+# ── Panel 2: H-step prediction error in physical state space ─────────────────
 
-def panel_pred_error(ax, fig, bundle,
+def panel_pred_error(ax, fig, bundle, probe,
                      theta_max, rate_max, n_theta, n_rate, H):
     theta_deg = np.linspace(-theta_max, theta_max, n_theta)
     rate_deg  = np.linspace(-rate_max,  rate_max,  n_rate)
@@ -170,49 +168,45 @@ def panel_pred_error(ax, fig, bundle,
                              dtype=np.float32)
             obs, _, _ = env.reset_to_state(state)
             z0 = encode_obs(bundle, obs, obs, state)
+
+            # Learned: roll H steps, decode final latent to physical state
             z_pred_H = learned_rollout(bundle, z0, H, 0.)[-1]
-            obs_t, state_t = obs, state
-            obs_prev = obs
+            s_pred = probe(z_pred_H)  # (4,) physical state
+
+            # GT: step H times, collect final physical state
+            state_t = state.copy()
             for _ in range(H):
-                obs_next, state_next, _, done, _ = env.step(0.)
-                obs_prev, obs_t = obs_t, obs_next
+                _, state_next, _, done, _ = env.step(0.)
                 state_t = state_next
                 if done:
                     break
-            z_gt_H = encode_obs(
-                bundle, obs_t, obs_prev, state_t).cpu().numpy()[0]
-            err[ri, ti] = float(np.linalg.norm(z_pred_H - z_gt_H))
+
+            err[ri, ti] = float(np.linalg.norm(s_pred - state_t))
 
     env.close()
     im = ax.pcolormesh(theta_deg, rate_deg, err,
                        cmap='YlOrRd', shading='auto', vmin=0)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04,
-                        label='prediction error')
-    cbar.set_label('prediction error', fontsize=14)
-    cbar.ax.tick_params(labelsize=14)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04,
+                 label=r'$\|D(f_H(z_t,0)) - s_{t+H}^{\rm GT}\|$')
     ax.contour(theta_deg, rate_deg, err, levels=6,
                colors='k', linewidths=0.5, alpha=0.35)
     ax.scatter([0.], [0.], marker='*', s=200, color='lime', zorder=5,
                edgecolors='darkgreen', lw=0.8, label='Equilibrium')
-    ax.set_xlabel(r'$\theta$ [deg]', fontsize=14)
-    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=14)
-    ax.legend(fontsize=14)
-    ax.tick_params(labelsize=14)
+    ax.set_xlabel(r'$\theta$ [deg]', fontsize=11)
+    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=11)
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.15)
 
 
-# ── Panel 3: planning cost ────────────────────────────────────────────────────
+# ── Panel 3: planning cost in physical state space ────────────────────────────
 
-def panel_planning_cost(ax, fig, bundle,
+def panel_planning_cost(ax, fig, bundle, probe,
                         theta_max, rate_max, n_theta, n_rate, H):
     theta_deg = np.linspace(-theta_max, theta_max, n_theta)
     rate_deg  = np.linspace(-rate_max,  rate_max,  n_rate)
 
-    goal_env = make_env(bundle['env_cfg'], 999)
-    goal_obs, _, _ = goal_env.reset_to_state(np.zeros(4, np.float32))
-    z_goal = encode_obs(
-        bundle, goal_obs, goal_obs, np.zeros(4, np.float32)).cpu().numpy()[0]
-    goal_env.close()
+    # Goal is the physical equilibrium [0, 0, 0, 0]
+    s_goal = np.zeros(4, dtype=np.float32)
 
     cost = np.zeros((n_rate, n_theta))
     env = make_env(bundle['env_cfg'], 992)
@@ -222,8 +216,12 @@ def panel_planning_cost(ax, fig, bundle,
                              dtype=np.float32)
             obs, _, _ = env.reset_to_state(state)
             z0 = encode_obs(bundle, obs, obs, state)
-            orbit = learned_rollout(bundle, z0, H, 0.)
-            diff = orbit[-1] - z_goal
+
+            # Roll H steps, decode to physical state
+            z_H = learned_rollout(bundle, z0, H, 0.)[-1]
+            s_pred = probe(z_H)  # (4,) physical state
+
+            diff = s_pred - s_goal
             cost[ri, ti] = float(np.dot(diff, diff))
     env.close()
 
@@ -231,20 +229,18 @@ def panel_planning_cost(ax, fig, bundle,
     im = ax.pcolormesh(theta_deg, rate_deg, log_cost,
                        cmap='RdYlBu_r', shading='auto')
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(r'$\log_{10}\|\hat{z}_H - z_{\rm goal}\|^2$', fontsize=14)
-    cbar.ax.tick_params(labelsize=14)
+    cbar.set_label(r'$\log_{10}\|D(\hat{z}_H) - s_{\rm goal}\|^2$', fontsize=9)
     ax.contour(theta_deg, rate_deg, log_cost, levels=8,
                colors='k', linewidths=0.5, alpha=0.35)
     ax.scatter([0.], [0.], marker='*', s=200, color='lime', zorder=5,
                edgecolors='darkgreen', lw=0.8, label='Equilibrium')
-    ax.set_xlabel(r'$\theta$ [deg]', fontsize=14)
-    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=14)
-    ax.legend(fontsize=14)
-    ax.tick_params(labelsize=14)
+    ax.set_xlabel(r'$\theta$ [deg]', fontsize=11)
+    ax.set_ylabel(r'$\dot{\theta}$ [deg/s]', fontsize=11)
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.15)
 
 
-# ── Panel 4: latent norm divergence ──────────────────────────────────────────
+# ── Panel 4: latent norm divergence (unchanged) ───────────────────────────────
 
 def panel_latent_norm(ax, bundle, theta0_rad, steps, action=0.):
     state0 = np.array([0., 0., theta0_rad, 0.], dtype=np.float32)
@@ -259,14 +255,13 @@ def panel_latent_norm(ax, bundle, theta0_rad, steps, action=0.):
 
     ax.plot(time, gt_norm,   color='steelblue',   lw=2,   label='encoded GT')
     ax.plot(time, pred_norm, '--', color='darkorange', lw=2, label='predicted')
-    ax.set_xlabel('time [s]', fontsize=14)
-    ax.set_ylabel('latent norm', fontsize=14)
-    ax.legend(fontsize=14)
-    ax.tick_params(labelsize=14)
+    ax.set_xlabel('time [s]', fontsize=11)
+    ax.set_ylabel('latent norm', fontsize=11)
+    ax.legend(fontsize=9)
     ax.grid(alpha=0.25)
 
 
-# ── Panel 5: cosine alignment Δz_GT vs Δz_pred ───────────────────────────────
+# ── Panel 5: cosine alignment (unchanged) ────────────────────────────────────
 
 def panel_cosine_alignment(ax, bundle, v_u, macro_dt,
                            H_max=20, n_starts=6, alpha_max=0.25):
@@ -305,9 +300,8 @@ def panel_cosine_alignment(ax, bundle, v_u, macro_dt,
                     color=color, alpha=0.15)
     ax.axhline(0., color='gray', ls='--', lw=0.8)
     ax.set_ylim(-0.25, 1.15)
-    ax.set_xlabel('Rollout time [s]', fontsize=14)
-    ax.set_ylabel(r'$\cos(\Delta z_{GT},\, \Delta z_{pred})$', fontsize=14)
-    ax.tick_params(labelsize=14)
+    ax.set_xlabel('Rollout time [s]', fontsize=11)
+    ax.set_ylabel(r'$\cos(\Delta z_{GT},\, \Delta z_{pred})$', fontsize=11)
     ax.grid(alpha=0.25)
 
 
@@ -316,51 +310,33 @@ def panel_cosine_alignment(ax, bundle, v_u, macro_dt,
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument('--ckpt',  required=True, help='Checkpoint path (.pt)')
-    p.add_argument('--cfg',   required=True, help='Config path (.yaml)')
-    p.add_argument('--title', required=True,
-                   help='Figure suptitle, e.g. "1sp_AR"')
-    p.add_argument('--out',   required=True, help='Output image path')
+    p.add_argument('--ckpt',  required=True)
+    p.add_argument('--cfg',   required=True)
+    p.add_argument('--title', required=True)
+    p.add_argument('--out',   required=True)
 
-    # Panel 1: phase portrait
-    p.add_argument('--phase-theta-max', type=float, default=5.,
-                   help='Half-range of θ axis [deg]')
-    p.add_argument('--phase-rate-max',  type=float, default=20.,
-                   help='Half-range of θ̇ axis [deg/s]')
+    p.add_argument('--phase-theta-max', type=float, default=5.)
+    p.add_argument('--phase-rate-max',  type=float, default=20.)
     p.add_argument('--phase-theta-pts', type=int,   default=13)
     p.add_argument('--phase-rate-pts',  type=int,   default=11)
-    p.add_argument('--probe-samples',   type=int,   default=200,
-                   help='States used to fit the ridge probe for panel 1')
+    p.add_argument('--probe-samples',   type=int,   default=200)
 
-    # Panels 2+3: prediction error and planning cost landscapes
     p.add_argument('--pred-theta-max',  type=float, default=25.)
     p.add_argument('--pred-rate-max',   type=float, default=100.)
     p.add_argument('--pred-theta-pts',  type=int,   default=13)
     p.add_argument('--pred-rate-pts',   type=int,   default=11)
-    p.add_argument('--horizon',         type=int,   default=3,
-                   help='H for panels 2 and 3')
+    p.add_argument('--horizon',         type=int,   default=3)
 
-    # Panel 4: latent norm divergence
-    p.add_argument('--theta0',      type=float, default=0.1,
-                   help='Initial θ [rad] for latent norm panel')
-    p.add_argument('--norm-steps',  type=int,   default=20)
+    p.add_argument('--theta0',     type=float, default=0.1)
+    p.add_argument('--norm-steps', type=int,   default=20)
 
-    # Panel 5: cosine alignment
-    p.add_argument('--n-steps',   type=int,   default=20,
-                   help='H_max for cosine alignment panel')
-    p.add_argument('--n-starts',  type=int,   default=6,
-                   help='Number of perturbation magnitudes')
-    p.add_argument('--alpha-max', type=float, default=0.25,
-                   help='Max perturbation magnitude along v_u')
+    p.add_argument('--n-steps',   type=int,   default=20)
+    p.add_argument('--n-starts',  type=int,   default=6)
+    p.add_argument('--alpha-max', type=float, default=0.25)
 
     p.add_argument('--device', default='cuda')
-    p.add_argument('--skip-panels', type=int, nargs='+', default=[],
-                   metavar='N', help='Panel numbers to skip (1=phase portrait, '
-                                     '2=pred error, 3=planning cost, '
-                                     '4=latent norm, 5=cosine alignment)')
     args = p.parse_args()
 
-    # ── load ──────────────────────────────────────────────────────────────────
     print('[load] bundle …')
     bundle = load_bundle(args.ckpt, args.cfg, args.device)
     _env_patch(bundle)
@@ -372,47 +348,44 @@ def main():
     print('[GT] computing unstable eigenvector …')
     v_u = _gt_unstable_eigvec(bundle)
 
-    # ── figure ────────────────────────────────────────────────────────────────
-    skip = set(args.skip_panels)
-    active = [i for i in (1, 2, 3, 4, 5) if i not in skip]
-    n_panels = len(active)
-    fig, axes_all = plt.subplots(1, n_panels, figsize=(7 * n_panels, 6.5))
-    if n_panels == 1:
-        axes_all = [axes_all]
-    ax_iter = iter(axes_all)
-    if 1 not in skip:
-        print('[panel 1] phase portrait …')
-        ax = next(ax_iter)
-        panel_phase_portrait(ax, bundle, probe,
-                             args.phase_theta_max, args.phase_rate_max,
-                             args.phase_theta_pts, args.phase_rate_pts)
+    fig, axes = plt.subplots(1, 5, figsize=(34, 6.5))
+    fig.suptitle(args.title, fontsize=17, fontweight='bold', y=1.02)
 
-    if 2 not in skip:
-        print(f'[panel 2] H={args.horizon} prediction error …')
-        ax = next(ax_iter)
-        panel_pred_error(ax, fig, bundle,
-                         args.pred_theta_max, args.pred_rate_max,
-                         args.pred_theta_pts, args.pred_rate_pts, args.horizon)
+    print('[panel 1] phase portrait …')
+    panel_phase_portrait(axes[0], bundle, probe,
+                         args.phase_theta_max, args.phase_rate_max,
+                         args.phase_theta_pts, args.phase_rate_pts)
+    axes[0].set_title('Phase portrait', fontsize=12)
 
-    if 3 not in skip:
-        print(f'[panel 3] planning cost H={args.horizon} …')
-        ax = next(ax_iter)
-        panel_planning_cost(ax, fig, bundle,
-                            args.pred_theta_max, args.pred_rate_max,
-                            args.pred_theta_pts, args.pred_rate_pts, args.horizon)
+    print(f'[panel 2] H={args.horizon} physical prediction error …')
+    panel_pred_error(axes[1], fig, bundle, probe,
+                     args.pred_theta_max, args.pred_rate_max,
+                     args.pred_theta_pts, args.pred_rate_pts, args.horizon)
+    axes[1].set_title(
+        fr'$H={args.horizon}$ prediction error  '
+        r'$\|D(f_H(z_t,0)) - s_{t+H}^{\rm GT}\|$',
+        fontsize=11)
 
-    if 4 not in skip:
-        print('[panel 4] latent norm divergence …')
-        ax = next(ax_iter)
-        panel_latent_norm(ax, bundle, args.theta0, args.norm_steps)
+    print(f'[panel 3] physical planning cost H={args.horizon} …')
+    panel_planning_cost(axes[2], fig, bundle, probe,
+                        args.pred_theta_max, args.pred_rate_max,
+                        args.pred_theta_pts, args.pred_rate_pts, args.horizon)
+    axes[2].set_title(
+        fr'Planning cost $H={args.horizon}$, zero action (physical)',
+        fontsize=12)
 
-    if 5 not in skip:
-        print('[panel 5] cosine alignment …')
-        ax = next(ax_iter)
-        panel_cosine_alignment(ax, bundle, v_u, mdt,
-                               H_max=args.n_steps,
-                               n_starts=args.n_starts,
-                               alpha_max=args.alpha_max)
+    print('[panel 4] latent norm divergence …')
+    panel_latent_norm(axes[3], bundle, args.theta0, args.norm_steps)
+    axes[3].set_title('Latent norm divergence', fontsize=12)
+
+    print('[panel 5] cosine alignment …')
+    panel_cosine_alignment(axes[4], bundle, v_u, mdt,
+                           H_max=args.n_steps,
+                           n_starts=args.n_starts,
+                           alpha_max=args.alpha_max)
+    axes[4].set_title(
+        r'Cosine alignment $\Delta z_{GT}$ vs $\Delta z_{pred}$',
+        fontsize=12)
 
     fig.tight_layout()
     out = Path(args.out)

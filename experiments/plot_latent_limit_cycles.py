@@ -41,8 +41,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
-from experiments.walker2d_smwm_utils import load_walker_bundle, latent_step
-from experiments.sensorimotor_probe_utils import encode_obs
+from experiments.walker2d_utils import load_walker_bundle, latent_step
+from experiments.probe_utils import encode_obs
 
 # ── style constants ───────────────────────────────────────────────────────────
 

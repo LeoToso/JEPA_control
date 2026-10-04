@@ -49,7 +49,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from sensorimotor_probe_utils import (
+from probe_utils import (
     encode_obs, equilibrium_latent, load_bundle, local_jacobians,
     make_env, predict_one,
 )

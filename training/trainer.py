@@ -204,7 +204,7 @@ class Trainer:
             self.state_head = None
 
         # Local inverse dynamics head (local_pair / local_window modes).
-        # inv_frames=2 (paper/SMWM): ψ(z_t, z_{t+1}) → u_t  — 2-layer MLP, H pairs.
+        # inv_frames=2 (paper): ψ(z_t, z_{t+1}) → u_t  — 2-layer MLP, H pairs.
         # inv_frames=3 (default):    ψ(z_{t-1}, z_t, z_{t+1}) → u_t — 4-layer MLP, H-1 triplets.
         # This head receives intermediate latent states.  For endpoint-only reconstruction
         # (no intermediate states) see EndpointActionDecoder and lambda_action_reconstruction.
@@ -636,7 +636,7 @@ class Trainer:
                 info['temp_loss'] = temp_loss.item()
 
         # Inverse dynamics loss.
-        # inv_frames=2: forward pair  ψ(z_t, z_{t+1}) → u_t   (SMWM / paper)
+        # inv_frames=2: forward pair  ψ(z_t, z_{t+1}) → u_t
         # inv_frames=N (odd, N≥3): centered window of N frames → u_center
         #   e.g. N=3: (z_{t-1}, z_t, z_{t+1}) → u_t
         #        N=5: (z_{t-2}, z_{t-1}, z_t, z_{t+1}, z_{t+2}) → u_t

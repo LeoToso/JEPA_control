@@ -19,7 +19,7 @@ Usage
 -----
 python experiments/eval_probe_xvel_latent.py \\
     --ckpt  /path/to/model_final.pt \\
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --hdf5-dir data/walker2d_mixed_sac_fs5_64 \\
     --probe-path results/probes/fwd_ep_ar_mlp_probe.pt \\
     --out   results/probes/xvel_latent_eval.pdf \\
@@ -42,10 +42,10 @@ import numpy as np
 import torch
 import h5py
 
-from walker2d_smwm_utils import (
+from experiments.walker2d_utils import (
     MLPStateProbe, load_walker_bundle, latent_step_batch,
 )
-from sensorimotor_probe_utils import encode_obs
+from experiments.probe_utils import encode_obs
 
 
 OBS_DIM = 17

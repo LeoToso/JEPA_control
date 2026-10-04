@@ -13,13 +13,13 @@ Usage
   # All three classic panels
   MUJOCO_GL=egl python experiments/probe_pointmaze_landscapes.py \\
       --ckpt  /mnt/.../model_final.pt \\
-      --cfg   configs/pointmaze_smwm_sigreg_rollout_fs5.yaml \\
+      --cfg   configs/pointmaze_jepa_sigreg_rollout_fs5.yaml \\
       --output results/probe_landscapes_sigreg_rollout_fs5.pdf
 
   # Single distance-field panel (no probe fitting needed)
   MUJOCO_GL=egl python experiments/probe_pointmaze_landscapes.py \\
       --ckpt  /mnt/.../model_final.pt \\
-      --cfg   configs/pointmaze_smwm_sigreg_rollout_fs5.yaml \\
+      --cfg   configs/pointmaze_jepa_sigreg_rollout_fs5.yaml \\
       --panel D --goal-xy -0.20 1.05 \\
       --output results/probe_distance_field.pdf
 
@@ -43,7 +43,7 @@ from sklearn.linear_model import Ridge
 from sklearn.cluster import KMeans
 from sklearn.metrics import r2_score
 
-from sensorimotor_probe_utils import encode_obs, load_bundle
+from probe_utils import encode_obs, load_bundle
 from envs.pointmaze_visual import PointMazeVisual
 
 

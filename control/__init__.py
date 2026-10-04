@@ -1,3 +1,4 @@
+"""Planning and control algorithms — LQR, CEM, and Luenberger observers."""
 from control.lqr import solve_discrete_lqr
 from control.observer import design_luenberger, LuenbergerObserver
 from control.rollout import rollout_latent_mpc, evaluate_stabilization_mpc

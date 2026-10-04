@@ -14,7 +14,7 @@ Usage
 -----
 MUJOCO_GL=egl python experiments/probe_sweep.py \\
     --ckpt  /path/to/model_final.pt \\
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --hdf5-dir data/walker2d_mixed_sac_fs5_64 \\
     --seeds 0 1 2 3 4 5 6 7 8 9 \\
     --best-probe-path results/probes/best_sweep_probe.pt
@@ -37,8 +37,8 @@ import h5py
 def score_probe(bundle, probe, hdf5_dir: str, n_eval: int = 40,
                 horizon: int = 30) -> float:
     """Return fraction of episodes where SAC-ish actions beat random-action cost."""
-    from experiments.walker2d_smwm_utils import latent_step_batch
-    from experiments.sensorimotor_probe_utils import encode_obs
+    from experiments.walker2d_utils import latent_step_batch
+    from experiments.probe_utils import encode_obs
     from experiments.latent_icem_walker import batched_rollout_cost
 
     device = bundle['device']
@@ -116,7 +116,7 @@ def main():
     p.add_argument('--device',          default='cuda')
     args = p.parse_args()
 
-    from experiments.walker2d_smwm_utils import load_walker_bundle, fit_walker_mlp_probe
+    from experiments.walker2d_utils import load_walker_bundle, fit_walker_mlp_probe
 
     def _cfg(ckpt, override):
         if override:

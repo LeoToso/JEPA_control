@@ -61,3 +61,4 @@ class VisualEncoder(nn.Module):
     @torch.no_grad()
     def encode(self,x):
         return self(x)
+

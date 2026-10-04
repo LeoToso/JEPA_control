@@ -18,10 +18,10 @@ Usage
 -----
   MUJOCO_GL=egl python experiments/compare_rollouts.py \\
       --ms-sr-ckpt      /mnt/t7shield/.../model_final.pt \\
-      --ms-sr-cfg       configs/walker2d_smwm_sigreg_rollout_act1.yaml \\
+      --ms-sr-cfg       configs/walker2d_jepa_sigreg_rollout_act1.yaml \\
       --ms-sr-decoder   results/pixel_decoder_ms_sr.pt \\
       --fwd-ar-ckpt     results/.../model_final.pt \\
-      --fwd-ar-cfg      configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+      --fwd-ar-cfg      configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
       --fwd-ar-decoder  results/pixel_decoder_fwd_ar.pt \\
       --hdf5-dir        data/walker2d_fs5_64 \\
       --output-dir      results/rollout_comparison \\
@@ -43,10 +43,10 @@ import torch
 import torch.nn.functional as F
 
 from experiments.walker2d_ppo_utils import download_and_load_sac, load_sac_from_local
-from experiments.walker2d_smwm_utils import (
+from experiments.walker2d_utils import (
     load_walker_bundle, gym_obs_to_mj_state, latent_step,
 )
-from experiments.sensorimotor_probe_utils import encode_obs
+from experiments.probe_utils import encode_obs
 from experiments.walker2d_poincare_utils import WalkerMuJoCoHelper
 from experiments.train_pixel_decoder import ConvDecoder
 
@@ -311,7 +311,7 @@ def main():
 
     # ── SMWM bundles ──────────────────────────────────────────────────────────
     print('\n=== Load MS+SR bundle ===')
-    from experiments.probe_poincare_smwm_walker import find_cfg
+    from experiments.probe_poincare_walker2d import find_cfg
     ms_cfg    = args.ms_sr_cfg  or find_cfg(args.ms_sr_ckpt)
     ms_bundle = load_walker_bundle(args.ms_sr_ckpt, ms_cfg, args.model_device)
 

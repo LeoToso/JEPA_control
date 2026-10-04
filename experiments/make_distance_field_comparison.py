@@ -12,9 +12,9 @@ Usage
           /mnt/t7shield/jepa_results/pointmaze_smwm_fwd_endpoint_inv_act1_seed42/model_final.pt \\
           /mnt/t7shield/jepa_results/pointmaze_sigreg_rollout_fs5_act1_200ep_seed42/model_final.pt \\
       --smwm-cfgs \\
-          configs/pointmaze_smwm_rollout_endpoint_inverse_fs5_act1.yaml \\
-          configs/pointmaze_smwm_fwd_endpoint_inverse_fs5_act1.yaml \\
-          configs/pointmaze_smwm_sigreg_rollout_fs5_act1.yaml \\
+          configs/pointmaze_jepa_rollout_endpoint_inverse_fs5_act1.yaml \\
+          configs/pointmaze_jepa_fwd_endpoint_inverse_fs5_act1.yaml \\
+          configs/pointmaze_jepa_sigreg_rollout_fs5_act1.yaml \\
       --smwm-titles "MSP + EP-IDM" "1SP + EP-IDM" "MSP + SIG" \\
       --dino-wm-dir ~/dino_wm \\
       --dino-ckpt /mnt/t7shield/jepa_results/dinowm_checkpoints/outputs/point_maze/checkpoints/model_latest.pth \\
@@ -36,7 +36,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from sensorimotor_probe_utils import encode_obs, load_bundle
+from experiments.probe_utils import encode_obs, load_bundle
 from envs.pointmaze_visual import PointMazeVisual
 
 # ── reuse panel_distance_field_grid and wall-checker from existing script ──────

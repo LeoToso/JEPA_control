@@ -8,9 +8,9 @@ setup(
     name="jepa_control",
     version="0.1.0",
     description=(
-        "Control-theoretic probing of JEPA encoders on the cartpole system"
+        "JEPA world models with inverse dynamics for control (Toso et al., ICLR 2027)"
     ),
-    author="Research",
+    author="Leonardo F. Toso",
     python_requires=">=3.10",
     packages=find_packages(exclude=["tests*"]),
     install_requires=[

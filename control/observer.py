@@ -50,3 +50,4 @@ class LuenbergerObserver:
         innovation=y-self.C@z_hat
         self.state=self.A@z_hat+self.B@a+self.L@innovation
         return z_hat
+

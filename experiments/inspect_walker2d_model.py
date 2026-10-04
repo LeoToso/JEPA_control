@@ -11,7 +11,7 @@ Usage
 -----
   python experiments/inspect_walker2d_model.py \\
       --ckpt /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
-      --cfg  configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+      --cfg  configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
       --data data/walker2d_mixed_sac_fs5_64 \\
       --test-episode 0 \\
       --decoder-epochs 100 \\
@@ -37,7 +37,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from models.sensorimotor_world_model import SensorimotorWorldModel
+from models.jepa_world_model import JEPAWorldModel
 
 
 # ── model loading ─────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ def load_walker2d_bundle(ckpt_path: str, cfg_path: str,
         cfg = yaml.safe_load(f)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model_cfg = dict(ckpt['model_config'])
-    model = SensorimotorWorldModel(model_cfg).to(device).eval()
+    model = JEPAWorldModel(model_cfg).to(device).eval()
     model.load_state_dict(ckpt['model'])
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f'[model] loaded  latent_dim={model_cfg.get("latent_dim")}  '

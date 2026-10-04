@@ -67,3 +67,4 @@ class HopperVisual:
 
     def close(self):
         self._env.close()
+

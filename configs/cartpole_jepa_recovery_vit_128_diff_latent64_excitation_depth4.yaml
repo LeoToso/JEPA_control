@@ -177,3 +177,4 @@ data:
   angle_x_range: 0.10
   angle_velocity_range: 0.20
   angle_action_noise_std: 1.0
+

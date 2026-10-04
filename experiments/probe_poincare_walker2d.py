@@ -42,7 +42,7 @@ from experiments.walker2d_ppo_utils   import (
     download_and_load_ppo, load_ppo_from_local,
     download_and_load_sac, load_sac_from_local,
 )
-from experiments.walker2d_smwm_utils  import (
+from experiments.walker2d_utils  import (
     load_walker_bundle, fit_walker_ridge_probe, fit_walker_mlp_probe,
     gym_obs_to_mj_state, decode_z, latent_step,
 )
@@ -53,7 +53,7 @@ from experiments.walker2d_poincare_utils import (
     poincare_jacobian_fd, spectral_radius, to_gait_state,
     GAIT_DIM,
 )
-from experiments.sensorimotor_probe_utils import encode_obs
+from experiments.probe_utils import encode_obs
 
 
 # ── argument parsing ──────────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ def compute_jacobian_latent(bundle, ridge_probe, policy,
 
     def map_fn(g16: np.ndarray) -> np.ndarray | None:
         from experiments.walker2d_poincare_utils import from_gait_state
-        from experiments.walker2d_smwm_utils import mj_state_to_gym_obs
+        from experiments.walker2d_utils import mj_state_to_gym_obs
         qp, qv = from_gait_state(g16, x_pos=0.0)
         obs_perturbed = mj_state_to_gym_obs(qp, qv)
         z_perturbed = encode_obs(bundle,

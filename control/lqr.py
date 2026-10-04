@@ -79,3 +79,4 @@ def _dare_iteration(A, B, Q, R, max_iter=5000, tol=1e-10):
             return P_new
         P = P_new
     return P
+

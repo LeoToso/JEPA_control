@@ -86,3 +86,4 @@ class ViTEncoder(nn.Module):
     @torch.no_grad()
     def encode(self, x):
         return self(x)
+

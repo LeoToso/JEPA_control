@@ -11,9 +11,9 @@ Usage
 -----
 python experiments/compare_checkpoint_summary_smwm.py \\
     --fwd-ckpt /mnt/t7shield/jepa_results/cartpole_smwm_fwd_endpoint_inv_act1_seed42/model_final.pt \\
-    --fwd-cfg  configs/cartpole_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --fwd-cfg  configs/cartpole_jepa_fwd_endpoint_inverse_act1.yaml \\
     --ms-ckpt  /mnt/t7shield/jepa_results/cartpole_smwm_sigreg_rollout_act1_seed42/model_final.pt \\
-    --ms-cfg   configs/cartpole_smwm_sigreg_rollout_act1.yaml \\
+    --ms-cfg   configs/cartpole_jepa_sigreg_rollout_act1.yaml \\
     --out      results/summary_comparison.pdf
 """
 from __future__ import annotations
@@ -31,11 +31,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from experiments.plot_checkpoint_summary_smwm import (
+from experiments.plot_summary import (
     _env_patch, _macro_dt, _build_probe, _gt_unstable_eigvec,
     panel_phase_portrait, panel_pred_error, panel_planning_cost,
 )
-from sensorimotor_probe_utils import load_bundle
+from experiments.probe_utils import load_bundle
 
 
 def _setup(ckpt, cfg, device, probe_samples):

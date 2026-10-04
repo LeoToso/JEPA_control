@@ -118,3 +118,4 @@ def make_action_encoder(variant,action_dim=1,latent_action_dim=32):
         return MLPActionEncoder(action_dim=action_dim,latent_action_dim=latent_action_dim)
     else:
         raise ValueError(f'Unknown action encoder variant: {variant!r}')
+

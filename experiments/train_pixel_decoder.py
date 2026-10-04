@@ -7,7 +7,7 @@ Usage
 -----
   python experiments/train_pixel_decoder.py \\
       --ckpt   results/.../model_final.pt \\
-      --cfg    configs/walker2d_smwm_sigreg_rollout_act1.yaml \\
+      --cfg    configs/walker2d_jepa_sigreg_rollout_act1.yaml \\
       --hdf5-dir data/walker2d_fs5_64 \\
       --out    results/pixel_decoder_ms_sr.pt \\
       --epochs 20 \\
@@ -28,8 +28,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from experiments.walker2d_smwm_utils import load_walker_bundle
-from experiments.sensorimotor_probe_utils import encode_obs
+from experiments.walker2d_utils import load_walker_bundle
+from experiments.probe_utils import encode_obs
 
 
 # ── decoder architecture ──────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ def main():
     print(f'[device] {device}')
 
     # Load SMWM bundle (encoder only)
-    from experiments.probe_poincare_smwm_walker import find_cfg
+    from experiments.probe_poincare_walker2d import find_cfg
     cfg = args.cfg or find_cfg(args.ckpt)
     bundle = load_walker_bundle(args.ckpt, cfg, args.device)
     latent_dim = bundle['model_cfg']['latent_dim']

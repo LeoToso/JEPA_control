@@ -32,7 +32,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from sensorimotor_probe_utils import encode_obs, load_bundle, make_env
+from experiments.probe_utils import encode_obs, load_bundle, make_env
 
 STATE_DIM  = 4
 STATE_KEYS = ['cart_pos', 'cart_vel', 'pole_angle', 'pole_vel']

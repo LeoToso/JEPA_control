@@ -46,7 +46,7 @@ try:
 except ImportError:
     _HAS_H5PY = False
 
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import (
     equilibrium_latent, load_bundle, local_jacobians,
 )
 
@@ -117,7 +117,7 @@ def encode_visual(bundle, obs_list, prev_obs_list):
     Resizes observations to the model's expected image_size (from model_cfg)
     before encoding, so iBOT (224) and learned encoders (128) both work.
     """
-    from sensorimotor_probe_utils import obs_tensor
+    from experiments.probe_utils import obs_tensor
     import torch.nn.functional as F
     model     = bundle['model']
     device    = bundle['device']

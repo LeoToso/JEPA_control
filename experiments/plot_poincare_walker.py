@@ -451,7 +451,7 @@ def plot_all(results: dict,
              gt_all_gaits:  np.ndarray | None = None,
              ms_all_gaits:  np.ndarray | None = None,
              fwd_all_gaits: np.ndarray | None = None) -> None:
-    """Called from probe_poincare_smwm_walker.py at the end of analysis."""
+    """Called from probe_poincare_walker2d.py at the end of analysis."""
     # ── sparse crossing arrays (for PCA / 2-D crossing plots) ─────────────────
     arrays: dict[str, np.ndarray] = {}
     for label, crossings in [

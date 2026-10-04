@@ -25,7 +25,7 @@ import numpy as np
 import scipy.linalg
 import torch
 
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import (
     encode_obs, encode_rendered_state, local_jacobians, load_bundle, make_env,
     make_frame_buffer, push_frame)
 

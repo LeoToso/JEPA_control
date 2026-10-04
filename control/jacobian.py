@@ -217,3 +217,4 @@ def compute_jacobian_torch(model, z_star_t: torch.Tensor, device) -> tuple:
     B_jac = torch.stack(B_cols)   # (d, m)
 
     return A_jac, B_jac
+

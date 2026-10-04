@@ -18,11 +18,11 @@ Usage
               $R/cartpole/diff_proprio_ar_1step_ms/model_final.pt \\
               $R/cartpole/diff_proprio_sigreg_rollout/model_final.pt \\
               $R/cartpole/ibot_rollout/model_final.pt \\
-      --cfgs  configs/cartpole_sensorimotor_world_model_diff_proprio.yaml \\
-              configs/cartpole_sensorimotor_world_model_diff_proprio_sigreg.yaml \\
-              configs/cartpole_sensorimotor_world_model_diff_proprio_ar_1step_ms.yaml \\
-              configs/cartpole_sensorimotor_world_model_diff_proprio_sigreg_rollout.yaml \\
-              configs/cartpole_sensorimotor_world_model_ibot_rollout.yaml \\
+      --cfgs  configs/cartpole_jepa_diff_proprio.yaml \\
+              configs/cartpole_jepa_diff_proprio_sigreg.yaml \\
+              configs/cartpole_jepa_diff_proprio_ar_1step_ms.yaml \\
+              configs/cartpole_jepa_diff_proprio_sigreg_rollout.yaml \\
+              configs/cartpole_jepa_ibot_rollout.yaml \\
       --labels "AR-1step" "SIGReg" "AR-1step+MS" "SIGReg+rollout" "iBOT+rollout" \\
       --output results/probe_cartpole_proprio_ablation.pdf
 """
@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import r2_score
 
 from data.dataset import make_discrete_dataloaders
-from sensorimotor_probe_utils import RidgeStateProbe, load_bundle
+from experiments.probe_utils import RidgeStateProbe, load_bundle
 
 STATE_LABELS = ['x', 'ẋ', 'θ', 'θ̇']
 

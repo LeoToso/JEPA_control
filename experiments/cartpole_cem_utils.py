@@ -232,3 +232,4 @@ def summarize(rows):
         'mean_replans': float(np.mean([r['replans'] for r in rows])),
         'n_trials': len(rows),
     }
+

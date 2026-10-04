@@ -17,7 +17,7 @@ import torch.nn.functional as F
 import yaml
 
 from data.dataset import load_discrete_dataset_meta, make_discrete_dataloaders
-from models.sensorimotor_world_model import SensorimotorWorldModel
+from models.jepa_world_model import JEPAWorldModel
 from losses.sigreg import sigreg_loss
 
 
@@ -236,7 +236,7 @@ def main():
     print(f'[data] train={len(loaders["train"].dataset)} '
           f'val={len(loaders["val"].dataset)} action_scale={action_scale:g}')
 
-    model = SensorimotorWorldModel(mc).to(device)
+    model = JEPAWorldModel(mc).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     d_actual = next(iter(model.predictor.parameters())).shape[-1]
     print(f'[model] SensorimotorWM {n_params:,} trainable params '

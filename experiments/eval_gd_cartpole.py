@@ -19,7 +19,7 @@ Usage
 -----
   python experiments/compare_gd_smwm.py \\
       --ckpts  /mnt/t7shield/.../model_final.pt \\
-      --cfgs   configs/cartpole_smwm_ibot_projector_ar_1step.yaml \\
+      --cfgs   configs/cartpole_jepa_ibot_projector_ar_1step.yaml \\
       --trials 50 \\
       --planning-horizon 10  --executed-steps 1 \\
       --gd-steps 50  --lr 0.05  --action-noise 0.01 \\
@@ -39,9 +39,9 @@ import numpy as np
 import torch
 import yaml
 
-from sensorimotor_probe_utils import make_env
+from experiments.probe_utils import make_env
 from cartpole_cem_utils import encode_online, summarize
-from models.sensorimotor_world_model import SensorimotorWorldModel
+from models.jepa_world_model import JEPAWorldModel
 
 
 # ── label helper ──────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def load_model(checkpoint_path, config_path, device):
         cfg = yaml.safe_load(f)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model_cfg  = dict(checkpoint['model_config'])
-    model      = SensorimotorWorldModel(model_cfg).to(device)
+    model      = JEPAWorldModel(model_cfg).to(device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
     state_mean   = np.asarray(checkpoint.get('state_mean', np.zeros(4)), dtype=np.float32)

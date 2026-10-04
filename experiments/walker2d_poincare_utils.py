@@ -144,7 +144,7 @@ def collect_gt_poincare(
     all_gaits : np.ndarray  shape (n_steps, 16)
         Gait state at *every* post-warmup step (for distribution comparison).
     """
-    from experiments.walker2d_smwm_utils import is_healthy_obs
+    from experiments.walker2d_utils import is_healthy_obs
 
     obs, _ = helper.env.reset(seed=seed)
     obs = obs.astype(np.float32)
@@ -226,7 +226,7 @@ def collect_latent_poincare(
     all_gaits : np.ndarray  shape (n_rollout_steps, 16)
         Decoded gait state at *every* post-warmup step (for HALO-style plots).
     """
-    from experiments.walker2d_smwm_utils import (
+    from experiments.walker2d_utils import (
         gym_obs_to_mj_state, latent_step, decode_z,
     )
 
@@ -301,7 +301,7 @@ def build_poincare_map_gt(
 
     Returns gait state (16,) at the next crossing, or None if episode ends.
     """
-    from experiments.walker2d_smwm_utils import is_healthy_obs
+    from experiments.walker2d_utils import is_healthy_obs
 
     # Reset episode timer so truncation doesn't fire immediately, then
     # override the state to the desired Poincaré point.
@@ -335,7 +335,7 @@ def build_poincare_map_latent(
 
     Returns gait state (16,) at next crossing, or None if episode ends.
     """
-    from experiments.walker2d_smwm_utils import (
+    from experiments.walker2d_utils import (
         gym_obs_to_mj_state, is_healthy_obs, latent_step, decode_z,
     )
 

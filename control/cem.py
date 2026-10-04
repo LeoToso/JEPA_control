@@ -335,3 +335,4 @@ class CEMLatentPlanner:
             f"  iter={self.n_iter}  σ0={self.init_std}  σ_warm={self.warm_start_sigma}"
             f"  lb={self.action_lb}  ub={self.action_ub}"
         )
+

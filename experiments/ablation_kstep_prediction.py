@@ -48,7 +48,7 @@ import scipy.linalg
 import torch
 import torch.nn as nn
 
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import (
     encode_obs, equilibrium_latent, load_bundle, make_env, predict_one,
     local_jacobians,
 )

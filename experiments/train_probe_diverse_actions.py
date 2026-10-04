@@ -22,7 +22,7 @@ Usage
 -----
 MUJOCO_GL=glfw python experiments/train_probe_diverse_actions.py \\
     --ckpt  "/path/to/walker2d_mixed_fwd_ep_ar_seed42.pt" \\
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --hdf5-dir "/path/to/walker2d_mixed_sac_fs5_64" \\
     --sac-episodes 200 --env-episodes 200 \\
     --env-policy mixed \\
@@ -43,11 +43,11 @@ import numpy as np
 import torch
 import h5py
 
-from walker2d_smwm_utils import (
+from experiments.walker2d_utils import (
     MLPStateProbe, load_walker_bundle, latent_step_batch,
     gym_obs_to_mj_state,
 )
-from sensorimotor_probe_utils import encode_obs
+from experiments.probe_utils import encode_obs
 
 OBS_DIM  = 17
 XVEL_IDX = 8

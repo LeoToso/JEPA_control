@@ -134,3 +134,4 @@ def P1_3_marginal_mode_frequency(rollout_data,A_hat,A_star=None,n_rollouts=50,dt
         rho_star=float(np.max(np.abs(eigs_star)))
         result['growth_rate_true_analytic']=rho_star
     return result
+

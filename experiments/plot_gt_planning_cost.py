@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from sensorimotor_probe_utils import make_env
+from experiments.probe_utils import make_env
 
 
 def main():

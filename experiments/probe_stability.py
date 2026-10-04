@@ -44,8 +44,8 @@ import numpy as np
 import scipy.linalg
 import torch
 
-from sensorimotor_probe_utils import make_env
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import make_env
+from experiments.probe_utils import (
     RidgeStateProbe,
     encode_obs,
     encode_rendered_state,
@@ -175,7 +175,7 @@ def panel_vector_field(ax, bundle, probe, theta_max, rate_max,
         gt_u[idx] = dth_gt; gt_v[idx] = drate_gt
 
         # Learned one-step decoded via probe
-        from sensorimotor_probe_utils import predict_one
+        from experiments.probe_utils import predict_one
         z1 = predict_one(bundle, z0, 0.).detach().cpu().numpy()[0]
         dec = probe(np.stack([z0.cpu().numpy()[0], z1]))
         dth_lr  = np.rad2deg(dec[1, 2] - dec[0, 2])

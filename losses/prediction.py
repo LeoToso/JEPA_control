@@ -56,3 +56,4 @@ def combined_prediction_loss(outputs,use_vicreg=True,vicreg_lambda=25.0,vicreg_m
         total=pred_loss
     info["total_pred"]=total.item()
     return total,info
+

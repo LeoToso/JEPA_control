@@ -46,11 +46,11 @@ try:
 except ImportError:
     _HAS_H5PY = False
 
-from sensorimotor_probe_utils import (
+from experiments.probe_utils import (
     encode_obs, equilibrium_latent,
     load_bundle, local_jacobians,
 )
-from sensorimotor_probe_utils import predict_one
+from experiments.probe_utils import predict_one
 
 
 # ── dataset helpers ───────────────────────────────────────────────────────────

@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from sensorimotor_probe_utils import encode_obs, load_bundle, make_env
+from experiments.probe_utils import encode_obs, load_bundle, make_env
 
 COLORS = ['#2166ac', '#d6604d', '#4dac26', '#8856a7',
           '#f4a582', '#a6cee3', '#fb9a99', '#b2df8a']

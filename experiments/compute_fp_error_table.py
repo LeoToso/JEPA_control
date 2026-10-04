@@ -38,7 +38,7 @@ sys.path.insert(0, str(_here.parent))
 
 import numpy as np
 
-from sensorimotor_probe_utils import (
+from probe_utils import (
     equilibrium_latent, load_bundle, local_jacobians,
 )
 
@@ -48,57 +48,57 @@ MODELS = [
     {
         'label': 'MSpred_IBOT',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_smwm_ibot_rollout_act1_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_rollout_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_rollout_act1.yaml',
     },
     {
         'label': '1steppred_IBOT',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_smwm_ibot_fwd_act1_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_fwd_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_fwd_act1.yaml',
     },
     {
         'label': 'MSpred_Dinov2',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_smwm_dinov2_rollout_act1_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_dinov2_rollout_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_dinov2_rollout_act1.yaml',
     },
     {
         'label': '1steppred_Dinov2',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_smwm_dinov2_fwd_act1_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_dinov2_fwd_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_dinov2_fwd_act1.yaml',
     },
     {
         'label': 'MSpred_IBOT_projector_1stepAR',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_ibot_projector_ar_1step_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_projector_ar_1step_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_projector_ar_1step_act1.yaml',
     },
     {
         'label': 'MSpred_IBOT_projector_EndpointAR',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_ibot_projector_rollout_endpoint_inv_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_projector_rollout_endpoint_inverse_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_projector_rollout_endpoint_inverse_act1.yaml',
     },
     {
         'label': '1steppred_IBOT_projector_EndpointAR',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_smwm_ibot_fwd_endpoint_inv_act1_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_fwd_endpoint_inverse_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_fwd_endpoint_inverse_act1.yaml',
     },
     {
         'label': 'MSpred_IBOT_projector_SIGReg',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_ibot_projector_sigreg_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_ibot_projector_sigreg_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_ibot_projector_sigreg_act1.yaml',
     },
     {
         'label': 'MSpred_Dinov2_projector_1stepAR',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_dinov2_projector_ar_1step_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_dinov2_projector_ar_1step_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_dinov2_projector_ar_1step_act1.yaml',
     },
     {
         'label': 'MSpred_Dinov2_projector_EndpointAR',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_dinov2_projector_rollout_endpoint_inv_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_dinov2_projector_rollout_endpoint_inverse_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_dinov2_projector_rollout_endpoint_inverse_act1.yaml',
     },
     {
         'label': 'MSpred_Dinov2_projector_SIGReg',
         'ckpt': '/mnt/t7shield/jepa_results/cartpole_dinov2_projector_sigreg_act1_200ep_seed42/model_final.pt',
-        'cfg':  'configs/cartpole_smwm_dinov2_projector_sigreg_act1.yaml',
+        'cfg':  'configs/cartpole_jepa_dinov2_projector_sigreg_act1.yaml',
     },
 ]
 

@@ -118,3 +118,4 @@ def pivot_success_rate(df):
     if 'stabilization_success_rate' not in df.columns:
         return pd.DataFrame()
     return df.pivot_table(values='stabilization_success_rate',index='encoder_variant',columns=['dataset_name','frame_skip'],aggfunc='mean')
+

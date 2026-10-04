@@ -13,7 +13,7 @@ Usage
 # Evaluate a saved probe
 python experiments/eval_walker_probe.py \
     --ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \
     --hdf5-dir data/walker2d_mixed_sac_fs5_64 \
     --probe-path results/probes/fwd_ep_ar_mlp_probe.pt \
     --out   results/probes/fwd_ep_ar_mlp_probe_eval.pdf
@@ -41,10 +41,10 @@ import numpy as np
 import torch
 import h5py
 
-from walker2d_smwm_utils import (
+from walker2d_utils import (
     MLPStateProbe, fit_walker_mlp_probe, load_walker_bundle,
 )
-from sensorimotor_probe_utils import encode_obs
+from probe_utils import encode_obs
 
 # ── obs-dimension labels and iCEM usage ───────────────────────────────────────
 

@@ -13,10 +13,10 @@ import numpy as np
 import torch
 import yaml
 
-from sensorimotor_probe_utils import make_env
+from experiments.probe_utils import make_env
 from cartpole_cem_utils import (PaperLearnedCEM, encode_online, evaluate_trial,
                                 summarize, make_frame_buffer)
-from models.sensorimotor_world_model import SensorimotorWorldModel
+from models.jepa_world_model import JEPAWorldModel
 
 
 def checkpoint_label(checkpoint):
@@ -45,7 +45,7 @@ def load_model(checkpoint_path, config_path, device):
     checkpoint = torch.load(
         checkpoint_path, map_location=device, weights_only=False)
     model_cfg = dict(checkpoint['model_config'])
-    model = SensorimotorWorldModel(model_cfg).to(device)
+    model = JEPAWorldModel(model_cfg).to(device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
     state_mean = np.asarray(checkpoint['state_mean'], dtype=np.float32)

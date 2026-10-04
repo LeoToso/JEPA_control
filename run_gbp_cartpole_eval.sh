@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sequential GBP evaluation for all CartPole models.
+# Gradient-based planning (GBP) evaluation for all CartPole JEPA models.
 # Usage: CUDA_VISIBLE_DEVICES=0 bash run_gbp_cartpole_eval.sh
 set +e
 

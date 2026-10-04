@@ -100,3 +100,6 @@ class ContinuousCartpoleVisual:
 
 
 def make_cartpole_visual(frame_skip=1,**kwargs): return ContinuousCartpoleVisual(frame_skip=frame_skip,**kwargs)
+
+
+

@@ -189,3 +189,4 @@ def evaluate_stabilization_mpc(encoder, mpc, env, n_trials=100, T=200,
         'n_trials':                n_trials,
         'vis_result':              vis_result,
     }
+

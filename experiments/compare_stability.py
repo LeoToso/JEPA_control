@@ -15,9 +15,9 @@ Usage
 -----
 python experiments/compare_stability_smwm.py \\
     --fwd-ckpt /mnt/t7shield/jepa_results/cartpole_smwm_fwd_endpoint_inv_act1_seed42/model_final.pt \\
-    --fwd-cfg  configs/cartpole_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --fwd-cfg  configs/cartpole_jepa_fwd_endpoint_inverse_act1.yaml \\
     --ms-ckpt  /mnt/t7shield/jepa_results/cartpole_smwm_sigreg_rollout_act1_seed42/model_final.pt \\
-    --ms-cfg   configs/cartpole_smwm_sigreg_rollout_act1.yaml \\
+    --ms-cfg   configs/cartpole_jepa_sigreg_rollout_act1.yaml \\
     --out      results/stability_comparison.pdf
 """
 from __future__ import annotations
@@ -37,11 +37,11 @@ import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 import numpy as np
 
-from experiments.probe_local_stability_smwm import (
+from experiments.probe_stability import (
     _env_patch, _build_probe, _solve_dare, _gt_physical_linearization,
     panel_roa, panel_lyapunov,
 )
-from sensorimotor_probe_utils import load_bundle, equilibrium_latent, local_jacobians
+from experiments.probe_utils import load_bundle, equilibrium_latent, local_jacobians
 
 
 def _setup_model(ckpt, cfg, device, probe_samples, q_scale, r_scale):

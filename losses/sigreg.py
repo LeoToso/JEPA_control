@@ -76,3 +76,4 @@ def sigreg_loss(
         loss = loss + variance_floor_weight * variance_floor
 
     return loss
+

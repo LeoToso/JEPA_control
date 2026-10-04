@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 import yaml
 
-from sensorimotor_probe_utils import make_env
+from probe_utils import make_env
 
 
 STATE_NAMES = (r'$x$', r'$\dot{x}$', r'$\theta$', r'$\dot{\theta}$')

@@ -133,3 +133,4 @@ class TransformerPredictor(nn.Module):
             tokens = blk(tokens)
         tokens = self.norm(tokens)
         return self.head(tokens[:, -1])                   # (B, latent_dim)
+

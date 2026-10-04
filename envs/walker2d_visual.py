@@ -67,3 +67,4 @@ class Walker2dVisual:
 
     def close(self):
         self._env.close()
+

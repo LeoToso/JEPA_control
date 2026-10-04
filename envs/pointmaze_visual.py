@@ -124,3 +124,4 @@ class PointMazeVisual:
 
     def close(self):
         self._env.close()
+

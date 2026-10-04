@@ -27,7 +27,7 @@ Usage
 -----
 MUJOCO_GL=egl python experiments/latent_icem_walker.py \\
     --ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
-    --cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --hdf5-dir data/walker2d_mixed_sac_fs5_64 \\
     --probe-path results/probes/fwd_ep_ar_mlp_probe.pt \\
     --trials 10 --n-steps 600 \\
@@ -100,7 +100,7 @@ def batched_rollout_cost(
                       - wstability*||posture_t - posture_{t-1}||²
     Fall criterion: |torso_angle| >= healthy_ang_max
     """
-    from experiments.walker2d_smwm_utils import latent_step_batch
+    from experiments.walker2d_utils import latent_step_batch
 
     device = bundle['device']
     N, H, _ = actions.shape
@@ -322,8 +322,8 @@ def run_trial(planner, eval_env, visual_env,
                  real env.  The NN episode's actions are also used as CEM
                  warm-start mean.
     """
-    from experiments.walker2d_smwm_utils import (is_healthy_obs, find_nn_z0)
-    from experiments.sensorimotor_probe_utils import encode_obs, make_frame_buffer, push_frame
+    from experiments.walker2d_utils import (is_healthy_obs, find_nn_z0)
+    from experiments.probe_utils import encode_obs, make_frame_buffer, push_frame
 
     # Reset both envs to the same initial state
     obs_gym, _ = eval_env.reset(seed=initial_seed)
@@ -593,7 +593,7 @@ def main():
     args = p.parse_args()
 
     # ── override health bound ─────────────────────────────────────────────────
-    import experiments.walker2d_smwm_utils as _wu
+    import experiments.walker2d_utils as _wu
     import experiments.latent_icem_walker as _self
     _wu.HEALTHY_ANG_MAX    = args.healthy_angle_max
     _self.HEALTHY_ANG_MAX  = args.healthy_angle_max
@@ -601,7 +601,7 @@ def main():
     np.random.seed(args.seed)
 
     # ── load bundle ───────────────────────────────────────────────────────────
-    from experiments.walker2d_smwm_utils import (
+    from experiments.walker2d_utils import (
         load_walker_bundle, fit_walker_mlp_probe, MLPStateProbe,
     )
 
@@ -631,7 +631,7 @@ def main():
         probe._net.eval()
     else:
         if args.probe_type == 'rollout':
-            from experiments.walker2d_smwm_utils import fit_walker_rollout_probe
+            from experiments.walker2d_utils import fit_walker_rollout_probe
             print(f'[latent-iCEM] Fitting rollout probe (k={args.probe_rollout_steps}) …')
             probe = fit_walker_rollout_probe(
                 bundle, args.hdf5_dir,
@@ -712,7 +712,7 @@ def main():
     # ── NN z_0 library ────────────────────────────────────────────────────────
     z0_library = None
     if args.nn_z0_warmstart:
-        from experiments.walker2d_smwm_utils import precompute_z0_library
+        from experiments.walker2d_utils import precompute_z0_library
         z0_library = precompute_z0_library(bundle, args.hdf5_dir,
                                            n_episodes=args.nn_z0_episodes)
 

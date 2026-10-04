@@ -242,3 +242,4 @@ def generate_all_plots(results_df,output_dir='figures',A_hat_dict=None,A_star=No
     if step_response_dict is not None:
         plot_step_response_comparison(step_response_dict,save_path=str(out/'step_response.png'))
     print(f'[plots] All figures saved to {out}')
+

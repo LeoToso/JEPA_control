@@ -158,3 +158,4 @@ def _print_summary(results: Dict, gt):
     else:
         print(f"  Linearization probe ERROR: {lin['error']}")
     print('=' * 55 + '\n')
+

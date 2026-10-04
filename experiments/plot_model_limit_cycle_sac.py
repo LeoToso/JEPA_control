@@ -20,11 +20,11 @@ Usage
 -----
 MUJOCO_GL=egl python experiments/plot_model_limit_cycle_sac.py \\
     --fwd-ar-ckpt  /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_fwd_endpoint_inverse_act1_seed42/model_final.pt \\
-    --fwd-ar-cfg   configs/walker2d_smwm_fwd_endpoint_inverse_act1.yaml \\
+    --fwd-ar-cfg   configs/walker2d_jepa_fwd_endpoint_inverse_act1.yaml \\
     --sig-fwd-ckpt /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_sigreg_fwd_act1_seed42/model_final.pt \\
-    --sig-fwd-cfg  configs/walker2d_smwm_sigreg_fwd_act1.yaml \\
+    --sig-fwd-cfg  configs/walker2d_jepa_sigreg_fwd_act1.yaml \\
     --ms-sr-ckpt   /mnt/t7shield/jepa_results/walker2d_mixed_sac_smwm_sigreg_rollout_act1_seed42/model_final.pt \\
-    --ms-sr-cfg    configs/walker2d_smwm_sigreg_rollout_act1.yaml \\
+    --ms-sr-cfg    configs/walker2d_jepa_sigreg_rollout_act1.yaml \\
     --hdf5-dir     data/walker2d_mixed_sac_fs5_64 \\
     --sac-repo     sdpkjc/Walker2d-v4-sac_continuous_action-seed4 \\
     --n-episodes   8 --n-steps 600 --warmup 150 \\
@@ -56,11 +56,11 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize, LinearSegmentedColormap
 
-from experiments.walker2d_smwm_utils import (
+from experiments.walker2d_utils import (
     load_walker_bundle, fit_walker_mlp_probe,
     latent_step, is_healthy_obs,
 )
-from experiments.sensorimotor_probe_utils import encode_obs
+from experiments.probe_utils import encode_obs
 
 # ── style ──────────────────────────────────────────────────────────────────────
 PANEL_BG    = 'white'
@@ -311,7 +311,7 @@ def main():
 
     # ── fit or load MLP probes ────────────────────────────────────────────────
     def _get_probe(bundle, label, save_path):
-        from experiments.walker2d_smwm_utils import MLPStateProbe
+        from experiments.walker2d_utils import MLPStateProbe
         z_dim = int(bundle['model_cfg'].get('latent_dim', 192))
         if save_path and Path(save_path).exists():
             print(f'\n=== Load MLP probe for {label} from {save_path} ===')

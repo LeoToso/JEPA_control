@@ -25,7 +25,7 @@ import scipy.linalg
 import torch
 import yaml
 
-from sensorimotor_probe_utils import encode_obs, load_bundle
+from experiments.probe_utils import encode_obs, load_bundle
 from envs.pointmaze_visual import PointMazeVisual
 
 
