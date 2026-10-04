@@ -30,6 +30,11 @@ def main():
     p.add_argument('--hdf5-dir',  required=True)
     p.add_argument('--episode',   type=int, default=0)
     p.add_argument('--n-episodes', type=int, default=5, help='Replay this many episodes')
+    p.add_argument('--find-sac',  action='store_true',
+                   help='Scan the dataset and pick the N episodes with highest stored x_vel '
+                        '(i.e. SAC forward-walking episodes)')
+    p.add_argument('--scan-first', type=int, default=500,
+                   help='How many episodes to scan when --find-sac is set')
     p.add_argument('--render-dir', default='')
     p.add_argument('--gif-fps',   type=int, default=30)
     args = p.parse_args()
@@ -50,9 +55,25 @@ def main():
 
     env = gym.make('Walker2d-v4', render_mode='rgb_array' if args.render_dir else None)
 
-    for ep_offset in range(args.n_episodes):
+    if args.find_sac:
+        # Scan stored states to rank episodes by mean x_vel (SAC episodes walk forward)
+        print(f'Scanning first {args.scan_first} episodes for highest x_vel …')
+        scores = []
+        for k in eps[:args.scan_first]:
+            if 'states' in ep_group[k]:
+                xv = np.array(ep_group[k]['states'])[:, 8].mean()
+                scores.append((float(xv), k))
+        scores.sort(reverse=True)
+        print(f'  Top 10 by stored x_vel: ' +
+              ', '.join(f'{k}({v:+.2f})' for v, k in scores[:10]))
+        selected_keys = [k for _, k in scores[:args.n_episodes]]
+        ep_indices = [eps.index(k) for k in selected_keys]
+    else:
+        ep_indices = [(args.episode + i) % len(eps) for i in range(args.n_episodes)]
+
+    for ep_offset, ep_idx in enumerate(ep_indices):
         ep_idx = (args.episode + ep_offset) % len(eps)
-        ep_key = eps[ep_idx]
+        ep_key = eps[ep_idx] if not args.find_sac else selected_keys[ep_offset]
         actions = np.array(ep_group[ep_key]['actions'])  # (T, 6)
         T = len(actions)
 
