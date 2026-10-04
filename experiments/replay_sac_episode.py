@@ -56,7 +56,26 @@ def main():
         actions = np.array(ep_group[ep_key]['actions'])  # (T, 6)
         T = len(actions)
 
-        obs, info = env.reset(seed=ep_idx * 100)
+        # Reset to the exact initial state stored in the HDF5.
+        # SAC actions are state-conditioned; replaying from a different
+        # initial state produces garbage (backward walking, early falls).
+        obs, info = env.reset(seed=0)   # initialise MuJoCo internals
+        ep_data   = ep_group[ep_key]
+        if 'states' in ep_data:
+            # states[0] is the 17-D gym obs at t=0
+            s0 = np.array(ep_data['states'][0], dtype=np.float64)
+            # Walker2d-v4 qpos[0]=x, qpos[1:9]=joints (8), qvel[0:9]=velocities
+            # gym obs = qpos[1:9] + qvel[0:9]  (obs[0]=z, obs[1]=tilt, obs[2:8]=joints)
+            # full qpos: [x, z, tilt, joint0..5] = 9-D; qvel: 9-D
+            qpos      = env.unwrapped.data.qpos.copy()
+            qvel      = env.unwrapped.data.qvel.copy()
+            qpos[1:]  = s0[:8]   # z, tilt, 6 joint angles
+            qvel[:]   = s0[8:]   # 9 velocities
+            env.unwrapped.set_state(qpos, qvel)
+            print(f'  ep={ep_key:>4s}  reset to stored state  z={s0[0]:.3f}  xvel={s0[8]:.3f}', end='')
+        else:
+            print(f'  ep={ep_key:>4s}  [no states key, using random reset]', end='')
+
         x_vels = []
         frames = []
         terminated = False
@@ -74,7 +93,7 @@ def main():
         steps   = len(x_vels)
         fwd     = float(env.unwrapped.data.qpos[0])
         h       = float(env.unwrapped.data.qpos[1])
-        print(f'  ep={ep_key:>4s}  steps={steps:4d}/{T}  '
+        print(f'  steps={steps:4d}/{T}  '
               f'avg_vel={avg_vel:+.3f}  disp={fwd:+.2f}m  h={h:.3f}  '
               f'survived={not terminated}')
 
