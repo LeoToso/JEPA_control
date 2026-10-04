@@ -55,9 +55,9 @@ def main():
     p.add_argument('--gif1', required=True, help='GIF for row 1 (1SP+EP-IDM)')
     p.add_argument('--gif2', required=True, help='GIF for row 2 (MSP+SIG)')
     p.add_argument('--gif3', required=True, help='GIF for row 3 (1SP+SIG)')
-    p.add_argument('--label1', default='1SP+EP-IDM\n3.545 m/s · SUCCESS')
-    p.add_argument('--label2', default='MSP+SIG\n−0.128 m/s · FAIL')
-    p.add_argument('--label3', default='1SP+SIG\n−0.514 m/s · FAIL')
+    p.add_argument('--label1', default='1SP+EP-IDM')
+    p.add_argument('--label2', default='MSP+SIG')
+    p.add_argument('--label3', default='1SP+SIG')
     p.add_argument('--n-frames', type=int, default=15)
     p.add_argument('--out', default='results/trajectory_figure.pdf')
     p.add_argument('--dpi', type=int, default=200)
@@ -95,9 +95,8 @@ def main():
         ax_lbl.text(
             0.95, 0.5, label,
             ha='right', va='center',
-            fontsize=7, fontweight='bold' if row_idx == 0 else 'normal',
+            fontsize=7, fontweight='bold',
             transform=ax_lbl.transAxes,
-            linespacing=1.5,
         )
 
         for col_idx, frame in enumerate(selected):
@@ -113,17 +112,6 @@ def main():
                     spine.set_edgecolor(color)
                     spine.set_linewidth(1.5)
 
-            # Step number below first row only
-            if row_idx == 0:
-                total_steps = len(all_frames)
-                if col_idx == 0:
-                    t = 0
-                elif col_idx == n - 1:
-                    t = total_steps - 1
-                else:
-                    interior = np.linspace(1, total_steps - 2, n - 2).round().astype(int)
-                    t = int(interior[col_idx - 1])
-                ax.set_title(f't={t}', fontsize=4.5, pad=1.5, color='#555')
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
