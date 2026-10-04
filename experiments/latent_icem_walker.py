@@ -386,6 +386,10 @@ def run_trial(planner, eval_env, visual_env,
             ).astype(np.float32)
             planner._gt_init_mean        = sac_mean
             planner._gt_init_std_per_dim = None
+            # Clear _prev_mean so plan() always uses the fresh SAC mean
+            # above, not the shifted residual from the previous call.
+            # (_prev_mean has priority over _gt_init_mean inside plan().)
+            planner._prev_mean = None
 
         sequence = planner.plan(z_for_plan)
 
