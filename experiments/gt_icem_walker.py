@@ -229,8 +229,9 @@ class WalkerGTiCEM:
         self.wsmooth        = float(wsmooth)
         self.execute_best   = bool(execute_best)
 
-        self._prev_mean    = None   # (H, D): warm-start mean from last MPC call
-        self._shift_elites = None   # (K_shift, H, D): shifted elites from last call
+        self._prev_mean     = None   # (H, D): warm-start mean from last MPC call
+        self._shift_elites  = None   # (K_shift, H, D): shifted elites from last call
+        self._gt_init_mean  = None   # (H, D): one-shot mean override (SAC warm-start)
 
     def _init_std(self) -> np.ndarray:
         return np.full((self.horizon, ACTION_DIM), self.initial_std)
@@ -249,6 +250,8 @@ class WalkerGTiCEM:
         # ── initialise mean & std ────────────────────────────────────────────
         if self._prev_mean is not None:
             mean = self._shift_seq(self._prev_mean)
+        elif self._gt_init_mean is not None:
+            mean = self._gt_init_mean.copy()
         else:
             mean = np.zeros((self.horizon, ACTION_DIM))
 
@@ -318,10 +321,11 @@ class WalkerGTiCEM:
 # ── trial evaluation (identical structure to gt_cem_walker.py) ───────────────
 
 def run_trial(planner, eval_env, initial_qpos, initial_qvel,
-              n_steps, do_render, do_save_states=False):
+              n_steps, do_render, do_save_states=False, sac_policy=None):
     set_state(eval_env, initial_qpos, initial_qvel)
     planner._prev_mean    = None
     planner._shift_elites = None
+    planner._gt_init_mean = None
 
     step        = 0
     x_vels      = []
@@ -332,6 +336,9 @@ def run_trial(planner, eval_env, initial_qpos, initial_qvel,
     terminated  = False
     truncated   = False
 
+    # capture initial obs for SAC warm-start (reconstruct from qpos/qvel)
+    current_obs = eval_env.unwrapped._get_obs() if sac_policy is not None else None
+
     # capture initial state
     if do_save_states:
         d = eval_env.unwrapped.data
@@ -340,12 +347,25 @@ def run_trial(planner, eval_env, initial_qpos, initial_qvel,
 
     while step < n_steps and not (terminated or truncated):
         qpos, qvel = get_state(eval_env)
+
+        if sac_policy is not None:
+            # Tile the current SAC action as a constant mean over the horizon
+            a_sac    = sac_policy.act(current_obs)               # (6,)
+            sac_mean = np.tile(
+                np.clip(a_sac, ACTION_LOW, ACTION_HIGH)[None],
+                (planner.horizon, 1),
+            ).astype(np.float32)
+            planner._gt_init_mean = sac_mean
+            planner._prev_mean    = None   # _prev_mean has priority; must be None
+            planner._shift_elites = None   # prevent zero-action contamination
+
         sequence   = planner.plan(qpos, qvel)
 
         for a in sequence:
             if step >= n_steps or terminated or truncated:
                 break
             obs, reward, terminated, truncated, info = eval_env.step(a)
+            current_obs = obs
             step += 1
             actions.append(a.tolist())
             x_vels.append(float(info.get('x_velocity', 0.0)))
@@ -497,6 +517,14 @@ def main():
     p.add_argument('--success-min-velocity', type=float, default=0.5)
     # misc
     p.add_argument('--frame-skip',          type=int,   default=4)
+    # SAC policy warm-start
+    p.add_argument('--sac-policy-warmstart', action='store_true',
+                   help='Use a pretrained SAC policy to initialise the CEM mean each step')
+    p.add_argument('--sac-repo',   default='sdpkjc/Walker2d-v4-sac_continuous_action-seed4',
+                   help='HuggingFace repo for SAC policy (used with --sac-policy-warmstart)')
+    p.add_argument('--sac-ckpt',   default=None,
+                   help='Local checkpoint for SAC policy (alternative to --sac-repo)')
+    # rendering / output
     p.add_argument('--render-dir',          default='')
     p.add_argument('--render-every',        type=int,   default=10)
     p.add_argument('--gif-fps',             type=int,   default=30)
@@ -544,6 +572,16 @@ def main():
         execute_best   = not args.no_execute_best,
     )
 
+    # ── SAC policy warm-start ─────────────────────────────────────────────────
+    sac_policy = None
+    if args.sac_policy_warmstart:
+        from experiments.walker2d_ppo_utils import download_and_load_sac, load_sac_from_local
+        print('[GT-iCEM] Loading SAC policy …')
+        sac_policy = (load_sac_from_local(args.sac_ckpt)
+                      if args.sac_ckpt else
+                      download_and_load_sac(args.sac_repo, device='cpu'))
+        print('[GT-iCEM] SAC policy loaded.')
+
     print(f'[GT-iCEM Walker2d] H={args.planning_horizon} '
           f'pop={args.cem_population} elites={args.cem_elites} '
           f'iters={args.cem_iters}  exec={args.executed_steps}')
@@ -554,6 +592,7 @@ def main():
           f'wz={args.wz}  wang={args.wang}  h*={args.height_target}')
     print(f'  cost = -sum(wx*xvel + wh - wu*||u||²) per step  +  cf*(H-T_alive)')
     print(f'  health bounds: z ∈ ({HEALTHY_Z_MIN:.2f}, {HEALTHY_Z_MAX:.2f})  |ang| < {HEALTHY_ANG_MAX:.2f}')
+    print(f'  SAC warm-start: {args.sac_policy_warmstart}')
     print(f'  success: survived_full AND avg_vel > {args.success_min_velocity} m/s')
 
     trials_data  = []
@@ -573,7 +612,8 @@ def main():
         row, frames = run_trial(
             planner, eval_env, initial_qpos, initial_qvel,
             args.n_steps, bool(args.render_dir),
-            do_save_states=args.save_states)
+            do_save_states=args.save_states,
+            sac_policy=sac_policy)
 
         elapsed = time.time() - t0
         success = row['survived_full'] and row['avg_x_velocity'] >= args.success_min_velocity
