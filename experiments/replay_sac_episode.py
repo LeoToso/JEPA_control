@@ -35,6 +35,9 @@ def main():
                         '(i.e. SAC forward-walking episodes)')
     p.add_argument('--scan-first', type=int, default=500,
                    help='How many episodes to scan when --find-sac is set')
+    p.add_argument('--frame-skip', type=int, default=5,
+                   help='Must match the frame_skip used during data collection '
+                        '(dataset name "fs5" → 5, Walker2d-v4 default is 4)')
     p.add_argument('--render-dir', default='')
     p.add_argument('--gif-fps',   type=int, default=30)
     args = p.parse_args()
@@ -53,7 +56,9 @@ def main():
     eps = sorted(ep_group.keys(), key=lambda k: int(k))
     print(f'Dataset: {train_hdf5.name}  episodes={len(eps)}')
 
-    env = gym.make('Walker2d-v4', render_mode='rgb_array' if args.render_dir else None)
+    env = gym.make('Walker2d-v4',
+                   render_mode='rgb_array' if args.render_dir else None,
+                   frame_skip=args.frame_skip)
 
     if args.find_sac:
         # Scan stored states to rank episodes by mean x_vel (SAC episodes walk forward)

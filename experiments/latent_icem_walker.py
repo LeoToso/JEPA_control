@@ -719,8 +719,9 @@ def main():
     from envs.walker2d_visual import Walker2dVisual
 
     eval_env   = gym.make('Walker2d-v4',
-                          render_mode='rgb_array' if args.render_dir else None)
-    visual_env = Walker2dVisual(image_size=args.image_size)
+                          render_mode='rgb_array' if args.render_dir else None,
+                          frame_skip=5)
+    visual_env = Walker2dVisual(image_size=args.image_size, frame_skip=5)
 
     model_name = Path(args.ckpt).parent.name
     print(f'\n[latent-iCEM Walker2d]  model={model_name}')

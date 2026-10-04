@@ -18,10 +18,11 @@ class Walker2dVisual:
     ACTION_DIM = 6
     STATE_DIM  = 17
 
-    def __init__(self, image_size: int = 64, seed: int = 0):
+    def __init__(self, image_size: int = 64, seed: int = 0, frame_skip: int = 5):
         import gymnasium
         self._image_size = image_size
-        self._env = gymnasium.make('Walker2d-v4', render_mode='rgb_array')
+        self._env = gymnasium.make('Walker2d-v4', render_mode='rgb_array',
+                                   frame_skip=frame_skip)
         self._rng = np.random.default_rng(seed)
 
     # ── private ───────────────────────────────────────────────────────────────
