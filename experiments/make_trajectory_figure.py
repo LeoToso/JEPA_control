@@ -58,7 +58,7 @@ def main():
     p.add_argument('--label1', default='1SP+EP-IDM')
     p.add_argument('--label2', default='MSP+SIG')
     p.add_argument('--label3', default='1SP+SIG')
-    p.add_argument('--n-frames', type=int, default=15)
+    p.add_argument('--n-frames', type=int, default=10)
     p.add_argument('--out', default='results/trajectory_figure.pdf')
     p.add_argument('--dpi', type=int, default=200)
     args = p.parse_args()
@@ -70,17 +70,21 @@ def main():
     ]
 
     n = args.n_frames
-    fig_w = n * 1.1 + 1.5   # col width 1.1 in + 1.5 for row labels
-    fig_h = len(rows) * 1.3  # row height 1.3 in
+    # Each frame is 64×64 px rendered; we display at ~1.1 in wide, aspect ~1
+    frame_w = 1.1
+    label_w = 0.28
+    fig_w = label_w + n * frame_w
+    fig_h = len(rows) * frame_w * 0.72   # frames are wider than tall (env crop)
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=args.dpi)
+    fig.patch.set_facecolor('white')
 
-    # GridSpec: label column + n frame columns
+    # GridSpec: narrow label column + n frame columns
     gs = gridspec.GridSpec(
         len(rows), n + 1,
         figure=fig,
-        wspace=0.02, hspace=0.08,
-        left=0.0, right=1.0, top=0.97, bottom=0.03,
-        width_ratios=[1.4] + [1.0] * n,
+        wspace=0.004, hspace=0.015,
+        left=0.0, right=1.0, top=1.0, bottom=0.0,
+        width_ratios=[label_w] + [frame_w] * n,
     )
 
     for row_idx, (gif_path, label) in enumerate(rows):
@@ -93,25 +97,17 @@ def main():
         ax_lbl = fig.add_subplot(gs[row_idx, 0])
         ax_lbl.axis('off')
         ax_lbl.text(
-            0.5, 0.5, label,
+            0.55, 0.5, label,
             ha='center', va='center',
-            fontsize=7, fontweight='bold',
+            fontsize=6.5, fontweight='bold',
             rotation=90,
             transform=ax_lbl.transAxes,
         )
 
         for col_idx, frame in enumerate(selected):
             ax = fig.add_subplot(gs[row_idx, col_idx + 1])
-            ax.imshow(frame)
+            ax.imshow(frame, aspect='auto')
             ax.axis('off')
-
-            # Mark first/last with a thin border
-            if col_idx == 0 or col_idx == n - 1:
-                color = '#2196F3' if row_idx == 0 else '#9E9E9E'
-                for spine in ax.spines.values():
-                    spine.set_visible(True)
-                    spine.set_edgecolor(color)
-                    spine.set_linewidth(1.5)
 
 
     out_path = Path(args.out)
