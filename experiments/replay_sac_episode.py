@@ -56,9 +56,9 @@ def main():
     eps = sorted(ep_group.keys(), key=lambda k: int(k))
     print(f'Dataset: {train_hdf5.name}  episodes={len(eps)}')
 
-    env = gym.make('Walker2d-v4',
-                   render_mode='rgb_array' if args.render_dir else None,
-                   frame_skip=args.frame_skip)
+    from gymnasium.envs.mujoco import Walker2dEnv
+    env = Walker2dEnv(frame_skip=args.frame_skip,
+                      render_mode='rgb_array' if args.render_dir else None)
 
     if args.find_sac:
         # Scan stored states to rank episodes by mean x_vel (SAC episodes walk forward)

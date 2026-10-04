@@ -718,9 +718,9 @@ def main():
     import gymnasium as gym
     from envs.walker2d_visual import Walker2dVisual
 
-    eval_env   = gym.make('Walker2d-v4',
-                          render_mode='rgb_array' if args.render_dir else None,
-                          frame_skip=5)
+    from gymnasium.envs.mujoco import Walker2dEnv
+    eval_env   = Walker2dEnv(frame_skip=5,
+                             render_mode='rgb_array' if args.render_dir else None)
     visual_env = Walker2dVisual(image_size=args.image_size, frame_skip=5)
 
     model_name = Path(args.ckpt).parent.name

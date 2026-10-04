@@ -19,10 +19,9 @@ class Walker2dVisual:
     STATE_DIM  = 17
 
     def __init__(self, image_size: int = 64, seed: int = 0, frame_skip: int = 5):
-        import gymnasium
+        from gymnasium.envs.mujoco import Walker2dEnv
         self._image_size = image_size
-        self._env = gymnasium.make('Walker2d-v4', render_mode='rgb_array',
-                                   frame_skip=frame_skip)
+        self._env = Walker2dEnv(frame_skip=frame_skip, render_mode='rgb_array')
         self._rng = np.random.default_rng(seed)
 
     # ── private ───────────────────────────────────────────────────────────────
