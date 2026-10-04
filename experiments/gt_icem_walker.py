@@ -417,7 +417,10 @@ def save_gif(frames, out_path, fps=30):
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         import imageio
-        imageio.mimsave(str(out), frames, fps=fps)
+        try:
+            imageio.mimsave(str(out), frames, fps=fps)
+        except TypeError:
+            imageio.mimsave(str(out), frames, duration=int(1000 / fps))
     except ImportError:
         from PIL import Image
         imgs = [Image.fromarray(f) for f in frames]
