@@ -34,9 +34,16 @@ import torch
 
 
 def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
-              seed: int, n_steps: int):
-    """Close loop: real frame → encoder → probe → SAC → real env."""
-    from experiments.walker2d_smwm_utils import is_healthy_obs
+              seed: int, n_steps: int,
+              real_height: bool = False,
+              real_angle: bool = False,
+              real_obs: bool = False):
+    """Close loop: real frame → encoder → probe → SAC → real env.
+
+    real_height / real_angle: replace probe output dims 0/1 with the
+    corresponding real gymnasium obs value for an ablation study.
+    real_obs: bypass probe entirely and use the full real gymnasium obs.
+    """
     from experiments.sensorimotor_probe_utils import encode_obs, make_frame_buffer, push_frame
 
     obs_gym, _ = eval_env.reset(seed=seed)
@@ -55,14 +62,25 @@ def run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
     terminated = False
 
     while step < n_steps and not terminated:
-        # Encode real observation
-        z = encode_obs(bundle, frame_buf, prev_frame, state)   # (1, D)
+        if real_obs:
+            obs_hat = obs_gym
+        else:
+            # Encode real observation
+            z = encode_obs(bundle, frame_buf, prev_frame, state)   # (1, D)
 
-        # Decode z → obs_hat via probe (encoder z, never predictor z)
-        with torch.no_grad():
-            obs_hat = probe_net(z)[0].cpu().numpy()            # (17,)
+            # Decode z → obs_hat via probe (encoder z, never predictor z)
+            with torch.no_grad():
+                obs_hat = probe_net(z)[0].cpu().numpy()            # (17,)
 
-        # SAC acts on probe-decoded obs
+            # Ablation: patch specific dims with real obs values
+            if real_height:
+                obs_hat = obs_hat.copy()
+                obs_hat[0] = obs_gym[0]
+            if real_angle:
+                obs_hat = obs_hat.copy()
+                obs_hat[1] = obs_gym[1]
+
+        # SAC acts on (possibly patched) obs
         action = sac_policy.act(obs_hat)                       # (6,)
 
         # Step real environment
@@ -116,11 +134,20 @@ def main():
     p.add_argument('--device',      default='cuda')
     # obs_hat patch: clamp or substitute badly-predicted dims
     p.add_argument('--fix-height',  action='store_true',
-                   help='Replace probe-decoded z_height with fixed value 1.35 '
-                        '(probe R² for height is near −1)')
+                   help='Replace probe-decoded z_height with fixed constant --height-val '
+                        '(was harmful when height R² > 0.4 — kept for reference)')
     p.add_argument('--height-val',  type=float, default=1.35)
     p.add_argument('--fix-angle',   action='store_true',
                    help='Clamp probe-decoded torso angle to [-0.5, 0.5]')
+    # ablation flags
+    p.add_argument('--real-height', action='store_true',
+                   help='Replace probe obs[0] (height) with real gymnasium obs[0] '
+                        '(ablation: does the probe\'s height error cause early falling?)')
+    p.add_argument('--real-angle',  action='store_true',
+                   help='Replace probe obs[1] (tilt) with real gymnasium obs[1]')
+    p.add_argument('--real-obs',    action='store_true',
+                   help='Bypass probe entirely; feed real gymnasium obs to SAC '
+                        '(upper bound ablation; should match SAC real-env baseline ~3.9 m/s)')
     args = p.parse_args()
 
     # ── load bundle ──────────────────────────────────────────────────────────
@@ -199,7 +226,14 @@ def main():
     eval_env   = gym.make('Walker2d-v4')
     visual_env = Walker2dVisual(image_size=args.image_size)
 
-    print(f'\n[latent-SAC Walker2d]  fix_height={args.fix_height}  fix_angle={args.fix_angle}')
+    mode = ('real-obs' if args.real_obs else
+            '+'.join(filter(None, [
+                'real-h' if args.real_height else '',
+                'real-ang' if args.real_angle else '',
+                'fix-h' if args.fix_height else '',
+                'fix-ang' if args.fix_angle else '',
+            ])) or 'probe-only')
+    print(f'\n[latent-SAC Walker2d]  obs-mode={mode}')
     print(f'  trials={args.trials}  n_steps={args.n_steps}  seed={args.seed}')
     print()
 
@@ -207,7 +241,10 @@ def main():
     for i in range(args.trials):
         t0  = time.time()
         row = run_trial(bundle, probe_net, sac_policy, eval_env, visual_env,
-                        seed=args.seed + i, n_steps=args.n_steps)
+                        seed=args.seed + i, n_steps=args.n_steps,
+                        real_height=args.real_height,
+                        real_angle=args.real_angle,
+                        real_obs=args.real_obs)
         elapsed = time.time() - t0
         all_vels.append(row['avg_x_velocity'])
         status = 'SUCCESS' if row['survived'] else 'FAIL'
