@@ -720,7 +720,6 @@ def main():
 
     eval_env = gym.make('Walker2d-v4',
                         render_mode='rgb_array' if args.render_dir else None)
-    eval_env.unwrapped.frame_skip = 5
     visual_env = Walker2dVisual(image_size=args.image_size, frame_skip=5)
 
     model_name = Path(args.ckpt).parent.name
