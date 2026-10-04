@@ -83,7 +83,7 @@ def main():
     gs = gridspec.GridSpec(
         len(rows), n + 1,
         figure=fig,
-        wspace=0.004, hspace=0.015,
+        wspace=0.018, hspace=0.018,
         left=0.0, right=1.0, top=1.0, bottom=0.0,
         width_ratios=[label_w] + [frame_w] * n,
     )
