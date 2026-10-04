@@ -56,7 +56,7 @@ def main():
     p.add_argument('--label2', default='MSP+SIG')
     p.add_argument('--label3', default='1SP+SIG')
     p.add_argument('--n-frames',    type=int, default=10)
-    p.add_argument('--start-frame', type=int, default=100,
+    p.add_argument('--start-frame', type=int, default=150,
                    help='Index of the first frame to show')
     p.add_argument('--end-offset',  type=int, default=50,
                    help='Number of frames to trim from the end')
