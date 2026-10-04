@@ -37,16 +37,13 @@ def load_gif_frames(path: str) -> list[np.ndarray]:
     return frames
 
 
-def pick_frames(frames: list[np.ndarray], n: int = 15) -> list[np.ndarray]:
-    """Select n frames: first, last, and n-2 evenly spaced in between."""
+def pick_frames(frames: list[np.ndarray], n: int = 10,
+                start: int = 100, end_offset: int = 50) -> list[np.ndarray]:
+    """Select n frames evenly spaced from frame[start] to frame[T-1-end_offset]."""
     T = len(frames)
-    if T <= n:
-        # pad by repeating last frame
-        indices = list(range(T)) + [T - 1] * (n - T)
-    else:
-        # first + (n-2) interior + last
-        interior = np.linspace(1, T - 2, n - 2).round().astype(int).tolist()
-        indices = [0] + interior + [T - 1]
+    i0 = min(start, T - 1)
+    i1 = max(T - 1 - end_offset, i0)
+    indices = np.linspace(i0, i1, n).round().astype(int).tolist()
     return [frames[i] for i in indices]
 
 
@@ -58,7 +55,11 @@ def main():
     p.add_argument('--label1', default='1SP+EP-IDM')
     p.add_argument('--label2', default='MSP+SIG')
     p.add_argument('--label3', default='1SP+SIG')
-    p.add_argument('--n-frames', type=int, default=10)
+    p.add_argument('--n-frames',    type=int, default=10)
+    p.add_argument('--start-frame', type=int, default=100,
+                   help='Index of the first frame to show')
+    p.add_argument('--end-offset',  type=int, default=50,
+                   help='Number of frames to trim from the end')
     p.add_argument('--out', default='results/trajectory_figure.pdf')
     p.add_argument('--dpi', type=int, default=200)
     args = p.parse_args()
@@ -91,7 +92,9 @@ def main():
         print(f'[fig] loading {gif_path} …')
         all_frames = load_gif_frames(gif_path)
         print(f'      {len(all_frames)} frames total')
-        selected = pick_frames(all_frames, n)
+        selected = pick_frames(all_frames, n,
+                               start=args.start_frame,
+                               end_offset=args.end_offset)
 
         # Label cell
         ax_lbl = fig.add_subplot(gs[row_idx, 0])
