@@ -1,9 +1,8 @@
 #!/usr/bin/env python
-"""Build a side-by-side trajectory figure from three GIFs.
+"""Build a side-by-side animated GIF from three model GIFs.
 
-Layout: 1 row of 3 columns, each column = one model.
-Each column shows N evenly-spaced frames stacked vertically.
-Model names appear in bold above each column.
+All three animations play in sync. The shorter GIFs loop to match the longest
+(or clip to the shortest with --sync min).
 
 Usage
 -----
@@ -11,55 +10,63 @@ python experiments/make_trajectory_figure.py \
     --gif1 results/renders/latent_icem_H3_success/success_trial_004.gif \
     --gif2 results/renders/latent_icem_H3_ms_sr_success/best_failed_trial_009.gif \
     --gif3 results/renders/latent_icem_H3_fwd_sr/best_failed_trial_000.gif \
-    --out  results/trajectory_figure.pdf
+    --out  results/trajectory_figure.gif
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw, ImageFont
 
 
-def load_gif_frames(path: str) -> list[np.ndarray]:
+def load_gif(path: str):
     img = Image.open(path)
-    frames = []
+    frames, durations = [], []
     try:
         while True:
-            frames.append(np.array(img.convert('RGB')))
+            frames.append(img.copy().convert('RGB'))
+            durations.append(img.info.get('duration', 50))
             img.seek(img.tell() + 1)
     except EOFError:
         pass
-    return frames
+    return frames, durations
 
 
-def pick_frames(frames: list[np.ndarray], n: int,
-                start: int = 0, end_offset: int = 0) -> list[np.ndarray]:
-    T = len(frames)
-    i0 = min(start, T - 1)
-    i1 = max(T - 1 - end_offset, i0)
-    indices = np.linspace(i0, i1, n).round().astype(int).tolist()
-    return [frames[i] for i in indices]
+def best_font(size: int) -> ImageFont.ImageFont:
+    candidates = [
+        '/System/Library/Fonts/Helvetica.ttc',
+        '/System/Library/Fonts/Arial.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--gif1', required=True, help='GIF for column 1 (1SP+EP-IDM)')
-    p.add_argument('--gif2', required=True, help='GIF for column 2 (MSP+SIG)')
-    p.add_argument('--gif3', required=True, help='GIF for column 3 (1SP+SIG)')
+    p.add_argument('--gif1',   required=True, help='GIF for column 1 (1SP+EP-IDM)')
+    p.add_argument('--gif2',   required=True, help='GIF for column 2 (MSP+SIG)')
+    p.add_argument('--gif3',   required=True, help='GIF for column 3 (1SP+SIG)')
     p.add_argument('--label1', default='1SP+EP-IDM')
     p.add_argument('--label2', default='MSP+SIG')
     p.add_argument('--label3', default='1SP+SIG')
-    p.add_argument('--n-frames',    type=int, default=5,
-                   help='Number of frames to show per model')
-    p.add_argument('--start-frame', type=int, default=0)
-    p.add_argument('--end-offset',  type=int, default=0)
-    p.add_argument('--out', default='results/trajectory_figure.pdf')
-    p.add_argument('--dpi', type=int, default=200)
+    p.add_argument('--label-height', type=int, default=44,
+                   help='Pixel height of the label area above each GIF')
+    p.add_argument('--gap',    type=int, default=12,
+                   help='Pixel gap between columns')
+    p.add_argument('--step',   type=int, default=1,
+                   help='Keep every Nth frame (reduces file size)')
+    p.add_argument('--sync',   choices=['min', 'loop'], default='min',
+                   help='min: stop at shortest GIF; loop: loop shorter GIFs')
+    p.add_argument('--duration', type=int, default=None,
+                   help='Override frame duration in ms (default: from source GIF)')
+    p.add_argument('--out',    default='results/trajectory_figure.gif')
     args = p.parse_args()
 
     cols = [
@@ -68,56 +75,76 @@ def main():
         (args.gif3, args.label3),
     ]
 
-    n = args.n_frames
-    n_cols = len(cols)
-
-    cell_size = 2.0          # each frame is cell_size × cell_size inches
-    label_height = 0.55      # inches reserved for the bold label row
-    fig_w = n_cols * cell_size
-    fig_h = label_height + n * cell_size
-
-    fig = plt.figure(figsize=(fig_w, fig_h), dpi=args.dpi)
-    fig.patch.set_facecolor('white')
-
-    # GridSpec: first row = labels (thin), remaining rows = frames
-    import matplotlib.gridspec as gridspec
-    gs = gridspec.GridSpec(
-        n + 1, n_cols,
-        height_ratios=[label_height / cell_size] + [1.0] * n,
-        hspace=0.04, wspace=0.04,
-        left=0.0, right=1.0, top=1.0, bottom=0.0,
-    )
-
-    for col_idx, (gif_path, label) in enumerate(cols):
+    all_frames, all_durations = [], []
+    for gif_path, _ in cols:
         print(f'[fig] loading {gif_path} …')
-        all_frames = load_gif_frames(gif_path)
-        print(f'      {len(all_frames)} frames total')
-        selected = pick_frames(all_frames, n,
-                               start=args.start_frame,
-                               end_offset=args.end_offset)
+        frames, durations = load_gif(gif_path)
+        print(f'      {len(frames)} frames')
+        all_frames.append(frames)
+        all_durations.append(durations)
 
-        # Bold label in the top row
-        ax_label = fig.add_subplot(gs[0, col_idx])
-        ax_label.axis('off')
-        ax_label.text(0.5, 0.5, label,
-                      ha='center', va='center',
-                      fontsize=16, fontweight='bold',
-                      transform=ax_label.transAxes)
+    lengths = [len(f) for f in all_frames]
+    n_total = min(lengths) if args.sync == 'min' else max(lengths)
 
-        # Frames stacked below
-        for row_idx, frame in enumerate(selected):
-            ax = fig.add_subplot(gs[row_idx + 1, col_idx])
-            ax.imshow(frame)
-            ax.axis('off')
+    # Subsample
+    indices = list(range(0, n_total, args.step))
+
+    # Normalise all columns to the same height
+    target_h = max(f[0].height for f in all_frames)
+    col_frames = []
+    col_widths  = []
+    for frames in all_frames:
+        h, w = frames[0].height, frames[0].width
+        if h != target_h:
+            new_w = int(w * target_h / h)
+            frames = [f.resize((new_w, target_h), Image.LANCZOS) for f in frames]
+        col_frames.append(frames)
+        col_widths.append(frames[0].width)
+
+    label_h = args.label_height
+    total_w = sum(col_widths) + args.gap * (len(cols) - 1)
+    total_h = label_h + target_h
+
+    font = best_font(label_h - 10)
+
+    print(f'[fig] compositing {len(indices)} frames …')
+    composite, frame_durations = [], []
+
+    for t in indices:
+        canvas = Image.new('RGB', (total_w, total_h), (255, 255, 255))
+        draw   = ImageDraw.Draw(canvas)
+
+        x = 0
+        for col_idx, (frames, (_, label)) in enumerate(zip(col_frames, cols)):
+            frame = frames[t % len(frames)]
+            canvas.paste(frame, (x, label_h))
+
+            # Bold label centred above column
+            bbox   = draw.textbbox((0, 0), label, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            draw.text(
+                (x + (col_widths[col_idx] - text_w) // 2,
+                 (label_h - text_h) // 2),
+                label, fill=(0, 0, 0), font=font,
+            )
+            x += col_widths[col_idx] + args.gap
+
+        composite.append(canvas)
+        dur = args.duration if args.duration else all_durations[0][t % len(all_durations[0])]
+        frame_durations.append(dur * args.step)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches='tight', dpi=args.dpi)
-    png_path = out_path.with_suffix('.png')
-    fig.savefig(png_path, bbox_inches='tight', dpi=args.dpi)
-    print(f'[fig] saved → {out_path}')
-    print(f'[fig] saved → {png_path}')
-    plt.close(fig)
+    composite[0].save(
+        out_path,
+        save_all=True,
+        append_images=composite[1:],
+        duration=frame_durations,
+        loop=0,
+        optimize=False,
+    )
+    print(f'[fig] saved → {out_path}  ({len(composite)} frames)')
 
 
 if __name__ == '__main__':
