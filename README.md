@@ -1,6 +1,6 @@
 # Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models
 
-Code for the paper LF.Toso, Y. LeCun, J.Anderson, O. Bounou **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**.
+Code for the paper LF. Toso, Y. LeCun, J. Anderson, O. Bounou **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**.
 
 Checkpoints can be found [here](https://drive.google.com/drive/folders/1YtWFqkpKDb7zBixo7N-iwfzpw43XhLeG?usp=drive_link)
 
