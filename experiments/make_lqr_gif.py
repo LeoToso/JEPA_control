@@ -127,17 +127,20 @@ def main():
     step_text = fig.text(0.5, 0.88, 't = 0', ha='center', va='bottom',
                          fontsize=10)
 
+    # Step at which each model's episode terminated (first padded frame)
+    fail_step = [n - 1 for n in n_steps_list]
+
     def update(t):
         for i, (im, frames) in enumerate(zip(im_objs, all_frames)):
-            frame = frames[t]
-            im.set_data(frame)
-            # On the last frame: colour border by success
-            if t == n_steps - 1 and successes[i] is not None:
-                c = '#2ca02c' if successes[i] else '#d62728'
-                lw = 3.5
+            im.set_data(frames[t])
+            failed = (successes[i] is False) and (t >= fail_step[i])
+            success_end = (successes[i] is True) and (t == n_steps - 1)
+            if failed:
+                c, lw = '#d62728', 3.5   # red from failure step onward
+            elif success_end:
+                c, lw = '#2ca02c', 3.5   # green on final frame if succeeded
             else:
-                c = 'black'
-                lw = 1.5
+                c, lw = 'black', 1.5
             for spine in axes[i].spines.values():
                 spine.set_edgecolor(c)
                 spine.set_linewidth(lw)
