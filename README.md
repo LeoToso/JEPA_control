@@ -341,7 +341,7 @@ MUJOCO_GL=egl python experiments/latent_icem_walker.py \
 
 ### CartPole
 
-*10 trials, 300 steps, success threshold = 0.7 rad. LQR: hold = 10 steps. CEM: H=10, K=1, pop=300.*
+
 
 | Model | LQR (SR) | CEM (SR) | GBP (SR) |
 |-------|----------|----------|----------|
@@ -356,7 +356,7 @@ MUJOCO_GL=egl python experiments/latent_icem_walker.py \
 
 ### PointMaze
 
-*Success = within 0.5 m of goal. 10 trials, 200 steps, frame skip = 5.*
+
 
 | Model | CEM (SR) | LQR (SR) | GBP (SR) |
 |-------|----------|----------|----------|
@@ -372,7 +372,7 @@ MUJOCO_GL=egl python experiments/latent_icem_walker.py \
 
 ### Walker2D
 
-*10 trials, 500 steps, H=3 iCEM.*
+
 
 | Model | Avg Velocity (m/s) | Displacement (m) | Final Height (m) |
 |-------|--------------------|-----------------|-----------------|
