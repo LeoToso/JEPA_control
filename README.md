@@ -1,8 +1,8 @@
 # JEPA World Models for Visual Control
 
-Code for the paper **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"** (Toso et al., ICLR 2027).
+Code for the paper L.Toso, Y. LeCun, J.Anderson, O. Bounou **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**.
 
-The model is a JEPA world model with architecture similar to the [Sensorimotor World Model (SMWM)](https://github.com/petr-ivashkov/sensorimotor-world-model) of Ivashkov et al. (2026). We compare four training objectives across three control benchmarks: CartPole, PointMaze, and Walker2D.
+The model is a JEPA world model with architecture similar to the [Sensorimotor World Model (SMWM)](https://github.com/petr-ivashkov/sensorimotor-world-model). We compare four training objectives across three control benchmarks: CartPole, PointMaze, and Walker2D.
 
 **Model variants** (paper names):
 
@@ -13,7 +13,7 @@ The model is a JEPA world model with architecture similar to the [Sensorimotor W
 | **1SP+EP-IDM** | One-step | Endpoint IDM |
 | **MSP+EP-IDM+SIG** | Multi-step | Endpoint IDM + SIGReg |
 
-We also compare against **DINO-WM** (Zen et al., 2024), which uses a frozen DINOv2 encoder with a separately learned predictor.
+We also compare against **DINO-WM**, which uses a frozen DINOv2 encoder with a separately learned predictor.
 
 ---
 
@@ -41,7 +41,7 @@ Goal-conditioned navigation in a **U-shaped maze**. Observations: **64×64 RGB**
 
 Dataset: **2000 episodes** from a scripted expert.
 
-**External baseline:** DINO-WM (Zen et al., 2024) — reports **98% success** on D4RL U-maze with mujoco_py rendering.
+**External baseline:** DINO-WM — reports **98% success** on D4RL U-maze with mujoco_py rendering.
 
 ---
 
@@ -57,7 +57,7 @@ The model encodes each observation into a latent vector `z_t` and learns a predi
 
 | Encoder | Type | Description |
 |---------|------|-------------|
-| **Diff** | Learned | Differentiable patch-difference encoder, trained end-to-end |
+| **End-to-End** | Learned | Encoder, trained end-to-end (from scratch)|
 | **DINOv2** | Frozen | ViT-S/14 self-supervised features (384D per patch token) |
 | **iBOT** | Frozen | ViT-S/16 masked-image-modeling features (384D per patch token) |
 
@@ -364,7 +364,7 @@ MUJOCO_GL=egl python experiments/latent_icem_walker.py \
 | MSP+EP-IDM | **100%** | **80%** | 90% |
 | DINO-WM | **80%**\* | **80%** | 60% |
 
-\* Zen et al. report 98% for 50 trials with mujoco_py rendering.
+\* DINO-WM reports 98% for 50 trials with mujoco_py rendering and different initial and goal states to the ones we considered here.
 
 ---
 
@@ -460,7 +460,7 @@ JEPA_control/
 │   └── sigreg.py                     # Singular value regularization (SIGReg)
 ├── models/                           # Neural network architectures
 │   ├── jepa_world_model.py           # Main JEPA world model (JEPAWorldModel)
-│   ├── encoder.py                    # Diff encoder (learned, patch-based)
+│   ├── encoder.py                    # End-to-End encoder (learned, patch-based)
 │   ├── vit_encoder.py                # Frozen ViT encoder (DINOv2/iBOT)
 │   ├── predictor.py                  # Latent dynamics predictor (Transformer)
 │   └── action_encoder.py             # Action embedding module
@@ -481,7 +481,7 @@ JEPA_control/
 ## References
 
 - Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models* (ICLR 2027)
-- Ivashkov et al., *Sensorimotor World Models* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
-- Zen et al., *DINO-WM: World Models on Pre-trained Visual Features Enable Zero-Shot Planning* (2024) — [GitHub](https://github.com/gaoyuezhou/dino_wm)
-- Oquab et al., *DINOv2: Learning Robust Visual Features without Supervision* (2023)
-- Zhou et al., *iBOT: Image BERT Pre-Training with Online Tokenizer* (2021)
+- Ivashkov et al., *Sensorimotor World Models: Perception for Action via Inverse Dynamics* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
+- Zhou et al., *DINO-WM: World Models on Pre-trained Visual Features Enable Zero-Shot Planning* (2024) — [GitHub](https://github.com/gaoyuezhou/dino_wm)
+- Oquab et al., *DINOv2: Learning Robust Visual Features without Supervision* (2023) [Paper](https://arxiv.org/abs/2304.07193)
+- Zhou et al., *iBOT: Image BERT Pre-Training with Online Tokenizer* (2021) [Paper](https://arxiv.org/abs/2111.07832)
