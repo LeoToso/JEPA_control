@@ -482,7 +482,7 @@ JEPA_control/
 
 ## References
 
-- Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models* (ICLR 2027)
+- Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models* 
 - Ivashkov et al., *Sensorimotor World Models: Perception for Action via Inverse Dynamics* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
 - Zhou et al., *DINO-WM: World Models on Pre-trained Visual Features Enable Zero-Shot Planning* (2024) — [GitHub](https://github.com/gaoyuezhou/dino_wm)
 - Oquab et al., *DINOv2: Learning Robust Visual Features without Supervision* (2023) [Paper](https://arxiv.org/abs/2304.07193)
