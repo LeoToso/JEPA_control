@@ -209,4 +209,4 @@ pytest
 
 - Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models*
 - Ivashkov et al., *Sensorimotor World Models: Perception for Action via Inverse Dynamics* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
-- LeJEPA — [GitHub](https://github.com/galilai-group/lejepa)
+- LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics — [GitHub](https://github.com/galilai-group/lejepa)
