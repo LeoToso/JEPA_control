@@ -1,6 +1,6 @@
-# JEPA World Models — Linear Systems Analysis
+# Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models — Linear Systems
 
-Companion code for **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"** (Toso et al., ICLR 2027). See the [main branch](https://github.com/LeoToso/JEPA_control) for the full visual control experiments.
+Companion code for the paper **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**. See the [main branch](https://github.com/LeoToso/JEPA_control) for the full visual control experiments.
 
 This branch contains a fully-linear codebase for analyzing when a jointly trained encoder and predictor — with a **multi-step prediction loss + SIGReg** (LeJEPA) — on an **open-loop-unstable** system retains enough information about the unstable dynamics to design stabilizing controllers. It also tests whether swapping SIGReg for **endpoint inverse dynamics (EP-IDM)** fixes the issue.
 
@@ -207,6 +207,6 @@ pytest
 
 ## References
 
-- Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models* (ICLR 2027)
-- Ivashkov et al., *Sensorimotor World Models* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
-- LeJEPA SIGReg regularization — [GitHub](https://github.com/galilai-group/lejepa)
+- Toso et al., *Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models*
+- Ivashkov et al., *Sensorimotor World Models: Perception for Action via Inverse Dynamics* (2026) — [GitHub](https://github.com/petr-ivashkov/sensorimotor-world-model)
+- LeJEPA — [GitHub](https://github.com/galilai-group/lejepa)
