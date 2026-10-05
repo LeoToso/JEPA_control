@@ -35,8 +35,9 @@ def load_gif(path: str):
 
 def best_font(size: int) -> ImageFont.ImageFont:
     candidates = [
+        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+        '/Library/Fonts/Arial Bold.ttf',
         '/System/Library/Fonts/Helvetica.ttc',
-        '/System/Library/Fonts/Arial.ttf',
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
     ]
@@ -127,6 +128,7 @@ def main():
                 (x + (col_widths[col_idx] - text_w) // 2,
                  (label_h - text_h) // 2),
                 label, fill=(0, 0, 0), font=font,
+                stroke_width=1, stroke_fill=(0, 0, 0),
             )
             x += col_widths[col_idx] + args.gap
 
