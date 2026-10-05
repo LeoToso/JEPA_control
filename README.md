@@ -1,4 +1,4 @@
-# Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models — Linear Systems
+# Linear Systems
 
 Companion code for the paper **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**. See the [main branch](https://github.com/LeoToso/JEPA_control) for the full visual control experiments.
 
