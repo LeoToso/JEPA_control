@@ -83,6 +83,10 @@ def main():
     all_frames = []
     successes = []
     n_steps_list = []
+    fail_steps = []          # frame index where episode terminated (-1 = never)
+    THETA_IDX       = 2      # pole angle in state vector
+    THETA_THRESHOLD = 1.2    # rad — matches ContinuousCartpoleVisual default
+
     for json_path, subtitle in zip(args.jsons, args.subtitles):
         with open(json_path) as f:
             data = json.load(f)
@@ -91,7 +95,17 @@ def main():
         states = trial['states']
         success = trial.get('success', None)
         successes.append(success)
-        print(f'[render] {subtitle}  ({len(states)} states) …')
+
+        # Find first frame where |theta| >= threshold (episode terminated)
+        fail_t = -1
+        for t_idx, s in enumerate(states):
+            if abs(s[THETA_IDX]) >= THETA_THRESHOLD:
+                fail_t = t_idx
+                break
+        fail_steps.append(fail_t)
+
+        print(f'[render] {subtitle}  ({len(states)} states, '
+              f'fail_t={fail_t}) …')
         frames = render_all_states(states, args.image_size)
         all_frames.append(frames)
         n_steps_list.append(len(frames))
@@ -127,15 +141,12 @@ def main():
     step_text = fig.text(0.5, 0.88, 't = 0', ha='center', va='bottom',
                          fontsize=10)
 
-    # Step at which each model's episode terminated (first padded frame)
-    fail_step = [n - 1 for n in n_steps_list]
-
     def update(t):
         for i, (im, frames) in enumerate(zip(im_objs, all_frames)):
             im.set_data(frames[t])
-            failed = (successes[i] is False) and (t >= fail_step[i])
-            success_end = (successes[i] is True) and (t == n_steps - 1)
-            if failed:
+            terminated = fail_steps[i] >= 0 and t >= fail_steps[i]
+            success_end = (not terminated) and (t == n_steps - 1) and successes[i]
+            if terminated:
                 c, lw = '#d62728', 3.5   # red from failure step onward
             elif success_end:
                 c, lw = '#2ca02c', 3.5   # green on final frame if succeeded
