@@ -1,6 +1,8 @@
-# JEPA World Models for Visual Control
+# Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models
 
-Code for the paper L.Toso, Y. LeCun, J.Anderson, O. Bounou **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**.
+Code for the paper LF.Toso, Y. LeCun, J.Anderson, O. Bounou **"Preserving Unstable Modes Through Inverse Dynamics in JEPA World Models"**.
+
+Checkpoints can be found [here](https://drive.google.com/drive/folders/1YtWFqkpKDb7zBixo7N-iwfzpw43XhLeG?usp=drive_link)
 
 The model is a JEPA world model with architecture similar to the [Sensorimotor World Model (SMWM)](https://github.com/petr-ivashkov/sensorimotor-world-model). We compare four training objectives across three control benchmarks: CartPole, PointMaze, and Walker2D.
 
@@ -17,7 +19,7 @@ We also compare against **DINO-WM**, which uses a frozen DINOv2 encoder with a s
 
 ---
 
-## Tasks
+## Systems
 
 ### CartPole
 
