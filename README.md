@@ -243,7 +243,7 @@ python experiments/train.py \
 
 ### CartPole — LQR
 
-*10 trials, 300 steps, success threshold = 0.7 rad, hold = 10 steps.*
+
 
 ```bash
 python experiments/eval_lqr_cartpole.py \
@@ -257,7 +257,7 @@ python experiments/eval_lqr_cartpole.py \
 
 ### CartPole — CEM
 
-*H=10, K=1, pop=300, elites=30, iters=30.*
+
 
 ```bash
 python experiments/eval_cem_cartpole.py \
@@ -313,7 +313,7 @@ MUJOCO_GL=egl python experiments/compare_lqr_pointmaze.py \
 
 ### Walker2D — iCEM
 
-*H=3, pop=500, elites=50, iters=5, 10 trials, 500 steps.*
+
 
 ```bash
 # Ground-truth oracle (with SAC warm-start)
