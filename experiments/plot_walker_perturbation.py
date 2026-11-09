@@ -78,7 +78,7 @@ def main():
     ax_ang    = fig.add_subplot(gs[1, 0])   # torso angle
     ax_mse    = fig.add_subplot(gs[1, 1])   # state MSE curve
     ax_bar    = fig.add_subplot(gs[2, 0])   # summary bar: mean MSE
-    ax_surv   = fig.add_subplot(gs[2, 1])   # survival accuracy bar
+    ax_surv   = fig.add_subplot(gs[2, 1])   # survival rate: GT vs pred
 
     # ── per-model curves ──────────────────────────────────────────────────────
     for idx, model in enumerate(models):
@@ -158,29 +158,37 @@ def main():
     ax_mse.legend(fontsize=7)
 
     # ── bar charts ────────────────────────────────────────────────────────────
-    names      = [m['name']                  for m in models]
+    names      = [m['name']                      for m in models]
     mse_means  = [m['summary']['mean_state_mse'] for m in models]
     mse_stds   = [m['summary']['std_state_mse']  for m in models]
-    surv_accs  = [m['summary']['mean_surv_acc']  for m in models]
+    gt_survs   = [m['summary'].get('mean_gt_surv_rate',   m['summary'].get('mean_surv_acc', 0))
+                  for m in models]
+    pred_survs = [m['summary'].get('mean_pred_surv_rate', m['summary'].get('mean_surv_acc', 0))
+                  for m in models]
 
-    xs = np.arange(len(names))
-    bars = ax_bar.bar(xs, mse_means, yerr=mse_stds,
-                      color=MODEL_COLORS[:len(names)],
-                      capsize=4, error_kw=dict(elinewidth=1))
+    xs  = np.arange(len(names))
+    w   = 0.35
+    ax_bar.bar(xs, mse_means, yerr=mse_stds,
+               color=MODEL_COLORS[:len(names)],
+               capsize=4, error_kw=dict(elinewidth=1))
     ax_bar.set_xticks(xs)
     ax_bar.set_xticklabels(names, rotation=20, ha='right', fontsize=8)
     ax_bar.set_ylabel('Mean state MSE')
-    ax_bar.set_title('Recovery State MSE\n(lower = better prediction)',
+    ax_bar.set_title('Recovery State MSE\n(lower = model better tracks GT)',
                      fontsize=9, fontweight='bold')
 
-    ax_surv.bar(xs, surv_accs, color=MODEL_COLORS[:len(names)])
+    # Grouped bar: GT survival rate vs model predicted survival rate
+    ax_surv.bar(xs - w/2, gt_survs,   width=w, color=GT_COLOR,   alpha=0.85, label='MuJoCo GT')
+    ax_surv.bar(xs + w/2, pred_survs, width=w,
+                color=MODEL_COLORS[:len(names)], alpha=0.85, label='Model (SAC on probe)')
     ax_surv.set_xticks(xs)
     ax_surv.set_xticklabels(names, rotation=20, ha='right', fontsize=8)
-    ax_surv.set_ylim(0, 1.05)
+    ax_surv.set_ylim(0, 1.15)
     ax_surv.axhline(1.0, color='#aaaaaa', lw=0.8, ls='--')
-    ax_surv.set_ylabel('Survival accuracy')
-    ax_surv.set_title('Survival Prediction Accuracy\n(predicted fallen = actual fallen)',
+    ax_surv.set_ylabel('Survival rate')
+    ax_surv.set_title('Survival Rate: GT vs Model SAC\n(should match for accurate dynamics)',
                       fontsize=9, fontweight='bold')
+    ax_surv.legend(fontsize=7)
 
     # ── super-title ───────────────────────────────────────────────────────────
     pert_desc = (f'{cfg["perturb_type"]} kick  |  '
