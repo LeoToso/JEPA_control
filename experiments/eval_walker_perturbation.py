@@ -15,7 +15,7 @@ environment.  For T_RECOVERY steps we then compare:
 Reporting MSE on probe-reliable dimensions only (excluding z-height, obs[0],
 where R² < 0 for all models).  This isolates how accurately the predictor
 propagates perturbation dynamics in the dimensions the probe can decode well
-(x-velocity R²≈0.99, joint angles R²≈0.70–0.94)."""
+(x-velocity R²≈0.99, joint angles R²≈0.70–0.94).
 
 Usage
 -----
