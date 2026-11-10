@@ -2,20 +2,20 @@
 """Mid-rollout perturbation ablation for Walker2D JEPA models.
 
 At step T_PERTURB a torso-velocity kick is injected into the real MuJoCo
-environment.  We then run two parallel trajectories for T_RECOVERY steps:
+environment.  For T_RECOVERY steps we then compare:
 
-  1. Ground-truth (MuJoCo): SAC policy acts on real proprioceptive states.
-  2. Model closed-loop: SAC policy acts on probe-decoded latent states.
-     The model predictor rolls forward; the probe decodes z → 17-D state;
-     that decoded state is fed back into the SAC at each step.
+  GT trajectory  : SAC policy on real MuJoCo states (ground truth).
+  Model prediction (open-loop): same GT actions replayed on the JEPA latent
+    rollout starting from the encoded perturbed frame; latent states decoded
+    via a MLP rollout-probe → 17-D proprioceptive state.
+  Re-encode baseline: at each recovery step the actual visual frame is
+    re-encoded → z_enc → probe → state.  This is the probe's ceiling for
+    tracking accuracy; the predictor should stay close to it.
 
-Both branches start from the same perturbed state and use the SAME SAC
-policy — the only difference is whether the SAC sees real or model-predicted
-observations.  This distinguishes accurate recovery dynamics from a model
-that simply reverts to predicting normal gait, addressing:
-  "Could the Walker2D evaluation include a mid-rollout perturbation and
-   compare the predicted recovery with the corresponding MuJoCo recovery
-   under the same SAC policy?"
+Reporting MSE on probe-reliable dimensions only (excluding z-height, obs[0],
+where R² < 0 for all models).  This isolates how accurately the predictor
+propagates perturbation dynamics in the dimensions the probe can decode well
+(x-velocity R²≈0.99, joint angles R²≈0.70–0.94)."""
 
 Usage
 -----
@@ -102,6 +102,10 @@ def apply_perturbation(
 
 # ── single trial ──────────────────────────────────────────────────────────────
 
+# Dimensions to include in probe-reliable MSE (exclude obs[0] = z_height, R²<0)
+_PROBE_RELIABLE_DIMS = list(range(1, 17))   # obs[1..16]
+
+
 def run_trial(
     bundle:         dict,
     probe,
@@ -113,12 +117,15 @@ def run_trial(
     perturb_type:   str,
     perturb_mag:    float,
 ) -> dict:
-    """Run one perturbation trial (closed-loop comparison).
+    """Run one perturbation trial (open-loop prediction comparison).
 
-    Both GT and model branches start from the same perturbed state.
-    GT:    SAC(real_state)   → MuJoCo step  (ground truth)
-    Model: SAC(probe(z))     → latent_step  (closed-loop prediction)
-    The SAC policy is identical in both branches; only the observation source differs.
+    GT:               SAC acts on real MuJoCo states → ground-truth trajectory.
+    Model prediction: same GT actions replayed on the latent predictor rollout;
+                      decoded via probe → predicted 17-D state.
+    Re-encode:        actual visual frames re-encoded at each step → probe decode;
+                      this is the ceiling for how accurate the probe can be.
+
+    MSE is reported both on all 17 dims and on probe-reliable dims (excl. z_height).
     """
     rng = np.random.default_rng(seed)
 
@@ -139,75 +146,85 @@ def run_trial(
     pert_state17, pert_frame, delta = apply_perturbation(
         visual_env, state17, perturb_type, perturb_mag, rng)
 
-    # Both branches start from the perturbed state
-    cur_state17_gt = pert_state17.copy()          # GT uses real env state
-    z = encode_obs(bundle, pert_frame, prev_frame, pert_state17)   # (1, D)
+    # Encode perturbed frame → initial latent for the predictor branch
+    z_pred = encode_obs(bundle, pert_frame, prev_frame, pert_state17)   # (1, D)
+
+    cur_state17 = pert_state17.copy()
+    cur_frame   = pert_frame.copy()
 
     # ── recovery phase ────────────────────────────────────────────────────────
-    gt_states:     list[list] = []
-    pred_states:   list[list] = []
-    gt_actions:    list[list] = []
-    pred_actions:  list[list] = []
-    gt_survived:   list[bool] = []
-    pred_survived: list[bool] = []
+    gt_states:      list[list] = []
+    pred_states:    list[list] = []
+    reenc_states:   list[list] = []   # re-encode ceiling
+    gt_actions:     list[list] = []
 
     done_gt = False
 
     for k in range(recovery_steps):
-        # ── GT branch: SAC sees real proprioceptive state ─────────────────────
-        action_gt = sac_policy.act(cur_state17_gt)
-        gt_states.append(cur_state17_gt.tolist())
+        # ── GT step ───────────────────────────────────────────────────────────
+        action_gt = sac_policy.act(cur_state17)
+        gt_states.append(cur_state17.tolist())
         gt_actions.append(action_gt.tolist())
-        gt_survived.append(is_healthy_obs(cur_state17_gt))
 
         if not done_gt:
-            _, next_state17_gt, _, done_gt, _ = visual_env.step(action_gt)
-            cur_state17_gt = next_state17_gt
+            frame_new, next_state17, _, done_gt, _ = visual_env.step(action_gt)
+        else:
+            frame_new, next_state17 = cur_frame, cur_state17  # frozen after fall
 
-        # ── Model branch: SAC sees probe-decoded latent state ─────────────────
-        pred17      = probe(z[0].cpu().numpy())          # decode current z
-        action_pred = sac_policy.act(pred17)             # SAC on model's obs
-        z           = latent_step(bundle, z, action_pred)   # advance latent
+        # ── Re-encode baseline: encode the ACTUAL current frame ───────────────
+        z_enc   = encode_obs(bundle, cur_frame, prev_frame, cur_state17)
+        reenc17 = probe(z_enc[0].cpu().numpy())
+        reenc_states.append(reenc17.tolist())
 
+        # ── Model predictor: open-loop rollout with GT action ─────────────────
+        pred17  = probe(z_pred[0].cpu().numpy())
         pred_states.append(pred17.tolist())
-        pred_actions.append(action_pred.tolist())
-        pred_survived.append(is_healthy_obs(pred17))
+        a_np    = np.asarray(action_gt, dtype=np.float32)
+        z_pred  = latent_step(bundle, z_pred, a_np)
+
+        # ── Advance GT ────────────────────────────────────────────────────────
+        prev_frame  = cur_frame.copy()
+        cur_frame   = frame_new
+        cur_state17 = next_state17
 
     # ── per-step metrics ──────────────────────────────────────────────────────
-    gt_arr   = np.array(gt_states,   dtype=np.float32)   # (T, 17)
-    pred_arr = np.array(pred_states, dtype=np.float32)   # (T, 17)
-    gt_act   = np.array(gt_actions,  dtype=np.float32)   # (T, 6)
-    pr_act   = np.array(pred_actions, dtype=np.float32)  # (T, 6)
+    gt_arr    = np.array(gt_states,    dtype=np.float32)   # (T, 17)
+    pred_arr  = np.array(pred_states,  dtype=np.float32)   # (T, 17)
+    reenc_arr = np.array(reenc_states, dtype=np.float32)   # (T, 17)
 
-    state_mse_per_step   = ((pred_arr - gt_arr) ** 2).mean(axis=1).tolist()
-    xvel_mae_per_step    = np.abs(pred_arr[:, 8] - gt_arr[:, 8]).tolist()
-    ang_mae_per_step     = np.abs(pred_arr[:, 1] - gt_arr[:, 1]).tolist()
-    # Action divergence: does the SAC choose different actions due to obs mismatch?
-    action_mae_per_step  = np.abs(pr_act - gt_act).mean(axis=1).tolist()
+    rd = _PROBE_RELIABLE_DIMS   # dims 1..16
+
+    # Full MSE (all 17 dims)
+    mse_full_per_step  = ((pred_arr  - gt_arr) ** 2).mean(axis=1).tolist()
+    # Probe-reliable MSE (excl. z_height)
+    mse_rel_per_step   = ((pred_arr[:, rd]  - gt_arr[:, rd]) ** 2).mean(axis=1).tolist()
+    # Re-encode ceiling MSE (probe-reliable)
+    reenc_rel_per_step = ((reenc_arr[:, rd] - gt_arr[:, rd]) ** 2).mean(axis=1).tolist()
+
+    xvel_mae_per_step  = np.abs(pred_arr[:, 8]  - gt_arr[:, 8]).tolist()
+    ang_mae_per_step   = np.abs(pred_arr[:, 1]  - gt_arr[:, 1]).tolist()
+    xvel_reenc_mae     = np.abs(reenc_arr[:, 8] - gt_arr[:, 8]).tolist()
 
     return {
-        'seed':                 seed,
-        'perturb_step':         perturb_step,
-        'perturb_delta':        delta.tolist(),
-        'gt_states':            gt_states,
-        'pred_states':          pred_states,
-        'gt_actions':           gt_actions,
-        'pred_actions':         pred_actions,
-        'gt_survived':          gt_survived,
-        'pred_survived':        pred_survived,
-        'state_mse_per_step':   state_mse_per_step,
-        'xvel_mae_per_step':    xvel_mae_per_step,
-        'ang_mae_per_step':     ang_mae_per_step,
-        'action_mae_per_step':  action_mae_per_step,
-        'mean_state_mse':       float(np.mean(state_mse_per_step)),
-        'mean_xvel_mae':        float(np.mean(xvel_mae_per_step)),
-        'mean_ang_mae':         float(np.mean(ang_mae_per_step)),
-        'mean_action_mae':      float(np.mean(action_mae_per_step)),
-        'survival_acc':         float(np.mean(
-            [g == p for g, p in zip(gt_survived, pred_survived)])),
-        # Did the model's SAC-driven trajectory survive at the same rate?
-        'gt_survival_rate':     float(np.mean(gt_survived)),
-        'pred_survival_rate':   float(np.mean(pred_survived)),
+        'seed':                    seed,
+        'perturb_step':            perturb_step,
+        'perturb_delta':           delta.tolist(),
+        'gt_states':               gt_states,
+        'pred_states':             pred_states,
+        'reenc_states':            reenc_states,
+        'gt_actions':              gt_actions,
+        'mse_full_per_step':       mse_full_per_step,
+        'mse_rel_per_step':        mse_rel_per_step,
+        'reenc_rel_per_step':      reenc_rel_per_step,
+        'xvel_mae_per_step':       xvel_mae_per_step,
+        'ang_mae_per_step':        ang_mae_per_step,
+        'xvel_reenc_mae_per_step': xvel_reenc_mae,
+        'mean_mse_full':           float(np.mean(mse_full_per_step)),
+        'mean_mse_rel':            float(np.mean(mse_rel_per_step)),
+        'mean_reenc_mse_rel':      float(np.mean(reenc_rel_per_step)),
+        'mean_xvel_mae':           float(np.mean(xvel_mae_per_step)),
+        'mean_ang_mae':            float(np.mean(ang_mae_per_step)),
+        'mean_xvel_reenc_mae':     float(np.mean(xvel_reenc_mae)),
     }
 
 
@@ -328,38 +345,34 @@ def main():
                 perturb_mag=args.perturb_mag,
             )
             trial_results.append(t)
-            print(f'mse={t["mean_state_mse"]:.4f}  '
-                  f'xvel_mae={t["mean_xvel_mae"]:.4f}  '
-                  f'surv_acc={t["survival_acc"]:.2f}')
+            print(f'mse_rel={t["mean_mse_rel"]:.4f}  '
+                  f'ceil={t["mean_reenc_mse_rel"]:.4f}  '
+                  f'xvel_mae={t["mean_xvel_mae"]:.4f}')
 
         visual_env.close()
 
         # Summary across trials
         summary = {
-            'mean_state_mse':       float(np.mean([r['mean_state_mse']     for r in trial_results])),
-            'std_state_mse':        float(np.std( [r['mean_state_mse']     for r in trial_results])),
-            'mean_xvel_mae':        float(np.mean([r['mean_xvel_mae']      for r in trial_results])),
-            'std_xvel_mae':         float(np.std( [r['mean_xvel_mae']      for r in trial_results])),
-            'mean_ang_mae':         float(np.mean([r['mean_ang_mae']       for r in trial_results])),
-            'mean_action_mae':      float(np.mean([r['mean_action_mae']    for r in trial_results])),
-            'mean_surv_acc':        float(np.mean([r['survival_acc']       for r in trial_results])),
-            'mean_gt_surv_rate':    float(np.mean([r['gt_survival_rate']   for r in trial_results])),
-            'mean_pred_surv_rate':  float(np.mean([r['pred_survival_rate'] for r in trial_results])),
-            # Early-recovery quality (first 20 steps)
-            'early_state_mse':      float(np.mean([
-                np.mean(r['state_mse_per_step'][:20])
-                for r in trial_results])),
-            # Late-recovery quality (last 20 steps)
-            'late_state_mse':       float(np.mean([
-                np.mean(r['state_mse_per_step'][-20:])
-                for r in trial_results])),
+            'mean_mse_full':       float(np.mean([r['mean_mse_full']       for r in trial_results])),
+            'std_mse_full':        float(np.std( [r['mean_mse_full']       for r in trial_results])),
+            'mean_mse_rel':        float(np.mean([r['mean_mse_rel']        for r in trial_results])),
+            'std_mse_rel':         float(np.std( [r['mean_mse_rel']        for r in trial_results])),
+            'mean_reenc_mse_rel':  float(np.mean([r['mean_reenc_mse_rel']  for r in trial_results])),
+            'mean_xvel_mae':       float(np.mean([r['mean_xvel_mae']       for r in trial_results])),
+            'std_xvel_mae':        float(np.std( [r['mean_xvel_mae']       for r in trial_results])),
+            'mean_xvel_reenc_mae': float(np.mean([r['mean_xvel_reenc_mae'] for r in trial_results])),
+            'mean_ang_mae':        float(np.mean([r['mean_ang_mae']        for r in trial_results])),
+            # Early (steps 0-19) vs late (steps -20:) recovery quality
+            'early_mse_rel':       float(np.mean([
+                np.mean(r['mse_rel_per_step'][:20]) for r in trial_results])),
+            'late_mse_rel':        float(np.mean([
+                np.mean(r['mse_rel_per_step'][-20:]) for r in trial_results])),
         }
 
-        print(f'[{name}] summary: mse={summary["mean_state_mse"]:.4f}±{summary["std_state_mse"]:.4f}'
+        print(f'[{name}] mse_rel={summary["mean_mse_rel"]:.4f}±{summary["std_mse_rel"]:.4f}'
+              f'  reenc_ceiling={summary["mean_reenc_mse_rel"]:.4f}'
               f'  xvel_mae={summary["mean_xvel_mae"]:.4f}'
-              f'  action_mae={summary["mean_action_mae"]:.4f}'
-              f'  gt_surv={summary["mean_gt_surv_rate"]:.3f}'
-              f'  pred_surv={summary["mean_pred_surv_rate"]:.3f}')
+              f'  xvel_reenc={summary["mean_xvel_reenc_mae"]:.4f}')
 
         results['models'].append({
             'name':       name,
@@ -376,16 +389,16 @@ def main():
     print(f'\n[done] results → {out_path}')
 
     # Print comparison table
-    print('\n── Perturbation Recovery Summary (closed-loop: SAC on probe(z) vs SAC on real state) ──')
-    print(f'{"Model":<20} {"MSE":>8} {"±":>6} {"xVel MAE":>10} {"Act MAE":>9} '
-          f'{"GT surv":>8} {"Pred surv":>10} {"Surv acc":>9}')
-    print('-' * 90)
+    print('\n── Perturbation Recovery Summary (open-loop: GT actions replayed on predictor) ──')
+    print(f'{"Model":<20} {"MSE-rel":>9} {"±":>6} {"Re-enc ceil":>12} '
+          f'{"xVel MAE":>10} {"xVel ceil":>10} {"Ang MAE":>9}')
+    print('-' * 85)
     for m in results['models']:
         s = m['summary']
-        print(f'{m["name"]:<20} {s["mean_state_mse"]:8.4f} {s["std_state_mse"]:6.4f} '
-              f'{s["mean_xvel_mae"]:10.4f} {s["mean_action_mae"]:9.4f} '
-              f'{s["mean_gt_surv_rate"]:8.3f} {s["mean_pred_surv_rate"]:10.3f} '
-              f'{s["mean_surv_acc"]:9.3f}')
+        print(f'{m["name"]:<20} {s["mean_mse_rel"]:9.4f} {s["std_mse_rel"]:6.4f} '
+              f'{s["mean_reenc_mse_rel"]:12.4f} '
+              f'{s["mean_xvel_mae"]:10.4f} {s["mean_xvel_reenc_mae"]:10.4f} '
+              f'{s["mean_ang_mae"]:9.4f}')
 
 
 if __name__ == '__main__':
